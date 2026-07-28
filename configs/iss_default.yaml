@@ -30,3 +30,4 @@ reward_weights:
   angular_velocity: 0.1
   control_effort: 0.05
   collision: 1000000.0
+reward_goal_position: null

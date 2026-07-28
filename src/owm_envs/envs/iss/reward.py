@@ -17,7 +17,10 @@ One term formula does diverge: seamstress's reward.goal is the all-zero state
 targets the ISS origin. This port instead targets `cfg.dock_position`, ~24.6 m
 away. That divergence is deliberate, not an oversight -- this is a docking
 task, and pulling the chaser toward the ISS origin would reward it for
-approaching the very structure the collision term penalises it for hitting.
+approaching the very structure the collision term penalises it for hitting;
+indeed, the origin sits inside the station's collision hull while the dock
+position does not. `cfg.reward_goal_position` can override the target back to
+the origin (or elsewhere) for callers who deliberately want that behaviour.
 """
 
 from __future__ import annotations
@@ -37,9 +40,12 @@ def iss_reward(
     """Per-step reward. Returns a float32 scalar (or a batch under vmap)."""
     w = cfg.reward_weights
 
-    dock_position = jnp.asarray(cfg.dock_position, dtype=jnp.float32)
+    goal_position = jnp.asarray(
+        cfg.reward_goal_position if cfg.reward_goal_position is not None else cfg.dock_position,
+        dtype=jnp.float32,
+    )
 
-    position_error = jnp.sum((state[0:3] - dock_position) ** 2)
+    position_error = jnp.sum((state[0:3] - goal_position) ** 2)
     velocity_error = jnp.sum(state[3:6] ** 2)
     angular_velocity_error = jnp.sum(state[10:13] ** 2)
     control_effort = jnp.sum(action**2)

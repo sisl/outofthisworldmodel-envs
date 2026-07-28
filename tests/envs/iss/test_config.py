@@ -50,6 +50,19 @@ def test_nested_reward_weights_survive_the_roundtrip(tmp_path):
     assert loaded == original
 
 
+def test_reward_goal_position_defaults_to_none():
+    assert ISSConfig().reward_goal_position is None
+
+
+def test_reward_goal_position_survives_the_roundtrip(tmp_path):
+    original = ISSConfig(reward_goal_position=(0.0, 0.0, 0.0))
+    path = tmp_path / "run_config.yaml"
+    original.to_yaml(path)
+    loaded = ISSConfig.from_yaml(path)
+    assert loaded.reward_goal_position == (0.0, 0.0, 0.0)
+    assert loaded == original
+
+
 def test_shipped_default_config_file_matches_code_defaults():
     # configs/iss_default.yaml is the committed, versioned record of the
     # defaults. If someone changes a default in code without regenerating it,

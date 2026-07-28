@@ -94,3 +94,25 @@ def test_docking_is_not_penalized():
     docked = Events(collision=jnp.array(False), docked=jnp.array(True))
     r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, docked, cfg)
     assert np.isclose(float(r), 0.0, atol=1e-6)
+
+
+def test_reward_goal_position_none_targets_the_dock_position():
+    cfg = ISSConfig(
+        dock_position=(1.0, 0.0, 0.0),
+        reward_weights=RewardWeights(position=1.0, velocity=0.0, angular_velocity=0.0,
+                                     control_effort=0.0, collision=0.0),
+    )
+    assert cfg.reward_goal_position is None
+    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    assert np.isclose(float(r), -9.0, atol=1e-4)  # (4-1)^2
+
+
+def test_reward_goal_position_override_targets_the_override_not_the_dock():
+    cfg = ISSConfig(
+        dock_position=(1.0, 0.0, 0.0),
+        reward_goal_position=(0.0, 0.0, 0.0),
+        reward_weights=RewardWeights(position=1.0, velocity=0.0, angular_velocity=0.0,
+                                     control_effort=0.0, collision=0.0),
+    )
+    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    assert np.isclose(float(r), -16.0, atol=1e-4)  # (4-0)^2, not (4-1)^2

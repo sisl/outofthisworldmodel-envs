@@ -78,6 +78,16 @@ class ISSConfig(YamlModel):
     control_limit_torque_nm: float = 90_000.0
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
+    # Overrides the reward's position-error target. When None (default),
+    # iss_reward measures distance to `dock_position`, as it should for a
+    # docking task. Seamstress's own control config instead sets the reward
+    # goal to the ISS origin [0, 0, 0] -- but that point is INSIDE the
+    # station's collision hull (dock_position, ~24.63 m away, is not), so
+    # seamstress's MPPI was being pulled toward a position it can never reach
+    # without incurring the -1e6 collision penalty. This field exists to
+    # deliberately reproduce that seamstress behaviour, or to target some
+    # other point -- not because the origin is a sensible target.
+    reward_goal_position: tuple[float, float, float] | None = None
 
 
 def default_collision_boxes_path() -> str:
