@@ -113,6 +113,47 @@ def test_terminated_sub_env_autoresets_on_the_next_step():
     np.testing.assert_allclose(rewards, np.zeros(2), atol=1e-6)
 
 
+def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
+    """Regression test for a plan defect: the autoreset lane was integrated one
+    physics step forward with the caller's action before being returned,
+    instead of being replaced with the pure reset observation. A zero action
+    would not catch this (a resting reset state barely moves under zero
+    force -- see test_zero_action_from_rest_stays_at_rest in Task 3), so this
+    drives the autoreset step with a large nonzero action.
+    """
+    cfg = ISSConfig(
+        max_steps=100,
+        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+        dock_enabled=False,
+    )
+    env = ISSVectorEnv(num_envs=2, cfg=cfg)
+    env.reset(seed=0)
+    zero = np.zeros((2, 6), dtype=np.float32)
+
+    _, _, terminations, _, _ = env.step(zero)
+    assert terminations.all()
+
+    large = np.tile(
+        np.array(
+            [cfg.control_limit_force_n] * 3 + [cfg.control_limit_torque_nm] * 3,
+            dtype=np.float32,
+        ),
+        (2, 1),
+    )
+    obs, rewards, terminations, truncations, _ = env.step(large)
+
+    assert not terminations.any() and not truncations.any()
+    np.testing.assert_allclose(rewards, np.zeros(2), atol=1e-6)
+    # A pure reset state is at rest, on the start sphere. If the autoreset
+    # lane had instead been stepped once with this large force, velocity and
+    # angular velocity would be far from zero.
+    np.testing.assert_array_equal(obs[:, 3:6], 0.0)
+    np.testing.assert_array_equal(obs[:, 10:13], 0.0)
+    np.testing.assert_allclose(
+        np.linalg.norm(obs[:, 0:3], axis=1), cfg.start_radius_m, rtol=1e-5
+    )
+
+
 def test_autoreset_mode_is_declared_in_metadata():
     env = ISSVectorEnv(num_envs=2)
     assert "autoreset_mode" in env.metadata
