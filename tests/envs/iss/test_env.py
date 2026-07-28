@@ -98,11 +98,21 @@ def test_docking_terminates_and_reports_success():
 
 
 def test_actions_are_clipped_to_the_action_space():
-    env = ISSEnv(ISSConfig(collision_boxes_path=None, dock_enabled=False))
-    env.reset(seed=0)
+    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=False)
     huge = np.full(6, 1e9, dtype=np.float32)
-    obs, _, _, _, _ = env.step(huge)
-    assert np.all(np.isfinite(obs))
+    clamped = np.concatenate(
+        [np.full(3, cfg.control_limit_force_n), np.full(3, cfg.control_limit_torque_nm)]
+    ).astype(np.float32)
+
+    env_huge = ISSEnv(cfg)
+    env_huge.reset(seed=0)
+    obs_huge, _, _, _, _ = env_huge.step(huge)
+
+    env_clamped = ISSEnv(cfg)
+    env_clamped.reset(seed=0)
+    obs_clamped, _, _, _, _ = env_clamped.step(clamped)
+
+    np.testing.assert_array_equal(obs_huge, obs_clamped)
 
 
 def test_step_before_reset_raises():
