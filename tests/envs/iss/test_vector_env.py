@@ -154,6 +154,38 @@ def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
     )
 
 
+def test_truncation_timing_restarts_after_autoreset():
+    # Regression test for vector_env.py's `self._step_index[autoreset] = 0`:
+    # deleting that line leaves the suite green, since the existing autoreset
+    # test only takes two steps. With max_steps=2, a lane must truncate
+    # exactly two steps after each reset -- including the reset that happens
+    # via autoreset, not just the very first one. A stale step index would
+    # truncate the new episode early (one step in, not two).
+    env = ISSVectorEnv(num_envs=2, cfg=ISSConfig(max_steps=2, **FREE_FLIGHT))
+    env.reset(seed=0)
+    zero = np.zeros((2, 6), dtype=np.float32)
+
+    # Episode 1: not yet truncated after one step, truncated after two.
+    _, _, terminations, truncations, _ = env.step(zero)
+    assert not truncations.any() and not terminations.any()
+    _, _, terminations, truncations, _ = env.step(zero)
+    assert truncations.all() and not terminations.any()
+
+    # Autoreset step: reports the fresh episode with a neutral transition;
+    # this is the step where the step index must be reset to 0.
+    _, _, terminations, truncations, _ = env.step(zero)
+    assert not truncations.any() and not terminations.any()
+
+    # Episode 2, one real step in: must NOT truncate yet. With the step-index
+    # reset deleted, the stale index from episode 1 would fire truncation here.
+    _, _, terminations, truncations, _ = env.step(zero)
+    assert not truncations.any() and not terminations.any()
+
+    # Episode 2, two real steps in: truncates right on schedule.
+    _, _, terminations, truncations, _ = env.step(zero)
+    assert truncations.all() and not terminations.any()
+
+
 def test_autoreset_mode_is_declared_in_metadata():
     env = ISSVectorEnv(num_envs=2)
     assert "autoreset_mode" in env.metadata
