@@ -26,6 +26,20 @@ def test_reward_decreases_with_distance_from_dock():
     assert float(far) < float(near) < 0.0
 
 
+def test_default_weights_combine_multiple_terms():
+    # Every other term test below sets its own weight to 1.0 and zeros the
+    # other four, so nothing else exercises the *default* RewardWeights with
+    # more than one term active -- e.g. swapping velocity=0.35 and
+    # angular_velocity=0.1 in the defaults would leave every other test green.
+    cfg = ISSConfig(dock_position=(0.0, 0.0, 0.0))
+    r = iss_reward(
+        state_at((1.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), omega=(1.0, 0.0, 0.0)),
+        ZERO_ACTION, NO_EVENTS, cfg,
+    )
+    # -(position=1.0*1 + velocity=0.35*1 + angular_velocity=0.1*1) == -1.45
+    assert np.isclose(float(r), -1.45, atol=1e-4)
+
+
 def test_position_term_is_summed_squared_not_norm():
     # weight 1.0 on position, everything else zeroed => r == -sum(diff**2)
     cfg = ISSConfig(
