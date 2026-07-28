@@ -8,9 +8,16 @@ over the horizon -- an MPPI cost function. Gymnasium needs a per-step scalar, so
 this port drops the mean-over-horizon and computes each term pointwise. The
 discounted sum of per-step rewards takes the place of the horizon mean.
 
-Term formulas are otherwise unchanged. Note that seamstress's
-distance_type="euclidean" computes sum(diff**2) -- a summed squared difference,
-not a Euclidean norm, despite the name. That behaviour is preserved here.
+Note that seamstress's distance_type="euclidean" computes sum(diff**2) -- a
+summed squared difference, not a Euclidean norm, despite the name. That
+behaviour is preserved here.
+
+One term formula does diverge: seamstress's reward.goal is the all-zero state
+(conf/control/control_international_space_station.yaml), so its position term
+targets the ISS origin. This port instead targets `cfg.dock_position`, ~24.6 m
+away. That divergence is deliberate, not an oversight -- this is a docking
+task, and pulling the chaser toward the ISS origin would reward it for
+approaching the very structure the collision term penalises it for hitting.
 """
 
 from __future__ import annotations
