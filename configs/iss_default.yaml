@@ -21,7 +21,7 @@ dock_quaternion:
 dock_enabled: true
 dock_max_distance_m: 0.1
 dock_max_velocity_m_s: 0.5
-collision_boxes_path: null
+collision_boxes_path: default
 control_limit_force_n: 18000.0
 control_limit_torque_nm: 90000.0
 reward_weights:

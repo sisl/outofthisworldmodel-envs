@@ -20,6 +20,13 @@ from pydantic import Field
 
 from ...core.config_io import YamlModel
 
+# Sentinel for ISSConfig.collision_boxes_path meaning "use the 318-box ISS
+# geometry shipped with this package". A plain sentinel (rather than baking
+# default_collision_boxes_path()'s absolute, install-location-dependent path
+# into the field default) keeps the default portable across machines and
+# installs, and keeps configs/iss_default.yaml diffable/reviewable.
+DEFAULT_COLLISION_BOXES = "default"
+
 
 class RewardWeights(YamlModel):
     """Weights for the five reward terms. Carried from seamstress iss2.
@@ -59,8 +66,10 @@ class ISSConfig(YamlModel):
     dock_max_velocity_m_s: float = 0.5
 
     # A path to a YAML file, an already-loaded list of box dicts (useful in
-    # tests), or None for no collision geometry.
-    collision_boxes_path: str | list[dict] | None = None
+    # tests), DEFAULT_COLLISION_BOXES to use the 318-box ISS geometry shipped
+    # with this package (the default), or None to opt out of collision
+    # geometry entirely.
+    collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES
 
     # 9x the baseline (was 2000 N / 10000 N*m). Traversal time scales as
     # 1/sqrt(F_max), so 9x force gives ~3x faster chaser motion. Not physically
@@ -80,7 +89,8 @@ def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
     """Load axis-aligned collision boxes.
 
     `source` may be:
-      - None                -> empty box set
+      - None                     -> empty box set
+      - DEFAULT_COLLISION_BOXES  -> the 318-box ISS geometry shipped with this package
       - a path to a YAML file containing a list of {center, size} dicts
       - an already-loaded list of {center, size} or {center, half_extents} dicts
 
@@ -88,6 +98,9 @@ def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
     """
     if source is None:
         return _empty_boxes()
+
+    if source == DEFAULT_COLLISION_BOXES:
+        return load_collision_boxes(default_collision_boxes_path())
 
     if isinstance(source, (str, Path)):
         path = Path(source)
