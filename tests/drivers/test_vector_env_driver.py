@@ -27,18 +27,22 @@ def test_generates_the_requested_number_of_episodes():
 
 
 def test_output_shapes_and_dtypes():
+    # Each episode stores N + 1 observations (seed state plus each post-step
+    # state, including the terminal one) against N + 1 actions (N real, one
+    # zero pad), so a max_steps=15 horizon yields length-16 episodes.
     batch = make_driver().generate(RolloutSpec(num_episodes=3, max_steps=15, seed=0))
-    assert batch.observations.shape == (3, 15, 13)
-    assert batch.actions.shape == (3, 15, 6)
-    assert batch.rewards.shape == (3, 15)
+    assert batch.observations.shape == (3, 16, 13)
+    assert batch.actions.shape == (3, 16, 6)
+    assert batch.rewards.shape == (3, 16)
     assert batch.observations.dtype == np.float32
     assert batch.actions.dtype == np.float32
     assert batch.lengths.dtype == np.int32
 
 
 def test_free_flight_episodes_run_to_max_steps_and_truncate():
+    # 12 real steps plus the seed observation is a length-13 episode.
     batch = make_driver().generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
-    assert np.all(batch.lengths == 12)
+    assert np.all(batch.lengths == 13)
     assert np.all(batch.truncated)
     assert not np.any(batch.terminated)
 
@@ -53,6 +57,25 @@ def test_collision_terminates_episodes_early():
     assert np.all(batch.terminated)
     assert not np.any(batch.truncated)
     assert np.all(batch.lengths < 50)
+
+
+def test_terminal_state_is_stored_with_a_padded_final_action():
+    # The terminal (collision) observation must be captured -- it's the
+    # event a world model needs to learn -- with a zero action padding the
+    # final slot so observations and actions stay equal length.
+    driver = make_driver(
+        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+        dock_enabled=False,
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=2, max_steps=50, seed=0))
+    batch.validate()
+    assert np.all(batch.terminated)
+    for i, length in enumerate(batch.lengths):
+        initial = batch.observations[i, 0]
+        terminal = batch.observations[i, length - 1]
+        assert not np.allclose(terminal, 0.0)
+        assert not np.allclose(terminal, initial)
+        np.testing.assert_array_equal(batch.actions[i, length - 1], 0.0)
 
 
 def test_is_deterministic_in_the_seed():
