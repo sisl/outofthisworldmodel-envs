@@ -12,7 +12,7 @@ extras_fn is None when the policy needs no per-episode randomisation.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Literal
 
 import jax
 import jax.numpy as jnp
@@ -57,6 +57,10 @@ class PolicyConfig(YamlModel):
     """Policy settings. A YamlModel like ISSConfig so the policy that shaped a
     dataset is part of its as-run record, not just the environment physics."""
 
+    # Which policy make_policy builds. Default matches seamstress's
+    # manifold.policy.type default. Invalid values are rejected here, at
+    # config-load time, rather than inside make_policy at rollout time.
+    type: Literal["random", "orbit", "dock", "union"] = "random"
     orbit: OrbitParams = Field(default_factory=OrbitParams)
     dock: DockParams = Field(default_factory=DockParams)
     # Positional order: [random, orbit, dock]. Normalised at build time.
@@ -218,10 +222,14 @@ def _build_union(cfg: ISSConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, Ex
 
 
 def make_policy(
-    policy_type: str,
     cfg: ISSConfig,
     policy_cfg: PolicyConfig,
+    policy_type: str | None = None,
 ) -> tuple[PolicyFn, ExtrasFn | None]:
+    """Build a scripted policy. `policy_type` overrides `policy_cfg.type` when
+    given (e.g. a CLI --policy flag); otherwise the config value is used."""
+    if policy_type is None:
+        policy_type = policy_cfg.type
     if policy_type == "random":
         return _build_random(cfg), None
     if policy_type == "orbit":
