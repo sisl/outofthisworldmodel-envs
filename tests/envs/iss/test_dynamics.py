@@ -169,6 +169,65 @@ def test_dock_disabled_never_fires():
     assert bool(events.docked) is False
 
 
+def test_dock_requires_attitude_when_the_gate_is_set():
+    cfg = ISSConfig(dock=DockConfig(
+        enabled=True, position=(0.0, 0.0, 0.0), quaternion=(1.0, 0.0, 0.0, 0.0),
+        max_distance_m=1.0, max_velocity_m_s=1.0, max_attitude_error_deg=10.0,
+    ), physics=PhysicsConfig(collision_boxes_path=None))
+    dyn = ISSDynamics(cfg)
+
+    aligned = make_state(pos=(0.0, 0.0, 0.0), quat=(1.0, 0.0, 0.0, 0.0))
+    assert bool(dyn.step(aligned, ZERO_ACTION)[1].docked) is True
+
+    # 180 deg about x -- in position, but pointing the wrong way entirely.
+    flipped = make_state(pos=(0.0, 0.0, 0.0), quat=(0.0, 1.0, 0.0, 0.0))
+    assert bool(dyn.step(flipped, ZERO_ACTION)[1].docked) is False
+
+
+def test_attitude_gate_accepts_the_negated_quaternion():
+    """q and -q are the SAME rotation. Without abs() on w, one of them fails."""
+    cfg = ISSConfig(dock=DockConfig(
+        enabled=True, position=(0.0, 0.0, 0.0), quaternion=(1.0, 0.0, 0.0, 0.0),
+        max_distance_m=1.0, max_velocity_m_s=1.0, max_attitude_error_deg=10.0,
+    ), physics=PhysicsConfig(collision_boxes_path=None))
+    dyn = ISSDynamics(cfg)
+    negated = make_state(pos=(0.0, 0.0, 0.0), quat=(-1.0, 0.0, 0.0, 0.0))
+    assert bool(dyn.step(negated, ZERO_ACTION)[1].docked) is True
+
+
+def test_dock_requires_body_rates_when_the_gate_is_set():
+    cfg = ISSConfig(dock=DockConfig(
+        enabled=True, position=(0.0, 0.0, 0.0), max_distance_m=1.0,
+        max_velocity_m_s=1.0, max_body_rate_rad_s=0.01,
+    ), physics=PhysicsConfig(collision_boxes_path=None))
+    dyn = ISSDynamics(cfg)
+    still = make_state(pos=(0.0, 0.0, 0.0), omega=(0.0, 0.0, 0.0))
+    assert bool(dyn.step(still, ZERO_ACTION)[1].docked) is True
+    tumbling = make_state(pos=(0.0, 0.0, 0.0), omega=(5.0, 0.0, 0.0))
+    assert bool(dyn.step(tumbling, ZERO_ACTION)[1].docked) is False
+
+
+def test_gates_default_to_off_admitting_any_attitude_and_rate():
+    # Preserves the pre-change behaviour when the new fields are not set.
+    cfg = ISSConfig(dock=DockConfig(
+        enabled=True, position=(0.0, 0.0, 0.0), max_distance_m=1.0, max_velocity_m_s=1.0,
+    ), physics=PhysicsConfig(collision_boxes_path=None))
+    dyn = ISSDynamics(cfg)
+    wild = make_state(pos=(0.0, 0.0, 0.0), quat=(0.0, 1.0, 0.0, 0.0), omega=(9.0, 9.0, 9.0))
+    assert bool(dyn.step(wild, ZERO_ACTION)[1].docked) is True
+
+
+def test_attitude_gate_is_jit_and_vmap_compatible():
+    cfg = ISSConfig(dock=DockConfig(
+        enabled=True, position=(0.0, 0.0, 0.0), max_distance_m=1.0,
+        max_velocity_m_s=1.0, max_attitude_error_deg=10.0, max_body_rate_rad_s=0.1,
+    ), physics=PhysicsConfig(collision_boxes_path=None))
+    dyn = ISSDynamics(cfg)
+    states = jnp.stack([make_state(pos=(0.0, 0.0, 0.0))] * 3)
+    _, events = jax.vmap(jax.jit(dyn.step))(states, jnp.zeros((3, 6), jnp.float32))
+    assert events.docked.shape == (3,)
+
+
 def test_reset_places_chaser_on_the_start_sphere():
     dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_m=100.0)))
     s = dyn.reset(jax.random.PRNGKey(0))

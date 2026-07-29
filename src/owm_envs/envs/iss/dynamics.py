@@ -27,7 +27,9 @@ import jax.numpy as jnp
 
 from ...core.integrator import Integrator
 from ...core.quaternion import (
+    quat_conjugate,
     quat_derivative_from_omega_body,
+    quat_multiply,
     quat_normalize,
     rotate_body_to_world,
 )
@@ -74,6 +76,13 @@ class ISSDynamics:
         self._dock_position = jnp.asarray(cfg.dock.position, dtype=jnp.float32)
         self._dock_max_distance = jnp.asarray(cfg.dock.max_distance_m, dtype=jnp.float32)
         self._dock_max_velocity = jnp.asarray(cfg.dock.max_velocity_m_s, dtype=jnp.float32)
+        self._dock_quaternion = jnp.asarray(cfg.dock.quaternion, dtype=jnp.float32)
+        if cfg.dock.max_attitude_error_deg is not None:
+            self._dock_max_attitude_error_rad = jnp.asarray(
+                jnp.deg2rad(cfg.dock.max_attitude_error_deg), dtype=jnp.float32
+            )
+        if cfg.dock.max_body_rate_rad_s is not None:
+            self._dock_max_body_rate = jnp.asarray(cfg.dock.max_body_rate_rad_s, dtype=jnp.float32)
 
     def _eom(self, x: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
         vel_w = x[3:6]
@@ -102,12 +111,33 @@ class ISSDynamics:
         dist = jnp.linalg.norm(outside, axis=1)
         return jnp.any(dist <= self._chaser_radius)
 
-    def _docked(self, pos_w: jnp.ndarray, vel_w: jnp.ndarray) -> jnp.ndarray:
+    def _docked(
+        self, pos_w: jnp.ndarray, vel_w: jnp.ndarray, q_bw: jnp.ndarray, omega_b: jnp.ndarray
+    ) -> jnp.ndarray:
         if not self.cfg.dock.enabled:
             return jnp.array(False)
         near = jnp.linalg.norm(pos_w - self._dock_position) <= self._dock_max_distance
         slow = jnp.linalg.norm(vel_w) <= self._dock_max_velocity
-        return jnp.logical_and(near, slow)
+        docked = jnp.logical_and(near, slow)
+
+        # Both gates are optional and, being static Python values, are branched
+        # on at trace time rather than with jnp.where -- `_docked` runs inside
+        # jit/vmap, but `self.cfg.dock.*` is not a traced array.
+        if self.cfg.dock.max_attitude_error_deg is not None:
+            q_err = quat_multiply(quat_conjugate(q_bw), self._dock_quaternion)
+            # abs() handles the q/-q double cover: q and -q are the same
+            # rotation, but without it their w components differ in sign and
+            # give angles 2*pi apart.
+            w_err = jnp.clip(jnp.abs(q_err[0]), -1.0, 1.0)
+            angle = 2.0 * jnp.arccos(w_err)
+            aligned = angle <= self._dock_max_attitude_error_rad
+            docked = jnp.logical_and(docked, aligned)
+
+        if self.cfg.dock.max_body_rate_rad_s is not None:
+            still = jnp.linalg.norm(omega_b) <= self._dock_max_body_rate
+            docked = jnp.logical_and(docked, still)
+
+        return docked
 
     def step(self, state: jnp.ndarray, action: jnp.ndarray) -> tuple[jnp.ndarray, Events]:
         s = state.astype(jnp.float32)
@@ -126,7 +156,7 @@ class ISSDynamics:
 
         events = Events(
             collision=self._collision(s_next[0:3]),
-            docked=self._docked(s_next[0:3], s_next[3:6]),
+            docked=self._docked(s_next[0:3], s_next[3:6], s_next[6:10], s_next[10:13]),
         )
         return s_next, events
 

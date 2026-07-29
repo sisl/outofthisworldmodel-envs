@@ -67,6 +67,10 @@ class DockConfig(ConfigModel):
     enabled: bool = True
     max_distance_m: float = 0.1
     max_velocity_m_s: float = 0.5
+    # Optional gates: None admits any attitude/rate, preserving the default
+    # position-and-velocity-only success criteria.
+    max_attitude_error_deg: float | None = None
+    max_body_rate_rad_s: float | None = None
 
 
 class RewardWeights(ConfigModel):
