@@ -1,3 +1,4 @@
+import builtins
 import json
 
 from typer.testing import CliRunner
@@ -100,3 +101,29 @@ def test_unknown_policy_is_rejected(tmp_path):
          "--policy", "teleport", "--no-lerobot"],
     )
     assert result.exit_code != 0
+
+
+def test_generate_gives_a_legible_error_when_lerobot_is_missing(tmp_path, monkeypatch):
+    # --lerobot defaults to True, but lerobot is declared only in the
+    # optional 'datasets' extra. A base install must be told why it isn't
+    # getting a dataset, not fail with a bare ModuleNotFoundError deep in
+    # write_lerobot_split, and not silently fall back to metadata only.
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "lerobot":
+            raise ModuleNotFoundError("No module named 'lerobot'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "1", "--steps", "4",
+         "--policy", "dock", "--num-envs", "1", "--driver", "vector"],
+    )
+    assert result.exit_code != 0
+    assert "datasets" in result.output.lower()
+    # Failed before doing any rollout work or writing partial output.
+    assert not out.exists()
