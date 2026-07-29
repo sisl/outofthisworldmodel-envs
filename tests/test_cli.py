@@ -94,6 +94,19 @@ def test_summary_reports_the_episode_count_requested(tmp_path):
     assert summary["counts"]["train"]["episodes"] == 3
 
 
+def test_non_positive_num_envs_is_rejected(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "1", "--steps", "4",
+         "--policy", "dock", "--num-envs", "0", "--driver", "scan", "--no-lerobot"],
+    )
+    assert result.exit_code != 0
+    assert "num-envs" in result.output.lower()
+    # Failed before doing any rollout work or writing partial output.
+    assert not out.exists()
+
+
 def test_unknown_policy_is_rejected(tmp_path):
     result = runner.invoke(
         app,

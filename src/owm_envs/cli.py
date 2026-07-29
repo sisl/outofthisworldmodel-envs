@@ -55,6 +55,12 @@ def generate(
     if env != "iss":
         raise typer.BadParameter(f"unknown environment '{env}'; only 'iss' exists")
 
+    if num_envs < 1:
+        # Unguarded, this reaches the scan driver's horizon calculation
+        # (division by num_envs -> ZeroDivisionError) or leaves the vector
+        # driver spinning forever, since no lane ever produces an episode.
+        raise typer.BadParameter(f"--num-envs must be >= 1, got {num_envs}")
+
     if lerobot:
         # lerobot is declared only in the optional 'datasets' extra, so a
         # base install hits ModuleNotFoundError deep inside write_lerobot_split.
