@@ -124,3 +124,74 @@ def test_load_collision_boxes_missing_file_raises(tmp_path):
     # look like "no collision" at runtime. Fail loudly instead.
     with pytest.raises(FileNotFoundError):
         load_collision_boxes(str(tmp_path / "nope.yaml"))
+
+
+@pytest.mark.parametrize("mass", [0.0, -1.0, float("inf"), float("nan")])
+def test_non_positive_or_non_finite_mass_is_rejected(mass):
+    # Regression test: mass used to accept 0.0/negative, then _eom's
+    # force-over-mass division produced inf/reversed-sign acceleration on the
+    # first non-zero-force step instead of failing at config load. inf/NaN
+    # are equally meaningless as a divisor.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PhysicsConfig(mass=mass)
+
+
+@pytest.mark.parametrize(
+    "inertia_diag",
+    [
+        (0.0, 80_000.0, 50_000.0),
+        (-1.0, 80_000.0, 50_000.0),
+        (float("inf"), 80_000.0, 50_000.0),
+        (float("nan"), 80_000.0, 50_000.0),
+    ],
+)
+def test_non_positive_or_non_finite_inertia_component_is_rejected(inertia_diag):
+    # Same failure mode as mass: the angular EOM divides by each component.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PhysicsConfig(inertia_diag=inertia_diag)
+
+
+@pytest.mark.parametrize("radius", [-1.0, float("inf"), float("nan")])
+def test_negative_or_non_finite_collision_radius_is_rejected(radius):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PhysicsConfig(dragon_collision_radius_m=radius)
+
+
+@pytest.mark.parametrize("radius", [-1.0, float("inf"), float("nan")])
+def test_negative_or_non_finite_start_radius_is_rejected(radius):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PhysicsConfig(start_radius_m=radius)
+
+
+def test_zero_collision_radius_and_start_radius_are_still_allowed():
+    # These are degenerate but not physically impossible, unlike mass/inertia
+    # dividing by zero -- only negative values are meaningless for a radius.
+    PhysicsConfig(dragon_collision_radius_m=0.0, start_radius_m=0.0)
+
+
+def test_non_positive_mass_is_rejected_at_toml_load(tmp_path):
+    from pydantic import ValidationError
+
+    text = ISSConfig().to_toml().replace("mass = 12000.0", "mass = -1.0")
+    path = tmp_path / "bad.toml"
+    path.write_text(text)
+    with pytest.raises(ValidationError):
+        ISSConfig.from_toml(path)
+
+
+def test_non_positive_mass_is_rejected_at_yaml_load(tmp_path):
+    from pydantic import ValidationError
+
+    text = ISSConfig().to_yaml().replace("mass: 12000.0", "mass: -1.0")
+    path = tmp_path / "bad.yaml"
+    path.write_text(text)
+    with pytest.raises(ValidationError):
+        ISSConfig.from_yaml(path)

@@ -9,12 +9,13 @@ written next to the dataset it produced as an as-run record.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import yaml
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
 
@@ -29,19 +30,38 @@ DEFAULT_COLLISION_BOXES = "default"
 class PhysicsConfig(ConfigModel):
     """Chaser mass properties, damping, and collision geometry."""
 
-    mass: float = 12_000.0
+    # Strictly positive and finite: _eom divides force/torque by mass and
+    # inertia, so a non-positive or non-finite value produces inf/NaN/
+    # reversed-sign accelerations rather than a load error.
+    mass: float = Field(default=12_000.0, gt=0, allow_inf_nan=False)
     inertia_diag: tuple[float, float, float] = (80_000.0, 80_000.0, 50_000.0)
     linear_damping: float = 0.005
     angular_damping: float = 0.02
 
-    dragon_collision_radius_m: float = 2.25
-    start_radius_m: float = 100.0
+    # Radii, not divisors -- a negative value is geometrically meaningless
+    # (it would shrink the collision box or flip the start position to the
+    # far side of the sphere) but zero is a valid degenerate case. Still
+    # excludes inf/NaN, which are as meaningless here as they are for mass.
+    dragon_collision_radius_m: float = Field(default=2.25, ge=0, allow_inf_nan=False)
+    start_radius_m: float = Field(default=100.0, ge=0, allow_inf_nan=False)
 
     # A path to a YAML file, an already-loaded list of box dicts (useful in
     # tests), DEFAULT_COLLISION_BOXES to use the 318-box ISS geometry shipped
     # with this package (the default), or None to opt out of collision
     # geometry entirely.
     collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES
+
+    @field_validator("inertia_diag")
+    @classmethod
+    def _inertia_diag_is_positive(
+        cls, value: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        # The angular equation of motion divides by each component; a
+        # non-positive or non-finite moment of inertia produces inf/NaN/
+        # reversed-sign angular acceleration rather than a load error.
+        if any(not math.isfinite(component) or component <= 0 for component in value):
+            raise ValueError("inertia_diag components must be finite and positive")
+        return value
 
 
 class ControlConfig(ConfigModel):
