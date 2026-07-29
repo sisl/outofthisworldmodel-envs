@@ -210,6 +210,7 @@ class ISSRenderer:
     def __init__(self, cfg: RenderConfig) -> None:
         self.cfg = cfg
         self._iss_scene = ISSScene(cfg)
+        self._closed = False
 
         self.show_force_arrows = False
         self.show_torque_rings = False
@@ -236,6 +237,9 @@ class ISSRenderer:
         action: np.ndarray | None = None,
         view: ViewName = "DRAGON_ISO",
     ) -> np.ndarray:
+        if self._closed:
+            raise RuntimeError("renderer is closed")
+
         all_views = _build_views(self.cfg, state)
         if view not in all_views:
             raise ValueError(f"unknown view {view!r}; expected one of {sorted(all_views)}")
@@ -270,6 +274,7 @@ class ISSRenderer:
         self._torque_rings = None
         self._iss_scene = None
         self._renderer = None
+        self._closed = True
 
     # -- debug overlays -----------------------------------------------------
 

@@ -57,7 +57,7 @@ def test_update_applies_the_state_attitude(scene):
 def test_update_accepts_a_13d_state_not_14d(scene):
     # This port's state convention is 13D, not the 14D layout used elsewhere.
     scene.update(np.zeros(13, dtype=np.float32))
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="13-element state"):
         scene.update(np.zeros(9, dtype=np.float32))
 
 
@@ -70,9 +70,19 @@ def test_render_config_round_trips_through_toml(tmp_path):
 
 def test_no_reference_to_the_missing_bump_texture():
     # No bump/normal-map source exists for this asset set; the code path
-    # must be gone entirely, not merely disabled.
-    import owm_envs.render.iss_scene as module
+    # must be gone entirely, not merely disabled. Checks every module in the
+    # render package, not just this one -- a reference left in a sibling
+    # module would otherwise go uncaught.
+    import pkgutil
 
-    source = open(module.__file__).read()
-    assert "Bump" not in source
-    assert "EarthColorMap-80k" not in source
+    import owm_envs.render as render_package
+    import owm_envs.render.iss_scene as scene_module
+
+    for module_info in pkgutil.walk_packages(render_package.__path__, prefix="owm_envs.render."):
+        module = __import__(module_info.name, fromlist=["_"])
+        if not hasattr(module, "__file__") or module.__file__ is None:
+            continue
+        source = open(module.__file__).read()
+        assert "bump" not in source.lower(), f"{module_info.name} still references bump"
+
+    assert "EarthColorMap-80k" not in open(scene_module.__file__).read()

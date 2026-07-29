@@ -21,9 +21,19 @@ def renderer():
     r.close()
 
 
-def test_renders_an_rgb_array_of_the_configured_size(renderer):
-    frame = renderer.render(a_state())
-    assert frame.ndim == 3 and frame.shape[2] == 3
+@pytest.fixture(scope="module")
+def nonsquare_renderer():
+    r = ISSRenderer(RenderConfig(image_width=160, image_height=96))
+    yield r
+    r.close()
+
+
+def test_renders_an_rgb_array_of_the_configured_size(nonsquare_renderer):
+    # Non-square dimensions pin height/width ordering, not just total pixel
+    # count -- a stray `pixel_ratio` left at its pygfx default of 2 (see
+    # renderer.py) would double both axes and still pass a square-only check.
+    frame = nonsquare_renderer.render(a_state())
+    assert frame.shape == (96, 160, 3)
     assert frame.dtype == np.uint8
 
 
@@ -33,12 +43,17 @@ def test_every_view_renders(renderer, view):
     assert frame.shape[2] == 3
 
 
-@pytest.mark.parametrize("view", VIEWS)
-def test_every_view_produces_a_non_blank_frame(renderer, view):
-    # A view pointed at nothing renders pure black. That is the failure mode a
-    # shape-only assertion misses entirely.
-    frame = renderer.render(a_state(), view=view)
-    assert int((frame.sum(axis=-1) > 10).sum()) > 100, f"{view} rendered a blank frame"
+def test_views_are_pairwise_distinct(renderer):
+    # A uniform grey wash -- e.g. every view pointed at nothing -- would pass
+    # a "some pixels are non-black" check while still being visually useless.
+    # Requiring every pair of the six views to actually differ catches that;
+    # verified directly that the minimum pairwise mean-absolute difference
+    # across the six views is 4.4, well above noise.
+    frames = {view: renderer.render(a_state(), view=view) for view in VIEWS}
+    for i, a in enumerate(VIEWS):
+        for b in VIEWS[i + 1 :]:
+            diff = np.abs(frames[a].astype(np.int16) - frames[b].astype(np.int16)).mean()
+            assert diff > 1.0, f"{a} and {b} rendered near-identical frames (diff={diff})"
 
 
 def test_different_states_produce_different_frames(renderer):
@@ -55,3 +70,12 @@ def test_unknown_view_raises(renderer):
 def test_views_returns_all_six_placements(renderer):
     views = renderer.views(a_state())
     assert set(views) == set(VIEWS)
+
+
+def test_render_after_close_raises_runtime_error():
+    # A closed renderer must fail with a clear, actionable error rather than
+    # an AttributeError from internally nulled-out state.
+    r = ISSRenderer(RenderConfig(image_width=64, image_height=64))
+    r.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        r.render(a_state())
