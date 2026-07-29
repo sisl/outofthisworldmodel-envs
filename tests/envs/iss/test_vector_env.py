@@ -228,3 +228,12 @@ def test_per_env_seed_list_wrong_length_raises():
     env = ISSVectorEnv(num_envs=3, cfg=ISSConfig())
     with pytest.raises(ValueError, match="3"):
         env.reset(seed=[1, 2])
+
+
+def test_unseeded_resets_differ_across_instances():
+    # Regression test: an unseeded reset() used to initialise the persistent
+    # key to the constant PRNGKey(0), making every unseeded env deterministic
+    # and identical -- violating Gymnasium's unseeded-reset contract.
+    a, _ = ISSVectorEnv(num_envs=4).reset()
+    b, _ = ISSVectorEnv(num_envs=4).reset()
+    assert not np.allclose(a, b)

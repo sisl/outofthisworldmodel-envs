@@ -10,6 +10,7 @@ that returns its reset observation with reward 0 and both flags false.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import Sequence
 from typing import Any
 
@@ -63,7 +64,10 @@ class ISSVectorEnv(VectorEnv):
             if seed is not None:
                 self._key = jax.random.PRNGKey(seed)
             if self._key is None:
-                self._key = jax.random.PRNGKey(0)
+                # Never explicitly seeded: draw from system entropy so an
+                # unseeded reset() is actually random, per Gymnasium's
+                # contract, instead of always replaying the same trajectory.
+                self._key = jax.random.PRNGKey(secrets.randbits(32))
 
             self._key, subkey = jax.random.split(self._key)
             reset_keys = jax.random.split(subkey, self.num_envs)
