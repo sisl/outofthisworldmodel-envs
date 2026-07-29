@@ -1,3 +1,4 @@
+import jax
 import numpy as np
 import pytest
 
@@ -193,3 +194,37 @@ def test_truncation_timing_restarts_after_autoreset():
 def test_autoreset_mode_is_declared_in_metadata():
     env = ISSVectorEnv(num_envs=2)
     assert "autoreset_mode" in env.metadata
+
+
+def test_integer_seed_path_is_unchanged():
+    # Regression guard: the per-env seed list handling must not perturb the
+    # existing integer-seed derivation that other reproducibility tests rely on.
+    env = ISSVectorEnv(num_envs=4, cfg=ISSConfig())
+    obs, _ = env.reset(seed=11)
+
+    expected_key, expected_subkey = jax.random.split(jax.random.PRNGKey(11))
+    expected_states = env._batched_reset(jax.random.split(expected_subkey, 4))
+    np.testing.assert_allclose(obs, np.asarray(expected_states, dtype=np.float32))
+    np.testing.assert_array_equal(np.asarray(env._key), np.asarray(expected_key))
+
+
+def test_per_env_seed_list_produces_correctly_shaped_reproducible_states():
+    env = ISSVectorEnv(num_envs=3, cfg=ISSConfig())
+    obs, info = env.reset(seed=[1, 2, 3])
+    assert obs.shape == (3, 13)
+    assert obs.dtype == np.float32
+    assert info["success"].shape == (3,)
+
+    obs2, _ = ISSVectorEnv(num_envs=3, cfg=ISSConfig()).reset(seed=[1, 2, 3])
+    np.testing.assert_allclose(obs, obs2)
+
+
+def test_per_env_seed_list_gives_different_lanes_different_states_for_different_seeds():
+    obs, _ = ISSVectorEnv(num_envs=2, cfg=ISSConfig()).reset(seed=[1, 2])
+    assert not np.allclose(obs[0], obs[1])
+
+
+def test_per_env_seed_list_wrong_length_raises():
+    env = ISSVectorEnv(num_envs=3, cfg=ISSConfig())
+    with pytest.raises(ValueError, match="3"):
+        env.reset(seed=[1, 2])

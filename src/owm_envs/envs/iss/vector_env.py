@@ -10,6 +10,7 @@ that returns its reset observation with reward 0 and both flags false.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import jax
@@ -53,15 +54,37 @@ class ISSVectorEnv(VectorEnv):
         )
 
     def reset(
-        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+        self,
+        *,
+        seed: int | Sequence[int] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
-        if seed is not None:
-            self._key = jax.random.PRNGKey(seed)
-        if self._key is None:
-            self._key = jax.random.PRNGKey(0)
+        if seed is None or isinstance(seed, int):
+            if seed is not None:
+                self._key = jax.random.PRNGKey(seed)
+            if self._key is None:
+                self._key = jax.random.PRNGKey(0)
 
-        self._key, subkey = jax.random.split(self._key)
-        self._states = self._batched_reset(jax.random.split(subkey, self.num_envs))
+            self._key, subkey = jax.random.split(self._key)
+            reset_keys = jax.random.split(subkey, self.num_envs)
+        else:
+            # Gymnasium's per-environment seeding: one seed per sub-env,
+            # e.g. reset(seed=[seed0, seed1, ...]).
+            seeds = list(seed)
+            if len(seeds) != self.num_envs:
+                raise ValueError(
+                    f"seed list length ({len(seeds)}) must equal num_envs "
+                    f"({self.num_envs})"
+                )
+            reset_keys = jnp.stack([jax.random.PRNGKey(s) for s in seeds])
+            # Fold every seed into a base key so subsequent autoresets stay
+            # deterministic and depend on the whole seed list, not just seeds[0].
+            key = jax.random.PRNGKey(0)
+            for s in seeds:
+                key = jax.random.fold_in(key, s)
+            self._key = key
+
+        self._states = self._batched_reset(reset_keys)
         self._step_index[:] = 0
         self._needs_reset[:] = False
         return self._obs(), self._empty_info()
