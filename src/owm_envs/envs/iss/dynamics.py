@@ -1,12 +1,9 @@
 """ISS-centered free-flyer dynamics for a Dragon chaser.
 
-Ported from seamstress branch iss2,
-src/seamstress/dynamics/international_space_station.py.
-
-State (13D) -- note this is 13, not seamstress's 14. The absorbing terminal flag
-that lived at index 13 is NOT part of the state here; `step` returns it as
-`Events` instead, so that collision and dock-success stay distinguishable and
-the Gymnasium adapters can map them onto terminated/truncated/info.
+State (13D). Per-step outcomes (collision, dock success) are deliberately
+NOT folded into the state as an absorbing terminal flag; `step` returns them
+as `Events` instead, so that collision and dock-success stay distinguishable
+and the Gymnasium adapters can map them onto terminated/truncated/info.
 
   0..2   relative position to ISS, world frame [m]
   3..5   relative velocity, world frame [m/s]

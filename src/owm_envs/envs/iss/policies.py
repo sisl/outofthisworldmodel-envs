@@ -1,9 +1,5 @@
 """Scripted JAX policies for ISS dataset generation.
 
-Ported from seamstress branch iss2, src/seamstress/policies/iss_policies.py.
-The PD control maths is unchanged; only configuration access differs (explicit
-Pydantic models here, Hydra config tree there).
-
 Each builder returns (policy_fn, extras_fn):
   policy_fn(state, key, extras) -> action (6,)
   extras_fn(key)                -> per-episode hyperparameters, sampled at reset
@@ -57,9 +53,9 @@ class PolicyConfig(ConfigModel):
     """Policy settings. A ConfigModel like ISSConfig so the policy that shaped
     a dataset is part of its as-run record, not just the environment physics."""
 
-    # Which policy make_policy builds. Default matches seamstress's
-    # manifold.policy.type default. Invalid values are rejected here, at
-    # config-load time, rather than inside make_policy at rollout time.
+    # Which policy make_policy builds. Defaults to "random". Invalid values
+    # are rejected here, at config-load time, rather than inside make_policy
+    # at rollout time.
     type: Literal["random", "orbit", "dock", "union"] = "random"
     orbit: OrbitParams = Field(default_factory=OrbitParams)
     dock: DockParams = Field(default_factory=DockParams)

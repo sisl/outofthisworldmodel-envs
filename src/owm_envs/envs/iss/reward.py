@@ -1,26 +1,25 @@
 """ISS reward.
 
-Ported from seamstress branch iss2, src/seamstress/rewards/international_space_station.py.
+This is a per-step reward, not a trajectory-level cost: each term is computed
+pointwise from a single (state, action) pair and the five terms are summed
+into one scalar. An MPPI-style cost function instead takes (N, H, Ds) states
+and (N, H, Da) actions and averages each term over a horizon H, but Gymnasium
+expects a per-step scalar; the discounted sum of per-step rewards over an
+episode takes the place of that horizon average.
 
-The seamstress original is a CompositeReward over five trajectory-level terms:
-each takes (N, H, Ds) states and (N, H, Da) actions and returns (N,), averaging
-over the horizon -- an MPPI cost function. Gymnasium needs a per-step scalar, so
-this port drops the mean-over-horizon and computes each term pointwise. The
-discounted sum of per-step rewards takes the place of the horizon mean.
+The distance terms compute sum(diff**2) -- a summed squared difference, not a
+Euclidean norm. This is deliberate: it keeps every term a simple quadratic,
+differentiable everywhere including at zero error, and on a comparable scale
+to the other quadratic penalty terms below.
 
-Note that seamstress's distance_type="euclidean" computes sum(diff**2) -- a
-summed squared difference, not a Euclidean norm, despite the name. That
-behaviour is preserved here.
-
-One term formula does diverge: seamstress's reward.goal is the all-zero state
-(conf/control/control_international_space_station.yaml), so its position term
-targets the ISS origin. This port instead targets `cfg.dock.position`, ~24.6 m
-away. That divergence is deliberate, not an oversight -- this is a docking
-task, and pulling the chaser toward the ISS origin would reward it for
-approaching the very structure the collision term penalises it for hitting;
-indeed, the origin sits inside the station's collision hull while the dock
-position does not. `cfg.reward_goal_position` can override the target back to
-the origin (or elsewhere) for callers who deliberately want that behaviour.
+The position term targets `cfg.dock.position`, ~24.6 m from the ISS origin,
+rather than the origin itself. That is deliberate, not an oversight -- this
+is a docking task, and pulling the chaser toward the ISS origin would reward
+it for approaching the very structure the collision term penalises it for
+hitting; indeed, the origin sits inside the station's collision hull while
+the dock position does not. `cfg.reward_goal_position` can override the
+target to the origin (or elsewhere) for callers who deliberately want that
+trade-off.
 """
 
 from __future__ import annotations

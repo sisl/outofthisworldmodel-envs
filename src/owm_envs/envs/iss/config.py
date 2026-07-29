@@ -1,8 +1,6 @@
 """ISS environment configuration.
 
-Frozen Pydantic models replacing seamstress's Hydra YAML. Values are carried
-from seamstress branch iss2,
-conf/environments/environment_international_space_station.yaml.
+Frozen Pydantic models for the ISS docking environment.
 
 These round-trip through YAML/TOML (see core.models.ConfigModel) so a specific
 experiment's settings can be committed under configs/ as a versioned input and
@@ -74,7 +72,7 @@ class DockConfig(ConfigModel):
 
 
 class RewardWeights(ConfigModel):
-    """Penalty weights for the five reward terms. Carried from seamstress iss2.
+    """Penalty weights for the five reward terms.
 
     Negative so that `iss_reward` is a plain weighted sum of these against
     non-negative error terms -- no separate negation needed at the call site.
@@ -95,7 +93,7 @@ class RewardWeights(ConfigModel):
 class ISSConfig(ConfigModel):
     dt: float = 0.05
     # 2000 * 0.05 = 100 s. Past this the Earth-rotation texture sampling in the
-    # renderer visibly glitches, so iss2 caps episodes here.
+    # renderer visibly glitches, so episodes are capped here.
     max_steps: int = 2000
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
@@ -105,13 +103,13 @@ class ISSConfig(ConfigModel):
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     # Overrides the reward's position-error target. When None (default),
     # iss_reward measures distance to `dock.position`, as it should for a
-    # docking task. Seamstress's own control config instead sets the reward
-    # goal to the ISS origin [0, 0, 0] -- but that point is INSIDE the
-    # station's collision hull (dock.position, ~24.63 m away, is not), so
-    # seamstress's MPPI was being pulled toward a position it can never reach
-    # without incurring the -1e6 collision penalty. This field exists to
-    # deliberately reproduce that seamstress behaviour, or to target some
-    # other point -- not because the origin is a sensible target.
+    # docking task. The ISS origin [0, 0, 0] is INSIDE the station's
+    # collision hull (dock.position, ~24.63 m away, is not), so setting this
+    # field to the origin would pull a controller toward a position it can
+    # never reach without incurring the -1e6 collision penalty. This field
+    # exists to deliberately target the origin (or some other point) for
+    # callers who want that trade-off -- not because the origin is a
+    # sensible target.
     reward_goal_position: tuple[float, float, float] | None = None
 
 

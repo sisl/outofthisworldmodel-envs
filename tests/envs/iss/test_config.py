@@ -11,14 +11,14 @@ from owm_envs.envs.iss.config import (
 )
 
 
-def test_default_config_matches_iss2_values():
+def test_default_config_matches_expected_values():
     cfg = ISSConfig()
     assert cfg.dt == 0.05
     assert cfg.max_steps == 2000
     assert cfg.physics.mass == 12000.0
     assert cfg.physics.inertia_diag == (80000.0, 80000.0, 50000.0)
     assert cfg.physics.start_radius_m == 100.0
-    # 9x actuator limits from iss2 -- deliberately unphysical, a dataset-variety knob.
+    # 9x actuator limits -- deliberately unphysical, a dataset-variety knob.
     assert cfg.control.limit_force_n == 18000.0
     assert cfg.control.limit_torque_nm == 90000.0
     assert cfg.dock.enabled is True
@@ -120,7 +120,7 @@ def test_load_collision_boxes_none_gives_empty_arrays():
 
 
 def test_load_collision_boxes_missing_file_raises(tmp_path):
-    # seamstress warned and silently returned an empty set, which makes a
-    # misconfigured path look like "no collision" at runtime. Fail loudly instead.
+    # Silently returning an empty set here would make a misconfigured path
+    # look like "no collision" at runtime. Fail loudly instead.
     with pytest.raises(FileNotFoundError):
         load_collision_boxes(str(tmp_path / "nope.yaml"))

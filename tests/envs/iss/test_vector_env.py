@@ -53,8 +53,8 @@ def test_batched_step_matches_independent_single_envs():
     """The vector env must be numerically identical to N single envs.
 
     This is the guard against the batched path silently diverging from the
-    single-env path -- the failure mode seamstress has, where done-logic is
-    implemented twice.
+    single-env path -- a real risk whenever done-logic is implemented twice
+    and the two copies can drift apart.
     """
     cfg = ISSConfig(**FREE_FLIGHT)
     n = 4
