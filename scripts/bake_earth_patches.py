@@ -22,7 +22,9 @@ Image.MAX_IMAGE_PIXELS = None
 PATCH_SIZE = 8192
 JPEG_QUALITY = 92
 
-# Matches seamstress's configured patch centre and angle.
+# This package's configured patch centre and angle -- the region of Earth
+# visible from the ISS's simulated orbit, and the angular width/height of the
+# crop taken around it.
 DEFAULT_LON = -122.1697
 DEFAULT_LAT = 37.4275
 DEFAULT_ANGLE = 50.0
