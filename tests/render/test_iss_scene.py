@@ -33,13 +33,25 @@ def test_update_moves_the_dragon_to_the_state_position(scene):
 
 
 def test_update_applies_the_state_attitude(scene):
-    # 90 deg about z: q = [cos45, 0, 0, sin45]. The dragon's rotation must change.
-    scene.update(state_at((0.0, 0.0, 0.0)))
-    identity = np.asarray(scene.dragon.local.rotation_matrix).copy()
+    # 90 deg about z: q = [cos45, 0, 0, sin45].
+    # Body +x must map to world [0, 1, 0], and body +y to world [-1, 0, 0].
+    #
+    # This pins the actual rotation direction rather than merely checking
+    # that the matrix "changed", because quat_to_rotmat (owm_envs.core.
+    # quaternion) deliberately transposes astrojax's rotation matrix to turn
+    # its reference->body DCM convention into the body->world active-
+    # rotation sense this scene needs. If that transpose were dropped, the
+    # capsule would rotate the wrong way in every frame -- body +x would map
+    # to world [0, -1, 0] instead -- and a "did it change" assertion would
+    # not catch it, but this one does.
     s = float(np.sin(np.pi / 4))
-    scene.update(state_at((0.0, 0.0, 0.0), quat=(float(np.cos(np.pi / 4)), 0.0, 0.0, s)))
-    rotated = np.asarray(scene.dragon.local.rotation_matrix)
-    assert not np.allclose(identity, rotated, atol=1e-3)
+    c = float(np.cos(np.pi / 4))
+    scene.update(state_at((0.0, 0.0, 0.0), quat=(c, 0.0, 0.0, s)))
+    rotation = np.asarray(scene.dragon.local.rotation_matrix)[:3, :3]
+    body_x_in_world = rotation @ np.array([1.0, 0.0, 0.0])
+    body_y_in_world = rotation @ np.array([0.0, 1.0, 0.0])
+    np.testing.assert_allclose(body_x_in_world, [0.0, 1.0, 0.0], atol=1e-3)
+    np.testing.assert_allclose(body_y_in_world, [-1.0, 0.0, 0.0], atol=1e-3)
 
 
 def test_update_accepts_a_13d_state_not_14d(scene):

@@ -12,23 +12,33 @@ def test_baked_patch_resolves_without_network(kind):
     assert path.exists()
 
 
-def test_download_failure_falls_back_to_the_baked_patch(monkeypatch):
+def test_download_failure_falls_back_to_the_baked_patch(monkeypatch, tmp_path):
     # The configured mirror currently returns HTTP 403 (account cap exceeded),
     # so this is the path that actually executes today. It must not raise.
+    #
+    # _source_dir is monkeypatched to an empty tmp_path so this test doesn't
+    # depend on the real resources/earth/sources/ directory being empty: if a
+    # maintainer ever successfully downloads a high-res source locally,
+    # _ensure_earth_source would return early and the warning this test
+    # expects would never fire.
     def boom(*args, **kwargs):
         raise OSError("simulated 403: cap exceeded")
 
     monkeypatch.setattr("urllib.request.urlretrieve", boom)
+    monkeypatch.setattr("owm_envs.render.earth._source_dir", lambda: tmp_path)
     with pytest.warns(UserWarning, match="baked Earth patch"):
         path = earth_texture_path("color", allow_download=True)
     assert path.exists()
 
 
-def test_downloader_returns_none_on_failure_rather_than_raising(monkeypatch):
+def test_downloader_returns_none_on_failure_rather_than_raising(monkeypatch, tmp_path):
+    # See test_download_failure_falls_back_to_the_baked_patch above for why
+    # _source_dir must be monkeypatched here too.
     def boom(*args, **kwargs):
         raise OSError("network unreachable")
 
     monkeypatch.setattr("urllib.request.urlretrieve", boom)
+    monkeypatch.setattr("owm_envs.render.earth._source_dir", lambda: tmp_path)
     with pytest.warns(UserWarning):
         assert _ensure_earth_source("EarthColorMap-80k.tif") is None
 
