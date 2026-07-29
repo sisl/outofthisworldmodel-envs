@@ -1,0 +1,3 @@
+src/owm_envs/render/resources/**/*.glb filter=lfs diff=lfs merge=lfs -text
+src/owm_envs/render/resources/**/*.tif filter=lfs diff=lfs merge=lfs -text
+src/owm_envs/render/resources/**/*.jpg filter=lfs diff=lfs merge=lfs -text

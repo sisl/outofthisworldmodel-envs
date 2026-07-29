@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow"]
+render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow", "trimesh"]
 # Bounded below 0.5: datasets/lerobot_writer.py targets the 0.4.x API and
 # depends on version-specific behaviour of create(), the feature schema, and
 # add_frame -- including the (1, 1) feature shapes, which are a workaround for
