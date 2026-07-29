@@ -85,6 +85,19 @@ def test_rejects_a_non_positive_episode_count():
         make_driver().generate(RolloutSpec(num_episodes=0, max_steps=10, seed=0))
 
 
+@pytest.mark.parametrize("num_envs", [0, -1])
+def test_rejects_a_non_positive_lane_count(num_envs):
+    with pytest.raises(ValueError, match=str(num_envs)):
+        make_driver(num_envs=num_envs)
+
+
+def test_lane_count_error_reports_the_raw_input():
+    # -0.5 converts to 0 via int(); the message must still name -0.5, the
+    # value actually received, not the post-conversion value.
+    with pytest.raises(ValueError, match=r"-0\.5"):
+        make_driver(num_envs=-0.5)
+
+
 def test_segmentation_spreads_truncated_episodes_across_every_lane(monkeypatch):
     # Reported case: 10 episodes over 8 lanes, free flight so every lane
     # truncates at the same global step. Lane-major segmentation (the old

@@ -38,6 +38,11 @@ def supports_fused_rollout(backend: object) -> bool:
 
 class ScanDriver:
     def __init__(self, cfg: ISSConfig, policy_cfg: PolicyConfig, num_envs: int = 8):
+        if int(num_envs) < 1:
+            # A non-positive lane count would otherwise reach the horizon
+            # calculation below (division by num_envs -> ZeroDivisionError)
+            # or produce invalid JAX shapes for negatives.
+            raise ValueError(f"num_envs must be >= 1, got {num_envs}")
         self.cfg = cfg
         self.policy_cfg = policy_cfg
         self.num_envs = int(num_envs)
