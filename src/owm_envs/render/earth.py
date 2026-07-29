@@ -3,15 +3,14 @@
 Three-tier strategy:
 1. A locally-baked or committed patch exists -- return it. This is the
    default and needs no network.
-2. A high-resolution source is present on disk -- bake from it (reusing
-   scripts/bake_earth_patches.py's crop logic).
+2. A high-resolution source is present on disk -- bake from it (via
+   `owm_envs.render.bake`).
 3. If `allow_download` is set, try the mirror; on ANY failure fall back to
    tier 1.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import urllib.request
 import warnings
 from pathlib import Path
@@ -37,15 +36,6 @@ def _source_dir() -> Path:
     return resources_dir() / "earth" / "sources"
 
 
-def _load_bake_patch():
-    """Import `bake_patch` from the standalone scripts/bake_earth_patches.py utility."""
-    script_path = Path(__file__).resolve().parents[3] / "scripts" / "bake_earth_patches.py"
-    spec = importlib.util.spec_from_file_location("_owm_bake_earth_patches", script_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.bake_patch, module.DEFAULT_LON, module.DEFAULT_LAT, module.DEFAULT_ANGLE
-
-
 def _bake_patch(kind: TextureKind) -> Path | None:
     """Tier 2: bake a fresh patch from a high-resolution source on disk, if present."""
     source_dir = _source_dir()
@@ -61,9 +51,10 @@ def _bake_patch(kind: TextureKind) -> Path | None:
             )
         return None
 
-    bake_patch, lon, lat, angle = _load_bake_patch()
+    from owm_envs.render.bake import DEFAULT_ANGLE, DEFAULT_LAT, DEFAULT_LON, bake_patch
+
     output = _patches_dir() / f"earth_{kind}_patch.jpg"
-    bake_patch(source, output, lon, lat, angle)
+    bake_patch(source, output, DEFAULT_LON, DEFAULT_LAT, DEFAULT_ANGLE)
     return output
 
 
