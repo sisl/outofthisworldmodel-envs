@@ -126,9 +126,17 @@ class VectorEnvDriver:
         while len(finished) < spec.num_episodes:
             actions = np.zeros((num_envs, act_dim), dtype=np.float32)
             for lane in range(num_envs):
-                if lane_frozen[lane]:
+                if lane_frozen[lane] or lane_awaiting_reset[lane]:
                     # No-op: the batched step() call needs an action for
-                    # every lane, but this lane's result is discarded below.
+                    # every lane, but this lane's result is discarded below
+                    # (frozen) or thrown away by NEXT_STEP autoreset
+                    # (awaiting reset). Skip the policy call entirely rather
+                    # than just discarding its output -- `obs[lane]` here is
+                    # still the terminal observation of the episode that just
+                    # ended, while `lane_episode_state[lane]` already belongs
+                    # to the next one, so invoking the policy would consume
+                    # or mutate a stateful policy's internal state on behalf
+                    # of the wrong episode.
                     actions[lane] = zero_action
                     continue
                 actions[lane] = np.asarray(

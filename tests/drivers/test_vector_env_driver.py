@@ -336,3 +336,136 @@ def test_driver_works_with_a_non_iss_non_jax_policy_source():
         np.testing.assert_array_equal(
             batch.actions[i, : length - 1], np.tile(action, (length - 1, 1))
         )
+
+
+class _AutoresetFakeVectorEnv:
+    """Two-lane fake env that implements Gymnasium NEXT_STEP autoreset
+    faithfully: whichever lane terminated on the previous step() call gets
+    its submitted action ignored on the next one, and that call's next_obs
+    for the lane is a fresh reset observation instead. Observations encode
+    (lane, episode index, step-within-episode) as a single float so a test
+    can decode, from the observation alone and with no lane argument on
+    `act()`, exactly which lane/episode/step a policy call was for. No JAX,
+    no ISS type, anywhere in it -- this must stay importable by
+    test_module_does_not_import_jax."""
+
+    num_envs = 2
+
+    class _Space:
+        shape = (1,)
+        low = np.array([-1.0], dtype=np.float32)
+        high = np.array([1.0], dtype=np.float32)
+
+    single_observation_space = _Space()
+    single_action_space = _Space()
+
+    def __init__(self, terminate_every: list[int]):
+        self._terminate_every = terminate_every
+        self._episode_id = [0] * self.num_envs
+        self._step_in_episode = [0] * self.num_envs
+        self._pending_reset = [False] * self.num_envs
+        self.step_calls = 0
+        # pending_history[i]: the pending_reset flags as they stood right
+        # before the i-th call to step() -- i.e. for each lane, whether the
+        # action submitted to that call was doomed to be discarded by
+        # autoreset.
+        self.pending_history: list[list[bool]] = []
+
+    def _obs(self):
+        return np.array(
+            [
+                [lane * 100_000 + self._episode_id[lane] * 100 + self._step_in_episode[lane]]
+                for lane in range(self.num_envs)
+            ],
+            dtype=np.float32,
+        )
+
+    def reset(self, seed=None):
+        del seed
+        self._step_in_episode = [0] * self.num_envs
+        self._pending_reset = [False] * self.num_envs
+        return self._obs(), {}
+
+    def step(self, actions):
+        del actions
+        self.pending_history.append(list(self._pending_reset))
+        self.step_calls += 1
+        terminations = np.zeros((self.num_envs,), dtype=bool)
+        truncations = np.zeros((self.num_envs,), dtype=bool)
+        for lane in range(self.num_envs):
+            if self._pending_reset[lane]:
+                # The autoreset step: ignore the submitted action, hand back
+                # a fresh episode's start state.
+                self._pending_reset[lane] = False
+                self._episode_id[lane] += 1
+                self._step_in_episode[lane] = 0
+                continue
+            self._step_in_episode[lane] += 1
+            if self._step_in_episode[lane] >= self._terminate_every[lane]:
+                terminations[lane] = True
+                self._pending_reset[lane] = True
+        rewards = np.zeros((self.num_envs,), dtype=np.float32)
+        return self._obs(), rewards, terminations, truncations, {}
+
+    def close(self):
+        pass
+
+
+class _CountingPolicySource:
+    """Records every `act()` call as (iteration, lane, episode_id,
+    step_in_episode), decoded from the observation encoding above -- no
+    lane argument exists on `act()`, so this is the only way to see which
+    lane a call was really for."""
+
+    records_policy_ids = False
+
+    def __init__(self, env: _AutoresetFakeVectorEnv):
+        self._env = env
+        self.calls: list[tuple[int, int, int, int]] = []
+
+    def new_episode(self, seed):
+        del seed
+        return None
+
+    def act(self, observation, episode_state, step):
+        del episode_state, step
+        # `env.step_calls` at call time is exactly the index this call's
+        # action will target when step() next runs -- pending_history will
+        # be appended at that same index.
+        code = int(observation[0])
+        lane, remainder = divmod(code, 100_000)
+        episode_id, step_in_episode = divmod(remainder, 100)
+        self.calls.append((self._env.step_calls, lane, episode_id, step_in_episode))
+        return np.zeros((1,), dtype=np.float32)
+
+    def policy_id(self, episode_state):
+        del episode_state
+        return 0
+
+
+def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
+    # Regression test for the P2 finding: under NEXT_STEP autoreset, the
+    # step() call following a lane's termination discards whatever action
+    # was submitted for it -- so calling policy_source.act() for that lane
+    # is pointless at best. It's actively wrong for a stateful policy source
+    # (an OU noise process, an RNN hidden state, anything with an internal
+    # counter): that call would consume or mutate state on behalf of the
+    # lane's *next* episode using its terminal observation from the
+    # *previous* one. A pure output-array check can't see this -- the
+    # discarded action never reaches the recorded trajectory -- so this
+    # asserts directly on the call pattern instead.
+    env = _AutoresetFakeVectorEnv(terminate_every=[2, 3])
+    policy_source = _CountingPolicySource(env)
+    driver = VectorEnvDriver(env_factory=lambda: env, policy_source=policy_source)
+
+    batch = driver.generate(RolloutSpec(num_episodes=6, max_steps=100, seed=0))
+    batch.validate()
+
+    assert policy_source.calls, "sanity check: the policy source was never invoked"
+    for iteration, lane, episode_id, step_in_episode in policy_source.calls:
+        assert not env.pending_history[iteration][lane], (
+            f"act() was called for lane {lane} (episode {episode_id}, "
+            f"step {step_in_episode}) on iteration {iteration}, which was "
+            f"that lane's autoreset step -- the action is discarded and "
+            f"the call used the wrong episode's state"
+        )
