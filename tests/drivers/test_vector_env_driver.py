@@ -208,6 +208,117 @@ def test_module_does_not_import_jax():
     assert result.stdout.strip() == "False", result.stderr
 
 
+class _FakeVectorEnv:
+    """Minimal Gymnasium-VectorEnv-shaped stand-in that just records whether
+    `close()` was called -- no JAX, no ISS type, anywhere in it, so it can't
+    trip test_module_does_not_import_jax."""
+
+    num_envs = 1
+
+    class _Space:
+        shape = (1,)
+        low = np.array([-1.0], dtype=np.float32)
+        high = np.array([1.0], dtype=np.float32)
+
+    single_observation_space = _Space()
+    single_action_space = _Space()
+
+    def __init__(
+        self,
+        fail_on_step: bool = False,
+        fail_on_close: bool = False,
+        step_exception: BaseException | None = None,
+    ):
+        self._fail_on_step = fail_on_step
+        self._fail_on_close = fail_on_close
+        self._step_exception = step_exception
+        self.closed = False
+        self.close_calls = 0
+
+    def reset(self, seed=None):
+        del seed
+        return np.zeros((self.num_envs, 1), dtype=np.float32), {}
+
+    def step(self, actions):
+        del actions
+        if self._step_exception is not None:
+            raise self._step_exception
+        if self._fail_on_step:
+            raise RuntimeError("boom")
+        obs = np.zeros((self.num_envs, 1), dtype=np.float32)
+        rewards = np.zeros((self.num_envs,), dtype=np.float32)
+        terminations = np.zeros((self.num_envs,), dtype=bool)
+        truncations = np.ones((self.num_envs,), dtype=bool)
+        return obs, rewards, terminations, truncations, {}
+
+    def close(self):
+        self.close_calls += 1
+        self.closed = True
+        if self._fail_on_close:
+            raise RuntimeError("close failed")
+
+
+def test_env_is_closed_after_a_successful_generate():
+    env = _FakeVectorEnv()
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    assert env.closed is True
+    assert env.close_calls == 1
+
+
+def test_env_is_closed_when_the_rollout_raises():
+    env = _FakeVectorEnv(fail_on_step=True)
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    assert env.closed is True
+    assert env.close_calls == 1
+
+
+def test_a_close_failure_does_not_mask_the_original_rollout_error():
+    # The rollout error is the one the caller needs -- a close() failure
+    # while unwinding from it must not replace or hide it.
+    env = _FakeVectorEnv(fail_on_step=True, fail_on_close=True)
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    assert env.close_calls == 1
+
+
+class _DirectBaseException(BaseException):
+    """Doesn't subclass Exception -- guards against the cleanup handler
+    regressing from `except BaseException` to `except Exception`, which
+    would let a close() failure mask this instead of it propagating."""
+
+
+def test_a_close_failure_does_not_mask_a_non_exception_rollout_error():
+    env = _FakeVectorEnv(step_exception=_DirectBaseException("interrupted"), fail_on_close=True)
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    with pytest.raises(_DirectBaseException, match="interrupted"):
+        driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    assert env.close_calls == 1
+
+
+def test_a_close_failure_after_success_propagates():
+    # With nothing to mask, a close() failure on the success path is a real
+    # error and must not be silently swallowed.
+    env = _FakeVectorEnv(fail_on_close=True)
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    with pytest.raises(RuntimeError, match="close failed"):
+        driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    assert env.close_calls == 1
+
+
 def test_driver_works_with_a_non_iss_non_jax_policy_source():
     cfg = free_flight_cfg()
     action = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float32)

@@ -49,6 +49,14 @@ from .types import PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
 
 
 class VectorEnvDriver:
+    """See module docstring.
+
+    `generate()` always creates its own env from `env_factory` and always
+    closes it -- on both the success and the exception path -- before
+    returning or re-raising. There is no support for passing in an
+    already-open, externally-owned env, so ownership is never ambiguous.
+    """
+
     def __init__(self, env_factory: Callable[[], Any], policy_source: PolicySource):
         self.env_factory = env_factory
         self.policy_source = policy_source
@@ -60,6 +68,22 @@ class VectorEnvDriver:
             raise ValueError(f"max_steps must be >= 1, got {spec.max_steps}")
 
         env = self.env_factory()
+        try:
+            result = self._run(env, spec)
+        except BaseException:
+            # A rollout or policy-source failure is the error the caller
+            # needs to see -- if env.close() itself also raises here, swallow
+            # that secondary failure rather than letting it mask the
+            # original one.
+            try:
+                env.close()
+            except BaseException:
+                pass
+            raise
+        env.close()
+        return result
+
+    def _run(self, env: Any, spec: RolloutSpec) -> TrajectoryBatch:
         num_envs = env.num_envs
         obs_dim = env.single_observation_space.shape[0]
         act_dim = env.single_action_space.shape[0]
