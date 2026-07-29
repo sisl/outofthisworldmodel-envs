@@ -18,7 +18,7 @@ import jax
 import jax.numpy as jnp
 from pydantic import Field
 
-from ...core.config_io import YamlModel
+from ...core.models import ConfigModel
 from ...core.quaternion import (
     quat_conjugate,
     quat_multiply,
@@ -37,7 +37,7 @@ EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 0, "union": 6}
 BODY_Z = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
 
 
-class OrbitParams(YamlModel):
+class OrbitParams(ConfigModel):
     radius_range_m: tuple[float, float] = (60.0, 180.0)
     angular_speed_range_rad_s: tuple[float, float] = (0.09, 0.24)
     kp_position: float = 1080.0
@@ -46,16 +46,16 @@ class OrbitParams(YamlModel):
     kd_attitude: float = 47_000.0
 
 
-class DockParams(YamlModel):
+class DockParams(ConfigModel):
     kp_position: float = 1080.0
     kd_velocity: float = 7200.0
     kp_attitude: float = 54_000.0
     kd_attitude: float = 132_000.0
 
 
-class PolicyConfig(YamlModel):
-    """Policy settings. A YamlModel like ISSConfig so the policy that shaped a
-    dataset is part of its as-run record, not just the environment physics."""
+class PolicyConfig(ConfigModel):
+    """Policy settings. A ConfigModel like ISSConfig so the policy that shaped
+    a dataset is part of its as-run record, not just the environment physics."""
 
     # Which policy make_policy builds. Default matches seamstress's
     # manifold.policy.type default. Invalid values are rejected here, at

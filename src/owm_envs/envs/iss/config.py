@@ -4,7 +4,7 @@ Frozen Pydantic models replacing seamstress's Hydra YAML. Values are carried
 from seamstress branch iss2,
 conf/environments/environment_international_space_station.yaml.
 
-These round-trip through YAML (see core.config_io.YamlModel) so a specific
+These round-trip through YAML/TOML (see core.models.ConfigModel) so a specific
 experiment's settings can be committed under configs/ as a versioned input and
 written next to the dataset it produced as an as-run record.
 """
@@ -18,7 +18,7 @@ import numpy as np
 import yaml
 from pydantic import Field
 
-from ...core.config_io import YamlModel
+from ...core.models import ConfigModel
 
 # Sentinel for ISSConfig.collision_boxes_path meaning "use the 318-box ISS
 # geometry shipped with this package". A plain sentinel (rather than baking
@@ -28,7 +28,7 @@ from ...core.config_io import YamlModel
 DEFAULT_COLLISION_BOXES = "default"
 
 
-class RewardWeights(YamlModel):
+class RewardWeights(ConfigModel):
     """Weights for the five reward terms. Carried from seamstress iss2.
 
     NOTE: `collision` at 1e6 was tuned for MPPI planning, where rewards are
@@ -44,7 +44,7 @@ class RewardWeights(YamlModel):
     collision: float = 1_000_000.0
 
 
-class ISSConfig(YamlModel):
+class ISSConfig(ConfigModel):
     dt: float = 0.05
     # 2000 * 0.05 = 100 s. Past this the Earth-rotation texture sampling in the
     # renderer visibly glitches, so iss2 caps episodes here.
