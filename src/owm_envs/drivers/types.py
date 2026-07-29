@@ -35,10 +35,15 @@ class TrajectoryBatch:
     elementwise by the equivalence test -- a ragged comparison would need
     bespoke logic that could itself be wrong.
 
-    Convention, carried from seamstress: within an episode, `actions[i]` takes
-    `observations[i]` to `observations[i + 1]` for i in [0, length - 2]. The
-    final action slot of each episode is a zero-padded no-op past the terminal
-    state, so observations and actions have equal length.
+    Convention, carried from seamstress: an episode of N environment steps
+    stores N + 1 observations, N + 1 actions, and N + 1 rewards, so `length`
+    counts observations, not steps. `observations[length - 1]` is the
+    TERMINAL state -- the collision, the successful dock, or the final state
+    at truncation -- and storing it is the point: without it the dataset
+    would contain no collision or docking states for a world model to learn
+    from. `actions[i]` takes `observations[i]` to `observations[i + 1]` for i
+    in [0, length - 2]; `actions[length - 1]` is a zero-padded no-op past the
+    terminal state, and `rewards[length - 1]` is 0.0.
     """
 
     observations: np.ndarray  # (E, T, obs_dim) float32

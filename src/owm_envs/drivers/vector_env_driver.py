@@ -7,6 +7,13 @@ and nothing else. Neither this module nor `types.py` imports JAX or any
 backend-specific type -- the policy source owns all of that, and the driver
 only ever sees numpy observations, numpy actions, and an opaque per-episode
 state it hands back to the policy source unexamined.
+
+VectorEnvDriver requires its backend to implement Gymnasium NEXT_STEP
+autoreset correctly: after a lane terminates or truncates, the following
+`step()` call must return that lane's freshly reset observation. A backend
+that declares `AutoresetMode.NEXT_STEP` in its metadata but does not actually
+substitute the reset observation will fail silently -- no exception, no
+warning, just episodes recorded shorter than they should be.
 """
 
 from __future__ import annotations
