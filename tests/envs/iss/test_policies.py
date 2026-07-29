@@ -86,6 +86,17 @@ def test_orbit_extras_axis_is_a_unit_vector():
     assert lo <= float(extras[3]) <= hi
 
 
+def test_orbit_policy_action_is_finite_when_radial_direction_is_exact_body_minus_z():
+    # Chaser on world +z, identity attitude, orbit axis +x: the inward radial
+    # direction is exactly (0, 0, -1), i.e. antiparallel to body +z. The
+    # shortest-arc attitude target must use the antiparallel fallback rather
+    # than degenerate to a zero quaternion.
+    policy_fn, _ = make_policy(CFG, PCFG, "orbit")
+    extras = jnp.array([1.0, 0.0, 0.0, 100.0, 0.15], dtype=jnp.float32)
+    action = policy_fn(state_at((0.0, 0.0, 100.0)), jax.random.PRNGKey(0), extras)
+    assert np.all(np.isfinite(np.asarray(action)))
+
+
 def test_union_selects_all_three_subpolicies_across_seeds():
     _, extras_fn = make_policy(CFG, PCFG, "union")
     chosen = {int(extras_fn(jax.random.PRNGKey(s))[0]) for s in range(200)}

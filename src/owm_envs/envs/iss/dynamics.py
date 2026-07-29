@@ -26,6 +26,7 @@ from ...core.integrator import Integrator
 from ...core.quaternion import (
     quat_conjugate,
     quat_derivative_from_omega_body,
+    quat_from_body_z_to,
     quat_multiply,
     quat_normalize,
     rotate_body_to_world,
@@ -38,8 +39,6 @@ STATE_LABELS: tuple[str, ...] = (
     "q_w", "q_x", "q_y", "q_z",
     "omega_x_rad_s", "omega_y_rad_s", "omega_z_rad_s",
 )
-
-BODY_Z = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
 
 
 class Events(NamedTuple):
@@ -163,19 +162,7 @@ class ISSDynamics:
         direction = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
         pos = direction * self._start_radius
         nose_to_iss = -direction
-        q_bw = _quat_from_body_z_to(nose_to_iss)
+        q_bw = quat_from_body_z_to(nose_to_iss)
         return jnp.concatenate(
             [pos, jnp.zeros((3,), jnp.float32), q_bw, jnp.zeros((3,), jnp.float32)], axis=0
         )
-
-
-def _quat_from_body_z_to(target_dir: jnp.ndarray) -> jnp.ndarray:
-    """Shortest-arc quaternion rotating body +z onto `target_dir` (assumed unit)."""
-    dot = jnp.clip(jnp.dot(BODY_Z, target_dir), -1.0, 1.0)
-    cross = jnp.cross(BODY_Z, target_dir)
-    # The w = 1 + dot form degenerates when target_dir is exactly -z; fall back to
-    # a 180-degree rotation about x, which is a valid shortest arc in that case.
-    q = jnp.concatenate([jnp.array([1.0 + dot], dtype=jnp.float32), cross], axis=0)
-    antiparallel = dot < -1.0 + 1e-6
-    q = jnp.where(antiparallel, jnp.array([0.0, 1.0, 0.0, 0.0], dtype=jnp.float32), q)
-    return quat_normalize(q)

@@ -17,6 +17,7 @@ from pydantic import Field
 from ...core.models import ConfigModel
 from ...core.quaternion import (
     quat_conjugate,
+    quat_from_body_z_to,
     quat_multiply,
     quat_normalize,
     quat_to_rotmat,
@@ -29,8 +30,6 @@ ExtrasFn = Callable[[jax.Array], jnp.ndarray]
 # Width of each policy's extras vector. The rollout driver in plan 2 needs this
 # to allocate the per-env extras buffer before the first reset.
 EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 0, "union": 6}
-
-BODY_Z = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
 
 
 class OrbitParams(ConfigModel):
@@ -93,14 +92,6 @@ def _attitude_torque(
     )
 
 
-def _shortest_arc_from_body_z(target_dir: jnp.ndarray) -> jnp.ndarray:
-    dot = jnp.clip(jnp.dot(BODY_Z, target_dir), -1.0, 1.0)
-    cross = jnp.cross(BODY_Z, target_dir)
-    return quat_normalize(
-        jnp.concatenate([jnp.array([1.0 + dot], dtype=jnp.float32), cross], axis=0)
-    )
-
-
 def _build_random(cfg: ISSConfig) -> PolicyFn:
     low = jnp.array(
         [-cfg.control.limit_force_n] * 3 + [-cfg.control.limit_torque_nm] * 3,
@@ -152,7 +143,7 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
         force_body = quat_to_rotmat(q_bw).T @ force_world
 
         torque_body = _attitude_torque(
-            q_bw, _shortest_arc_from_body_z(-r_hat), omega_b,
+            q_bw, quat_from_body_z_to(-r_hat), omega_b,
             inertia_diag=inertia_diag,
             kp_attitude=params.kp_attitude, kd_attitude=params.kd_attitude,
         )

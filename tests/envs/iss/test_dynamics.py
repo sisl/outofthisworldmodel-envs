@@ -278,16 +278,3 @@ def test_step_is_vmap_compatible():
     assert events.collision.shape == (4,)
 
 
-def test_quat_from_body_z_to_handles_exact_antiparallel_target():
-    # Degenerate case: target_dir == -body_z, where the `w = 1 + dot` form
-    # goes to zero. The fallback (180-degree rotation about x) must trigger
-    # and still produce a unit quaternion that correctly maps +z -> -z.
-    from owm_envs.core.quaternion import rotate_body_to_world
-    from owm_envs.envs.iss.dynamics import BODY_Z, _quat_from_body_z_to
-
-    target = jnp.array([0.0, 0.0, -1.0], dtype=jnp.float32)
-    q = _quat_from_body_z_to(target)
-
-    assert np.isclose(float(jnp.linalg.norm(q)), 1.0, atol=1e-6)
-    mapped = rotate_body_to_world(q, BODY_Z)
-    np.testing.assert_allclose(np.asarray(mapped), np.asarray(target), atol=1e-5)

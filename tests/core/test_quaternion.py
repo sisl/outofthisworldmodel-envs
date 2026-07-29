@@ -4,8 +4,10 @@ import pytest
 
 from owm_envs.core.integrator import Integrator
 from owm_envs.core.quaternion import (
+    BODY_Z,
     quat_conjugate,
     quat_derivative_from_omega_body,
+    quat_from_body_z_to,
     quat_multiply,
     quat_normalize,
     quat_to_rotmat,
@@ -117,3 +119,15 @@ def test_single_axis_rotation_matches_analytic_solution(axis_index, omega_body):
     expected[0] = np.cos(Omega * t / 2)
     expected[axis_index] = np.sin(Omega * t / 2)
     np.testing.assert_allclose(np.asarray(q), expected, atol=1e-5)
+
+
+def test_quat_from_body_z_to_handles_exact_antiparallel_target():
+    # Degenerate case: target_dir == -body_z, where the `w = 1 + dot` form
+    # goes to zero. The fallback (180-degree rotation about x) must trigger
+    # and still produce a unit quaternion that correctly maps +z -> -z.
+    target = jnp.array([0.0, 0.0, -1.0], dtype=jnp.float32)
+    q = quat_from_body_z_to(target)
+
+    assert np.isclose(float(jnp.linalg.norm(q)), 1.0, atol=1e-6)
+    mapped = rotate_body_to_world(q, BODY_Z)
+    np.testing.assert_allclose(np.asarray(mapped), np.asarray(target), atol=1e-5)

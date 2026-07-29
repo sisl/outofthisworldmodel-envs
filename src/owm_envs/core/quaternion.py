@@ -95,3 +95,22 @@ def omega_matrix_body(omega_body: jnp.ndarray) -> jnp.ndarray:
 def quat_derivative_from_omega_body(q_bw: jnp.ndarray, omega_body: jnp.ndarray) -> jnp.ndarray:
     """Compute q_dot given current q_bw and body-frame omega."""
     return 0.5 * (omega_matrix_body(omega_body) @ q_bw)
+
+
+BODY_Z = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
+
+
+def quat_from_body_z_to(target_dir: jnp.ndarray) -> jnp.ndarray:
+    """Shortest-arc quaternion rotating body +z onto `target_dir` (assumed unit).
+
+    The w = 1 + dot form degenerates when target_dir is exactly -z (both terms
+    are zero); falls back to a 180-degree rotation about x, which is a valid
+    shortest arc in that case. Traceable under jit/vmap: the fallback is
+    selected with jnp.where rather than a Python `if` on the traced dot value.
+    """
+    dot = jnp.clip(jnp.dot(BODY_Z, target_dir), -1.0, 1.0)
+    cross = jnp.cross(BODY_Z, target_dir)
+    q = jnp.concatenate([jnp.array([1.0 + dot], dtype=jnp.float32), cross], axis=0)
+    antiparallel = dot < -1.0 + 1e-6
+    q = jnp.where(antiparallel, jnp.array([0.0, 1.0, 0.0, 0.0], dtype=jnp.float32), q)
+    return quat_normalize(q)
