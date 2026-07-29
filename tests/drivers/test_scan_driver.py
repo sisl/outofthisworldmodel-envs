@@ -83,3 +83,26 @@ def test_union_policy_records_policy_ids():
 def test_rejects_a_non_positive_episode_count():
     with pytest.raises(ValueError):
         make_driver().generate(RolloutSpec(num_episodes=0, max_steps=10, seed=0))
+
+
+def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
+    # ScanDriver autoresets in-scan on every `done` (see per_env_step), so
+    # this already holds -- this is the ScanDriver-side counterpart of the
+    # regression test that caught VectorEnvDriver silently chaining episodes
+    # together instead of resetting when spec.max_steps is far below the
+    # env's own horizon.
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
+    batch = make_driver(num_envs=1, policy_type="dock").generate(
+        RolloutSpec(num_episodes=3, max_steps=5, seed=0)
+    )
+    batch.validate()
+    assert np.all(batch.truncated)
+
+    for i in range(batch.num_episodes):
+        radius = np.linalg.norm(batch.observations[i, 0, 0:3])
+        np.testing.assert_allclose(radius, cfg.physics.start_radius_m, rtol=1e-4)
+
+    for i in range(1, batch.num_episodes):
+        previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
+        this_initial = batch.observations[i, 0]
+        assert not np.allclose(this_initial, previous_terminal)

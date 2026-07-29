@@ -14,6 +14,29 @@ autoreset correctly: after a lane terminates or truncates, the following
 that declares `AutoresetMode.NEXT_STEP` in its metadata but does not actually
 substitute the reset observation will fail silently -- no exception, no
 warning, just episodes recorded shorter than they should be.
+
+`gymnasium.vector.VectorEnv` has no per-lane reset API, only a whole-vector
+`reset()`. That is fine when a lane's episode ends because the ENV itself
+terminates or truncates it (NEXT_STEP autoreset handles that lane in
+isolation, without disturbing the others). It is a problem when `spec.max_steps`
+(the horizon this rollout was asked for) is shorter than the env's own
+horizon: the env has no idea the driver wants that lane cut short, so nothing
+would reset it. Calling the whole-vector `reset()` at that instant would
+correctly reset the lane that needs it, but would also blow away every other
+lane's in-progress, not-yet-finished episode -- data loss, silently.
+
+Instead, a lane that hits `spec.max_steps` before the env itself is done gets
+FROZEN: it keeps receiving a no-op action (so the batched `step()` call still
+has an action for every lane) but its output is discarded and it stops
+accumulating. Other lanes keep running -- including cycling through several
+of their own env-driven terminate/autoreset episodes -- until every lane is
+either frozen or has just been finalized by the env itself (i.e. holds no
+live, unrecorded state). Only then is the whole vector env reset once,
+starting every lane's next episode from a real, independent reset. No
+recorded or in-progress data is ever discarded; the cost is that a lane which
+finishes early idles until the slowest lane in the cohort also finishes. When
+lanes stay in lockstep (the common case: no early termination, so every lane
+reaches `spec.max_steps` on the same global step) that idle time is zero.
 """
 
 from __future__ import annotations
@@ -61,6 +84,10 @@ class VectorEnvDriver:
         # episode and the following step() call, which is when NEXT_STEP
         # autoreset actually hands back the fresh reset observation.
         lane_awaiting_reset = [False] * num_envs
+        # True for a lane that hit spec.max_steps before the env itself was
+        # done -- see module docstring. It keeps stepping (no-op, discarded)
+        # until the whole cohort is safe to reset together.
+        lane_frozen = [False] * num_envs
         lane_episode_state = [
             self.policy_source.new_episode(int(seed))
             for seed in rng.integers(0, 2**31 - 1, size=num_envs)
@@ -75,6 +102,11 @@ class VectorEnvDriver:
         while len(finished) < spec.num_episodes:
             actions = np.zeros((num_envs, act_dim), dtype=np.float32)
             for lane in range(num_envs):
+                if lane_frozen[lane]:
+                    # No-op: the batched step() call needs an action for
+                    # every lane, but this lane's result is discarded below.
+                    actions[lane] = zero_action
+                    continue
                 actions[lane] = np.asarray(
                     self.policy_source.act(obs[lane], lane_episode_state[lane], lane_step[lane]),
                     dtype=np.float32,
@@ -87,6 +119,9 @@ class VectorEnvDriver:
             next_obs, rewards, terminations, truncations, _ = env.step(actions)
 
             for lane in range(num_envs):
+                if lane_frozen[lane]:
+                    continue
+
                 if lane_awaiting_reset[lane]:
                     # This step's action for the lane was discarded by
                     # NEXT_STEP autoreset -- next_obs is already the real
@@ -105,12 +140,7 @@ class VectorEnvDriver:
 
                 # The env's own truncation is driven by its own config, which
                 # is independent of spec.max_steps (the rollout horizon
-                # requested here) and typically much larger. There is no
-                # per-lane reset API on VectorEnv, so once a lane hits the
-                # requested horizon without the env itself
-                # terminating/truncating it, the driver closes out the
-                # episode locally as truncated and keeps stepping that
-                # lane's underlying physics into the next episode's window.
+                # requested here) and typically much larger.
                 env_done = bool(terminations[lane]) or bool(truncations[lane])
                 horizon_hit = len(lane_act[lane]) >= spec.max_steps
                 if env_done or horizon_hit:
@@ -138,13 +168,32 @@ class VectorEnvDriver:
                         lane_obs[lane] = []
                         lane_awaiting_reset[lane] = True
                     else:
-                        # No real reset happened: this lane's physics keeps
-                        # running, so the next episode's window starts right
-                        # where this one's terminal observation left off.
-                        lane_obs[lane] = [next_obs[lane].copy()]
-                        lane_step[lane] = 0
+                        # spec.max_steps reached before the env itself was
+                        # done: there is no per-lane reset API to give this
+                        # lane a real fresh start, so freeze it (see module
+                        # docstring) instead of letting its physics run on.
+                        lane_frozen[lane] = True
 
             obs = next_obs
+
+            # Once every lane is either frozen or was just finalized by the
+            # env itself, none of them holds live, unrecorded state -- safe
+            # to reset the whole vector env in one call and start the next
+            # cohort of episodes together. Gated on `any(lane_frozen)` so
+            # this never engages, and lanes keep their full independent
+            # throughput, unless spec.max_steps actually forced a freeze.
+            if (
+                len(finished) < spec.num_episodes
+                and any(lane_frozen)
+                and all(lane_frozen[lane] or lane_awaiting_reset[lane] for lane in range(num_envs))
+            ):
+                obs, _ = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+                lane_obs = [[o.copy()] for o in obs]
+                lane_act = [[] for _ in range(num_envs)]
+                lane_rew = [[] for _ in range(num_envs)]
+                lane_step = [0] * num_envs
+                lane_frozen = [False] * num_envs
+                lane_awaiting_reset = [False] * num_envs
 
         return pack_episodes(
             finished[: spec.num_episodes], obs_dim, act_dim, records_policy_ids

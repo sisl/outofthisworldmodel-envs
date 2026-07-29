@@ -162,6 +162,34 @@ def test_rejects_a_non_positive_episode_count():
         make_driver().generate(RolloutSpec(num_episodes=0, max_steps=10, seed=0))
 
 
+def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
+    # Regression test: spec.max_steps (5) is far below the env's own horizon
+    # (cfg.max_steps defaults to 2000), and free flight never terminates
+    # early, so every episode must be cut short by the driver itself. A
+    # single lane makes each episode in `finished` unambiguously that lane's
+    # Nth episode, so "does episode N start where episode N-1 ended" is a
+    # direct check, not a structural approximation.
+    cfg = free_flight_cfg()
+    batch = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=1, cfg=cfg),
+        policy_source=IssPolicySource(cfg, PolicyConfig(type="dock")),
+    ).generate(RolloutSpec(num_episodes=3, max_steps=5, seed=0))
+    batch.validate()
+    assert np.all(batch.truncated)
+
+    for i in range(batch.num_episodes):
+        # Every reset places the chaser on the start sphere -- a strong,
+        # cheap check that this episode really began from env.reset() and
+        # not mid-flight.
+        radius = np.linalg.norm(batch.observations[i, 0, 0:3])
+        np.testing.assert_allclose(radius, cfg.physics.start_radius_m, rtol=1e-4)
+
+    for i in range(1, batch.num_episodes):
+        previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
+        this_initial = batch.observations[i, 0]
+        assert not np.allclose(this_initial, previous_terminal)
+
+
 def test_module_does_not_import_jax():
     # The whole point of the driver seam: a future Basilisk or brahe backend
     # must not have to bring JAX along just to get dataset generation. Check

@@ -40,6 +40,8 @@ from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
+START_RADIUS_M = ISSConfig().physics.start_radius_m
+
 DETERMINISTIC = PolicyConfig(type="dock")
 
 
@@ -99,6 +101,19 @@ def _assert_terminal_convention(batch):
             assert not np.array_equal(batch.observations[i, 0], batch.observations[i, length - 1])
 
 
+def _assert_every_episode_starts_from_a_reset(batch):
+    """Every episode's first observation must lie on the start sphere.
+
+    A cheap, strong check that catches a driver silently starting a "new"
+    episode from wherever the previous one happened to leave the physics,
+    instead of from a real reset -- that state would essentially never sit
+    exactly on the sphere by chance.
+    """
+    for i in range(batch.num_episodes):
+        radius = np.linalg.norm(batch.observations[i, 0, 0:3])
+        np.testing.assert_allclose(radius, START_RADIUS_M, rtol=1e-4)
+
+
 def test_both_drivers_agree_structurally_with_many_episodes_per_lane():
     # 3 episodes per lane: past the one-episode-per-lane regime where the two
     # drivers' reset keys still coincide (see module docstring), so this
@@ -119,6 +134,31 @@ def test_both_drivers_agree_structurally_with_many_episodes_per_lane():
     b.validate()
     _assert_terminal_convention(a)
     _assert_terminal_convention(b)
+    _assert_every_episode_starts_from_a_reset(a)
+    _assert_every_episode_starts_from_a_reset(b)
+
+
+def test_both_drivers_start_every_episode_from_an_independent_reset():
+    # A single lane past the one-episode-per-lane regime: with num_envs=1,
+    # `finished`/`_segment` order is unambiguously that lane's episode
+    # sequence, so "does episode N start where episode N-1 ended" is a direct
+    # per-driver check rather than something inferred from interleaved,
+    # multi-lane output order (which the two drivers do not even produce in
+    # the same order -- see module docstring). This is the regime that
+    # exposed VectorEnvDriver silently chaining episodes together instead of
+    # resetting: spec.max_steps (5) is far below either driver's own horizon.
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
+    vec, scan = drivers_for(cfg, num_envs=1)
+    spec = RolloutSpec(num_episodes=3, max_steps=5, seed=0)
+
+    for batch in (vec.generate(spec), scan.generate(spec)):
+        batch.validate()
+        assert np.all(batch.truncated)
+        _assert_every_episode_starts_from_a_reset(batch)
+        for i in range(1, batch.num_episodes):
+            previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
+            this_initial = batch.observations[i, 0]
+            assert not np.allclose(this_initial, previous_terminal)
 
 
 def test_both_drivers_agree_structurally_when_episodes_terminate_early():
