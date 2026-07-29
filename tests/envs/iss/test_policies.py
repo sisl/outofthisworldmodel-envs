@@ -108,6 +108,29 @@ def test_union_weights_must_sum_positive():
         make_policy(CFG, PolicyConfig(union_weights=(0.0, 0.0, 0.0)), "union")
 
 
+def test_union_weights_rejects_negative_component():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="-1.0"):
+        PolicyConfig(union_weights=(-1.0, 2.0, 0.0))
+
+
+def test_union_weights_all_zeros_still_rejected():
+    # All-zeros passes the non-negative check (0.0 is not negative) but must
+    # still fail the existing sum-must-be-positive check in _build_union.
+    PolicyConfig(union_weights=(0.0, 0.0, 0.0))
+    with pytest.raises(ValueError):
+        make_policy(CFG, PolicyConfig(union_weights=(0.0, 0.0, 0.0)), "union")
+
+
+def test_union_weights_with_a_zero_component_is_still_accepted():
+    # A zero component is a legitimate way to disable one sub-policy.
+    cfg = PolicyConfig(union_weights=(0.0, 1.0, 1.0))
+    _, extras_fn = make_policy(CFG, cfg, "union")
+    chosen = {int(extras_fn(jax.random.PRNGKey(s))[0]) for s in range(200)}
+    assert chosen == {1, 2}
+
+
 def test_unknown_policy_type_raises():
     with pytest.raises(ValueError, match="Unknown ISS policy type"):
         make_policy(CFG, PCFG, "teleport")

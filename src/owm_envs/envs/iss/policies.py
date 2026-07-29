@@ -12,7 +12,7 @@ from typing import Callable, Literal
 
 import jax
 import jax.numpy as jnp
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
 from ...core.quaternion import (
@@ -60,6 +60,16 @@ class PolicyConfig(ConfigModel):
     dock: DockParams = Field(default_factory=DockParams)
     # Positional order: [random, orbit, dock]. Normalised at build time.
     union_weights: tuple[float, float, float] = (0.3, 0.35, 0.35)
+
+    @field_validator("union_weights")
+    @classmethod
+    def _reject_negative_weights(
+        cls, v: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        for w in v:
+            if w < 0.0:
+                raise ValueError(f"union_weights must be non-negative, got {w}")
+        return v
 
 
 def _safe_norm(v: jnp.ndarray, eps: float = 1e-8) -> jnp.ndarray:
