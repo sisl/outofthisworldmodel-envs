@@ -51,6 +51,35 @@ def test_std_is_never_zero():
     assert all(s > 0.0 for s in stats["action"]["std"])
 
 
+def test_action_stats_exclude_the_zero_pad_slot():
+    """Two episodes of DIFFERENT lengths, each built to actually follow the
+    episode convention: `lengths[i] - 1` real actions, then one genuine zero
+    pad at index `lengths[i] - 1`. `batch_with_padding()` above does NOT model
+    this (it fills every slot up to `lengths[i]`, pad slot included, with the
+    "real" value), so it cannot catch a regression here -- this fixture can.
+    """
+    obs = np.zeros((2, 5, 13), dtype=np.float32)
+    act = np.zeros((2, 5, 6), dtype=np.float32)
+    # Episode 0: lengths=3 -> 2 real actions (indices 0-1), pad at index 2.
+    act[0, 0:2, 0] = 5.0
+    # Episode 1: lengths=5 -> 4 real actions (indices 0-3), pad at index 4.
+    act[1, 0:4, 0] = 5.0
+    batch = TrajectoryBatch(
+        observations=obs,
+        actions=act,
+        rewards=np.zeros((2, 5), dtype=np.float32),
+        lengths=np.array([3, 5], dtype=np.int32),
+        terminated=np.array([True, True]),
+        truncated=np.array([False, False]),
+        policy_ids=None,
+    )
+    stats = compute_norm_stats(batch)
+    # Real actions only: (2 + 4) rows all equal to 5.0 -> mean 5.0 exactly.
+    # Including the pad slots would instead average in two zeros: rows would
+    # be [5,5,0] + [5,5,5,5,0] = 8 rows summing to 30 -> mean 3.75.
+    assert np.isclose(stats["action"]["mean"][0], 5.0, atol=1e-4)
+
+
 def test_write_run_metadata_emits_every_expected_file(tmp_path):
     write_run_metadata(
         tmp_path,

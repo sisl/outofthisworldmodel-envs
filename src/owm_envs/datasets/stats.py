@@ -61,6 +61,12 @@ def compute_norm_stats(batch: TrajectoryBatch) -> dict:
     exists to avoid, just smaller. So actions use `lengths[i] - 1` entries.
     """
     obs = _real_rows(batch.observations, batch.lengths)
+    # NOT a typo / NOT the same call as above with `lengths` swapped for
+    # `lengths - 1` by mistake: the last action slot inside `lengths` is a
+    # zero pad, not a taken action (see TrajectoryBatch's docstring), so it
+    # must be dropped here even though the observation at that same index is
+    # real and IS kept above. rewards are not touched by this function at
+    # all -- no run metadata currently reports reward statistics.
     act = _real_rows(batch.actions, np.maximum(batch.lengths - 1, 0))
     return {
         "observation_vector": {
