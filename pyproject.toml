@@ -11,11 +11,15 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "tomli-w>=1.0",
+    "typer>=0.12",
 ]
 
 [project.optional-dependencies]
 render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow"]
 datasets = ["lerobot"]
+
+[project.scripts]
+owm-envs = "owm_envs.cli:app"
 
 [build-system]
 requires = ["hatchling"]
