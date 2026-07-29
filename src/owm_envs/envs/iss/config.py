@@ -150,6 +150,16 @@ class ISSConfig(ConfigModel):
     # sensible target.
     reward_goal_position: tuple[float, float, float] | None = None
 
+    # Which of the renderer's six fixed views `ISSEnv.render()` uses.
+    render_view: str = "DRAGON_ISO"
+    # Graphics settings for `ISSEnv.render()`, as a plain dict of
+    # `owm_envs.render.iss_scene.RenderConfig` fields (e.g. {"image_width":
+    # 640}). A dict rather than `RenderConfig` itself so this module -- part
+    # of the core, always-imported package -- never has to import the
+    # `render` package, whose modules pull in pygfx at the top level. `None`
+    # (the default) renders with `RenderConfig`'s own defaults.
+    render: dict[str, Any] | None = None
+
 
 def default_collision_boxes_path() -> str:
     """Absolute path to the 318-AABB ISS geometry shipped with this package."""

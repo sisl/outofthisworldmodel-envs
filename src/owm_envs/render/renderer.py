@@ -256,8 +256,20 @@ class ISSRenderer:
         return np.ascontiguousarray(frame[..., :3])
 
     def close(self) -> None:
-        """Release the GPU device backing this renderer."""
-        self._renderer.device.destroy()
+        """Release this renderer's resources.
+
+        pygfx keeps a single WGPU device shared by every renderer in the
+        process (`pygfx.renderers.wgpu.engine.shared.Shared`) and has no way
+        to recreate it once gone, so this must not destroy `self._renderer.
+        device` -- doing so would leave every other `ISSRenderer` in the
+        process (present or future) unable to render. Dropping this
+        instance's own references and letting them be garbage-collected is
+        the correct release.
+        """
+        self._force_arrow_groups = None
+        self._torque_rings = None
+        self._iss_scene = None
+        self._renderer = None
 
     # -- debug overlays -----------------------------------------------------
 

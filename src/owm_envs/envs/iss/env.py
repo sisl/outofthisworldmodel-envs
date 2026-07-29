@@ -53,9 +53,15 @@ def _action_space(cfg: ISSConfig) -> spaces.Box:
 class ISSEnv(gym.Env):
     # render_fps is overridden per instance in __init__; the class-level value
     # is the rate implied by ISSConfig's own default dt.
-    metadata = {"render_modes": [], "render_fps": 20}
+    metadata = {"render_modes": ["rgb_array"], "render_fps": 20}
 
     def __init__(self, cfg: ISSConfig | None = None, render_mode: str | None = None):
+        if render_mode is not None and render_mode not in self.metadata["render_modes"]:
+            raise ValueError(
+                f"unknown render_mode {render_mode!r}; expected one of "
+                f"{self.metadata['render_modes']} or None"
+            )
+
         self.cfg = cfg or ISSConfig()
         # Per-instance because it depends on cfg.dt, which the class does not know.
         self.metadata = {**self.metadata, "render_fps": _render_fps(self.cfg)}
@@ -66,6 +72,7 @@ class ISSEnv(gym.Env):
 
         self._state: jnp.ndarray | None = None
         self._step_index = 0
+        self._renderer: Any | None = None
 
         # jit once at construction; both are pure functions of (state, action).
         self._jit_step = jax.jit(self.dynamics.step)
@@ -116,3 +123,32 @@ class ISSEnv(gym.Env):
 
     def _obs(self) -> np.ndarray:
         return np.asarray(self._state, dtype=np.float32)
+
+    def render(self) -> np.ndarray | None:
+        if self.render_mode is None:
+            return None
+        if self._state is None:
+            raise RuntimeError("render() called before reset(); call reset() first.")
+
+        if self._renderer is None:
+            self._renderer = self._make_renderer()
+        return self._renderer.render(
+            np.asarray(self._state, dtype=np.float32), view=self.cfg.render_view
+        )
+
+    def _make_renderer(self) -> Any:
+        try:
+            from ...render.iss_scene import RenderConfig
+            from ...render.renderer import ISSRenderer
+        except ImportError as exc:
+            raise ImportError(
+                "Rendering requires the optional 'render' extra: pip install owm-envs[render]"
+            ) from exc
+
+        render_cfg = RenderConfig(**self.cfg.render) if self.cfg.render else RenderConfig()
+        return ISSRenderer(render_cfg)
+
+    def close(self) -> None:
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
