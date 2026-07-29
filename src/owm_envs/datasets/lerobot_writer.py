@@ -77,7 +77,6 @@ def write_lerobot_split(
     fps: int,
     task_name: str = "iss_docking",
     frames: Sequence[np.ndarray] | None = None,
-    fpv_size: int = 256,
 ) -> Path:
     """Write one TrajectoryBatch as a LeRobotDataset on disk. Returns its root.
 
@@ -110,9 +109,12 @@ def write_lerobot_split(
         "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
     }
     if frames is not None:
+        # Derived from the actual clip, not assumed square: the renderer
+        # returns (H, W, 3), and H need not equal W.
+        height, width, channels = np.asarray(frames[0]).shape[1:]
         features["observation.images.fpv"] = {
             "dtype": "video",
-            "shape": (fpv_size, fpv_size, 3),
+            "shape": (int(height), int(width), int(channels)),
             "names": ["height", "width", "channels"],
         }
 
@@ -158,11 +160,20 @@ def _validate_frames(frames: Sequence[np.ndarray], batch: TrajectoryBatch) -> No
         raise ValueError(
             f"frames has {len(frames)} episodes, batch has {batch.num_episodes}"
         )
+    # The declared feature shape comes from episode 0's clip, so every other
+    # clip's frame shape (H, W, C) must agree with it too.
+    expected_frame_shape = np.asarray(frames[0]).shape[1:]
     for episode in range(batch.num_episodes):
-        clip_length = int(np.asarray(frames[episode]).shape[0])
+        clip = np.asarray(frames[episode])
+        clip_length = int(clip.shape[0])
         expected_length = int(batch.lengths[episode])
         if clip_length != expected_length:
             raise ValueError(
                 f"episode {episode}: frame clip length {clip_length} does not "
                 f"match batch length {expected_length}"
+            )
+        if clip.shape[1:] != expected_frame_shape:
+            raise ValueError(
+                f"episode {episode}: frame shape {clip.shape[1:]} does not "
+                f"match episode 0's frame shape {expected_frame_shape}"
             )

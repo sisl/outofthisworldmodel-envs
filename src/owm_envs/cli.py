@@ -109,28 +109,21 @@ def generate(
     )
 
     frames = None
-    fpv_size = 256
     if render:
-        from .datasets.video import render_episode_frames
+        from .datasets.video import render_batch_frames
         from .render.iss_scene import RenderConfig
 
         render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
-        fpv_size = render_cfg.image_width
         total = int(batch.lengths.sum())
         typer.echo(
             f"[render] {total} frames at ~0.1 s/frame -> roughly {total * 0.1 / 60:.1f} min"
         )
-        frames = [
-            render_episode_frames(batch, i, render_cfg, view=render_view)
-            for i in range(batch.num_episodes)
-        ]
+        frames = render_batch_frames(batch, render_cfg, view=render_view)
 
     if lerobot:
         from .datasets.lerobot_writer import write_lerobot_split
 
-        write_lerobot_split(
-            out / split, f"{env}/{split}", batch, fps=fps, frames=frames, fpv_size=fpv_size
-        )
+        write_lerobot_split(out / split, f"{env}/{split}", batch, fps=fps, frames=frames)
         typer.echo(f"[generate] wrote LeRobot split to {out / split}")
 
     metadata.write(out)
