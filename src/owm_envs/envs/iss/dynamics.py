@@ -97,15 +97,54 @@ class ISSDynamics:
         )
         return jnp.concatenate([pos_dot, vel_dot, q_dot, omega_dot], axis=0)
 
-    def _collision(self, pos_w: jnp.ndarray) -> jnp.ndarray:
-        # Distance from the point to each AABB surface (0 when inside), then
-        # contact if any is within the chaser's bounding radius.
+    def _collision(self, pos_prev: jnp.ndarray, pos_next: jnp.ndarray) -> jnp.ndarray:
+        # Swept-segment test: does the straight-line path from pos_prev to
+        # pos_next (the whole integration step, not just its endpoint) pass
+        # within the chaser's radius of any box? A fast chaser can tunnel
+        # through a thin box between two samples and land clear on the far
+        # side, so the endpoint alone is not enough.
+        #
+        # Each box is expanded per-axis by the chaser radius and the segment
+        # is tested against that expanded AABB with the standard slab method
+        # (ray/segment vs box). The per-axis expansion is a rectangular
+        # superset of the true rounded-corner Minkowski sum of the box and a
+        # sphere of that radius, so this never misses a genuine crossing; it
+        # can only be conservative right at the corners, which is an
+        # accepted approximation here. On the degenerate axes -- where the
+        # segment doesn't move along that axis at all -- the interval is
+        # collapsed to a plain membership test instead of dividing by zero,
+        # so a stationary chaser (pos_prev == pos_next) reduces exactly to a
+        # point-in-box test with no NaN.
         if self._box_centers.shape[0] == 0:
             return jnp.array(False)
-        delta = jnp.abs(pos_w[None, :] - self._box_centers) - self._box_half_extents
-        outside = jnp.maximum(delta, 0.0)
-        dist = jnp.linalg.norm(outside, axis=1)
-        return jnp.any(dist <= self._chaser_radius)
+
+        expanded_half = self._box_half_extents + self._chaser_radius
+        box_min = self._box_centers - expanded_half
+        box_max = self._box_centers + expanded_half
+
+        d = pos_next - pos_prev
+        eps = jnp.float32(1e-12)
+        is_parallel = jnp.abs(d)[None, :] < eps
+        safe_d = jnp.where(jnp.abs(d) < eps, eps, d)
+
+        t1 = (box_min - pos_prev[None, :]) / safe_d[None, :]
+        t2 = (box_max - pos_prev[None, :]) / safe_d[None, :]
+        tmin_axis = jnp.minimum(t1, t2)
+        tmax_axis = jnp.maximum(t1, t2)
+
+        inside_slab = jnp.logical_and(
+            pos_prev[None, :] >= box_min, pos_prev[None, :] <= box_max
+        )
+        tmin_axis = jnp.where(
+            is_parallel, jnp.where(inside_slab, -jnp.inf, jnp.inf), tmin_axis
+        )
+        tmax_axis = jnp.where(
+            is_parallel, jnp.where(inside_slab, jnp.inf, -jnp.inf), tmax_axis
+        )
+
+        t_enter = jnp.maximum(jnp.max(tmin_axis, axis=1), 0.0)
+        t_exit = jnp.minimum(jnp.min(tmax_axis, axis=1), 1.0)
+        return jnp.any(t_enter <= t_exit)
 
     def _docked(
         self, pos_w: jnp.ndarray, vel_w: jnp.ndarray, q_bw: jnp.ndarray, omega_b: jnp.ndarray
@@ -151,7 +190,7 @@ class ISSDynamics:
         s_next = s_next.at[6:10].set(q_next)
 
         events = Events(
-            collision=self._collision(s_next[0:3]),
+            collision=self._collision(s[0:3], s_next[0:3]),
             docked=self._docked(s_next[0:3], s_next[3:6], s_next[6:10], s_next[10:13]),
         )
         return s_next, events

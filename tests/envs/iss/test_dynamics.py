@@ -142,6 +142,78 @@ def test_collision_accounts_for_chaser_radius():
     assert bool(far.collision) is False
 
 
+def test_collision_detects_tunnelling_through_a_thin_box():
+    # Box half-extent 1.0 (2 m thick) at the origin, chaser radius 2.25 =>
+    # capture window [-3.25, 3.25] along x, 6.5 m wide. A single dt=0.05 step
+    # at 160 m/s covers ~8 m -- more than the capture window -- starting and
+    # ending clear of the box on opposite sides, so the endpoint alone would
+    # never see it.
+    physics = PhysicsConfig(
+        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [2.0, 2.0, 2.0]}],
+        dragon_collision_radius_m=2.25,
+    )
+    dyn = ISSDynamics(ISSConfig(physics=physics, dock=DockConfig(enabled=False)))
+    s = make_state(pos=(-4.0, 0.0, 0.0), vel=(160.0, 0.0, 0.0))
+    s_next, events = dyn.step(s, ZERO_ACTION)
+    # Confirm the setup actually tunnels: both endpoints land clear of the
+    # expanded box, yet the straight-line path crosses it.
+    assert float(s[0]) < -3.25
+    assert float(s_next[0]) > 3.25
+    assert bool(events.collision) is True
+
+
+def test_collision_sweep_has_no_false_positive_when_passing_nearby():
+    # Same fast pass along x, but offset 10 m in y -- well clear of the
+    # expanded box's 3.25 m half-width -- so the segment never comes near it.
+    physics = PhysicsConfig(
+        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [2.0, 2.0, 2.0]}],
+        dragon_collision_radius_m=2.25,
+    )
+    dyn = ISSDynamics(ISSConfig(physics=physics, dock=DockConfig(enabled=False)))
+    s = make_state(pos=(-4.0, 10.0, 0.0), vel=(160.0, 0.0, 0.0))
+    _, events = dyn.step(s, ZERO_ACTION)
+    assert bool(events.collision) is False
+
+
+def test_collision_zero_length_segment_inside_box_still_collides():
+    # A stationary chaser (pos_prev == pos_next) must reduce to a plain
+    # point-in-box test, not divide by a zero segment length and produce NaN.
+    physics = PhysicsConfig(
+        collision_boxes_path=[{"center": [10.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}],
+    )
+    dyn = ISSDynamics(ISSConfig(physics=physics, dock=DockConfig(enabled=False)))
+    _, events = dyn.step(make_state(pos=(10.0, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(events.collision) is True
+
+
+def test_collision_zero_length_segment_far_away_does_not_collide():
+    physics = PhysicsConfig(
+        collision_boxes_path=[{"center": [10.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}],
+    )
+    dyn = ISSDynamics(ISSConfig(physics=physics, dock=DockConfig(enabled=False)))
+    _, events = dyn.step(make_state(pos=(500.0, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(events.collision) is False
+
+
+def test_collision_sweep_is_jit_and_vmap_compatible():
+    physics = PhysicsConfig(
+        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [2.0, 2.0, 2.0]}],
+        dragon_collision_radius_m=2.25,
+    )
+    dyn = ISSDynamics(ISSConfig(physics=physics, dock=DockConfig(enabled=False)))
+    s = make_state(pos=(-4.0, 0.0, 0.0), vel=(160.0, 0.0, 0.0))
+
+    s_next, events = jax.jit(dyn.step)(s, ZERO_ACTION)
+    assert bool(events.collision) is True
+
+    states = jnp.stack([s, s.at[1].set(10.0)])
+    actions = jnp.stack([ZERO_ACTION, ZERO_ACTION])
+    _, vmapped = jax.vmap(jax.jit(dyn.step))(states, actions)
+    assert vmapped.collision.shape == (2,)
+    assert bool(vmapped.collision[0]) is True
+    assert bool(vmapped.collision[1]) is False
+
+
 def test_dock_requires_both_distance_and_speed():
     cfg = ISSConfig(
         physics=PhysicsConfig(collision_boxes_path=None),
