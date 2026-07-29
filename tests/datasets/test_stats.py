@@ -5,7 +5,7 @@ import pytest
 
 from owm_envs.datasets.stats import GenerationConfig, SplitSpec, compute_norm_stats, write_run_metadata
 from owm_envs.drivers.types import TrajectoryBatch
-from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 
 
@@ -101,7 +101,7 @@ def test_write_run_metadata_emits_every_expected_file(tmp_path):
 
 def test_as_run_configs_round_trip(tmp_path):
     # The whole point of the as-run record: reload it and get the same config.
-    cfg = ISSConfig(start_radius_m=250.0)
+    cfg = ISSConfig(physics=PhysicsConfig(start_radius_m=250.0))
     policy_cfg = PolicyConfig(type="orbit")
     write_run_metadata(tmp_path, cfg=cfg, policy_cfg=policy_cfg, batches={"train": batch_with_padding()}, fps=24, seed=0)
     assert ISSConfig.from_yaml(tmp_path / "env_config.yaml") == cfg

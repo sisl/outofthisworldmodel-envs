@@ -66,10 +66,10 @@ def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
 
 
 def test_config_file_is_loaded_and_recorded(tmp_path):
-    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
 
     cfg_path = tmp_path / "env.yaml"
-    ISSConfig(start_radius_m=175.0).to_yaml(cfg_path)
+    ISSConfig(physics=PhysicsConfig(start_radius_m=175.0)).to_yaml(cfg_path)
 
     out = tmp_path / "run"
     result = runner.invoke(
@@ -79,7 +79,7 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
          "--no-lerobot"],
     )
     assert result.exit_code == 0, result.stdout
-    assert ISSConfig.from_yaml(out / "env_config.yaml").start_radius_m == 175.0
+    assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
 
 
 def test_summary_reports_the_episode_count_requested(tmp_path):

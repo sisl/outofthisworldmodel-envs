@@ -3,15 +3,19 @@ import pytest
 
 from owm_envs.drivers.scan_driver import ScanDriver, supports_fused_rollout
 from owm_envs.drivers.types import RolloutSpec
-from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
 from owm_envs.envs.iss.policies import PolicyConfig
 
-FREE_FLIGHT = dict(collision_boxes_path=None, dock_enabled=False)
+FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)
+FREE_FLIGHT_DOCK = dict(enabled=False)
 
 
-def make_driver(num_envs=2, policy_type="dock", **cfg_kwargs):
-    cfg = ISSConfig(**{**FREE_FLIGHT, **cfg_kwargs})
+def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None):
+    cfg = ISSConfig(
+        physics=PhysicsConfig(**{**FREE_FLIGHT_PHYSICS, **(physics or {})}),
+        dock=DockConfig(**{**FREE_FLIGHT_DOCK, **(dock or {})}),
+    )
     return ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type=policy_type), num_envs=num_envs)
 
 
@@ -51,8 +55,10 @@ def test_free_flight_episodes_truncate_at_max_steps():
 
 def test_collision_terminates_episodes_early():
     driver = make_driver(
-        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
-        dock_enabled=False,
+        physics=dict(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+        ),
+        dock=dict(enabled=False),
     )
     batch = driver.generate(RolloutSpec(num_episodes=2, max_steps=50, seed=0))
     batch.validate()

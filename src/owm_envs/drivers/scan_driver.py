@@ -58,8 +58,8 @@ class ScanDriver:
         records_policy_ids = self.policy_cfg.type == "union"
         dynamics, cfg = self.dynamics, self.cfg
 
-        force = cfg.control_limit_force_n
-        torque = cfg.control_limit_torque_nm
+        force = cfg.control.limit_force_n
+        torque = cfg.control.limit_torque_nm
         ctrl_low = jnp.array([-force] * 3 + [-torque] * 3, dtype=jnp.float32)
         ctrl_high = -ctrl_low
 

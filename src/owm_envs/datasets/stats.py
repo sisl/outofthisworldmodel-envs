@@ -15,7 +15,7 @@ from typing import Literal
 import numpy as np
 from pydantic import Field
 
-from ..core.config_io import YamlModel
+from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
 from ..envs.iss.config import ISSConfig
 from ..envs.iss.policies import PolicyConfig
@@ -23,13 +23,13 @@ from ..envs.iss.policies import PolicyConfig
 _STD_FLOOR = 1e-6
 
 
-class SplitSpec(YamlModel):
+class SplitSpec(ConfigModel):
     num_episodes: int = 64
     max_steps: int = 2000
     seed: int = 0
 
 
-class GenerationConfig(YamlModel):
+class GenerationConfig(ConfigModel):
     splits: dict[str, SplitSpec] = Field(
         default_factory=lambda: {
             "train": SplitSpec(num_episodes=64, seed=0),

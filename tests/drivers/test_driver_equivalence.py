@@ -36,7 +36,7 @@ import pytest
 from owm_envs.drivers.scan_driver import ScanDriver
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
-from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
@@ -55,7 +55,7 @@ def drivers_for(cfg, num_envs=2):
 
 
 def test_both_drivers_agree_on_free_flight_trajectories():
-    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=False)
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     vec, scan = drivers_for(cfg)
     spec = RolloutSpec(num_episodes=2, max_steps=25, seed=0)
 
@@ -72,8 +72,10 @@ def test_both_drivers_agree_on_free_flight_trajectories():
 
 def test_both_drivers_agree_when_episodes_terminate_on_collision():
     cfg = ISSConfig(
-        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     )
     vec, scan = drivers_for(cfg)
     spec = RolloutSpec(num_episodes=2, max_steps=50, seed=0)
@@ -103,7 +105,7 @@ def test_both_drivers_agree_structurally_with_many_episodes_per_lane():
     # cannot assert bitwise equality. It asserts what must still hold:
     # segmentation, lengths, and termination flags agree, and both drivers
     # honor the episode convention.
-    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=False)
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     vec, scan = drivers_for(cfg)
     spec = RolloutSpec(num_episodes=6, max_steps=10, seed=0)
 
@@ -124,8 +126,10 @@ def test_both_drivers_agree_structurally_when_episodes_terminate_early():
     # terminates almost immediately and lanes recycle several times over the
     # 6 requested episodes -- again past the one-episode-per-lane regime.
     cfg = ISSConfig(
-        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     )
     vec, scan = drivers_for(cfg)
     spec = RolloutSpec(num_episodes=6, max_steps=10, seed=0)
@@ -148,7 +152,7 @@ def test_both_drivers_agree_on_episode_length_distribution_for_a_stochastic_poli
     # Random actions cannot match trajectory-for-trajectory across two PRNG
     # pipelines, but a systematic difference in termination or segmentation
     # logic would still show up as a different length distribution.
-    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=False)
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     stochastic = PolicyConfig(type="random")
     from owm_envs.envs.iss.policy_source import IssPolicySource
 
@@ -170,7 +174,7 @@ def test_both_drivers_agree_on_episode_length_distribution_for_a_stochastic_poli
 
 
 def test_both_drivers_produce_batches_that_validate():
-    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=False)
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     vec, scan = drivers_for(cfg)
     spec = RolloutSpec(num_episodes=2, max_steps=15, seed=1)
     vec.generate(spec).validate()
