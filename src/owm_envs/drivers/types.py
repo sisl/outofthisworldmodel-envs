@@ -60,7 +60,13 @@ class TrajectoryBatch:
 
     @property
     def total_transitions(self) -> int:
-        return int(self.lengths.sum())
+        # `lengths` counts observations, not transitions: the last stored
+        # observation per episode is the terminal state, paired with the
+        # synthetic zero-pad action rather than a real one, so it isn't a
+        # usable (obs, act, next_obs) transition. An episode of length L
+        # contributes L - 1 transitions; clamp at 0 for the L == 1 edge case
+        # (a single observation, no step taken).
+        return int(np.maximum(self.lengths - 1, 0).sum())
 
     def validate(self) -> None:
         """Raise ValueError on any internal inconsistency."""

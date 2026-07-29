@@ -112,7 +112,10 @@ def test_summary_counts_real_transitions_not_padded_ones(tmp_path):
     write_run_metadata(tmp_path, cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()}, fps=24, seed=0)
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["counts"]["train"]["episodes"] == 2
-    assert summary["counts"]["train"]["transitions"] == 6  # 4 + 2, not 8
+    # lengths [4, 2] -> (4-1) + (2-1) = 4 real transitions, not 8 (padded
+    # width) and not 6 (naive sum of lengths, which double-counts each
+    # episode's terminal-observation slot as a transition).
+    assert summary["counts"]["train"]["transitions"] == 4
 
 
 def test_generation_config_round_trips(tmp_path):

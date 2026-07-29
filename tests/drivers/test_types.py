@@ -20,7 +20,16 @@ def make_batch(num_episodes=2, max_len=5, obs_dim=13, act_dim=6, lengths=None):
 def test_reports_episode_count_and_total_transitions():
     batch = make_batch(num_episodes=3, max_len=10, lengths=[10, 4, 7])
     assert batch.num_episodes == 3
-    assert batch.total_transitions == 21
+    # Each episode's last observation is terminal, paired with a zero-pad
+    # action, not a real transition: (10-1) + (4-1) + (7-1) = 18, not 21.
+    assert batch.total_transitions == 18
+
+
+def test_total_transitions_is_zero_for_a_single_observation_episode():
+    # A length-1 episode has no step taken, so it contributes 0 transitions,
+    # not -1.
+    batch = make_batch(num_episodes=1, max_len=5, lengths=[1])
+    assert batch.total_transitions == 0
 
 
 def test_validate_accepts_a_consistent_batch():
