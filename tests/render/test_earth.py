@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from owm_envs.render.earth import _ensure_earth_source, earth_texture_path
+from owm_envs.render.earth import _bake_patch, _ensure_earth_source, earth_texture_path
 
 
-@pytest.mark.parametrize("kind", ["color", "clouds", "bump"])
+@pytest.mark.parametrize("kind", ["color", "clouds"])
 def test_baked_patch_resolves_without_network(kind):
     # The default path must need no network and no high-res source on disk.
     path = earth_texture_path(kind)
@@ -60,3 +60,20 @@ def test_downloader_leaves_no_part_file_behind(monkeypatch, tmp_path):
 def test_unknown_texture_kind_raises():
     with pytest.raises(ValueError, match="kind"):
         earth_texture_path("infrared")
+
+
+def test_tier2_miss_warns_when_source_dir_has_unmatched_files(monkeypatch, tmp_path):
+    # A maintainer who drops a high-res source in under the wrong filename
+    # used to have tier 2 silently skipped -- this must be observable instead.
+    (tmp_path / "some_other_file.tif").write_bytes(b"not the expected name")
+    monkeypatch.setattr("owm_envs.render.earth._source_dir", lambda: tmp_path)
+    with pytest.warns(UserWarning, match="tier-2 bake"):
+        assert _bake_patch("clouds") is None
+
+
+def test_tier2_miss_is_silent_when_source_dir_is_empty(monkeypatch, tmp_path, recwarn):
+    # An empty (or absent) sources/ directory is the common case -- no
+    # high-res source was ever provided, so there is nothing to warn about.
+    monkeypatch.setattr("owm_envs.render.earth._source_dir", lambda: tmp_path)
+    assert _bake_patch("clouds") is None
+    assert len(recwarn) == 0

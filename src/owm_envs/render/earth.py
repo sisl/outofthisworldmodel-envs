@@ -21,12 +21,11 @@ from owm_envs.render import resources_dir
 
 _EARTH_ASSET_BASE_URL = "https://s3.us-west-004.backblazeb2.com/outofthisworldmodel-iss"
 
-TextureKind = Literal["color", "clouds", "bump"]
+TextureKind = Literal["color", "clouds"]
 
 _SOURCE_NAMES = {
     "color": "EarthColorMap-80k.tif",
-    "clouds": "EarthCloudMap-80k.tif",
-    "bump": "EarthBumpMap-80k.tif",
+    "clouds": "Earth-40K-Clouds.tif",
 }
 
 
@@ -49,8 +48,17 @@ def _load_bake_patch():
 
 def _bake_patch(kind: TextureKind) -> Path | None:
     """Tier 2: bake a fresh patch from a high-resolution source on disk, if present."""
-    source = _source_dir() / _SOURCE_NAMES[kind]
+    source_dir = _source_dir()
+    source = source_dir / _SOURCE_NAMES[kind]
     if not source.exists():
+        if source_dir.is_dir() and any(source_dir.iterdir()):
+            # A source directory exists but nothing in it matches the expected
+            # filename -- silently skipping tier 2 here would leave a
+            # maintainer's dropped-in file never picked up, with no clue why.
+            warnings.warn(
+                f"{source_dir} has files but none named {_SOURCE_NAMES[kind]!r}; "
+                f"tier-2 bake for {kind!r} skipped"
+            )
         return None
 
     bake_patch, lon, lat, angle = _load_bake_patch()
