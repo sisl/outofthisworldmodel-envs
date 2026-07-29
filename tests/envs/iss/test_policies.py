@@ -3,11 +3,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
 from owm_envs.envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
 
-CFG = ISSConfig(collision_boxes_path=None, dock_position=(0.0, 0.0, 0.0))
+CFG = ISSConfig(
+    physics=PhysicsConfig(collision_boxes_path=None),
+    dock=DockConfig(position=(0.0, 0.0, 0.0)),
+)
 PCFG = PolicyConfig()
 
 
@@ -39,8 +42,8 @@ def test_random_policy_respects_control_limits():
     empty = jnp.zeros((0,), dtype=jnp.float32)
     for seed in range(20):
         a = np.asarray(policy_fn(state_at((0.0, 0.0, 0.0)), jax.random.PRNGKey(seed), empty))
-        assert np.all(np.abs(a[0:3]) <= CFG.control_limit_force_n + 1e-3)
-        assert np.all(np.abs(a[3:6]) <= CFG.control_limit_torque_nm + 1e-3)
+        assert np.all(np.abs(a[0:3]) <= CFG.control.limit_force_n + 1e-3)
+        assert np.all(np.abs(a[3:6]) <= CFG.control.limit_torque_nm + 1e-3)
 
 
 def test_dock_policy_pushes_toward_the_dock():
@@ -52,15 +55,17 @@ def test_dock_policy_pushes_toward_the_dock():
 
 
 def test_dock_policy_drives_the_chaser_to_the_dock():
-    cfg = ISSConfig(collision_boxes_path=None, dock_position=(0.0, 0.0, 0.0),
-                    dock_quaternion=(1.0, 0.0, 0.0, 0.0), dock_enabled=True)
+    cfg = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(position=(0.0, 0.0, 0.0), quaternion=(1.0, 0.0, 0.0, 0.0), enabled=True),
+    )
     dyn = ISSDynamics(cfg)
     policy_fn, _ = make_policy(cfg, PCFG, "dock")
     empty = jnp.zeros((0,), dtype=jnp.float32)
 
     s = state_at((30.0, 0.0, 0.0))
-    force_limit = cfg.control_limit_force_n
-    torque_limit = cfg.control_limit_torque_nm
+    force_limit = cfg.control.limit_force_n
+    torque_limit = cfg.control.limit_torque_nm
     for _ in range(2000):
         a = policy_fn(s, jax.random.PRNGKey(0), empty)
         a = jnp.concatenate([

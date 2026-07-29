@@ -4,7 +4,7 @@ import pytest
 from gymnasium.utils.env_checker import check_env
 
 import owm_envs.envs  # noqa: F401  -- triggers registration
-from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
 
 
@@ -30,8 +30,8 @@ def test_action_space_matches_configured_limits():
     cfg = ISSConfig()
     env = ISSEnv(cfg)
     assert env.action_space.shape == (6,)
-    np.testing.assert_allclose(env.action_space.high[0:3], cfg.control_limit_force_n)
-    np.testing.assert_allclose(env.action_space.high[3:6], cfg.control_limit_torque_nm)
+    np.testing.assert_allclose(env.action_space.high[0:3], cfg.control.limit_force_n)
+    np.testing.assert_allclose(env.action_space.high[3:6], cfg.control.limit_torque_nm)
 
 
 def test_reset_is_reproducible_with_the_same_seed():
@@ -53,7 +53,9 @@ def test_info_always_reports_success_and_collision():
 
 def test_truncates_at_max_steps_without_terminating():
     # No collision boxes and docking off => the episode can only ever truncate.
-    env = ISSEnv(ISSConfig(max_steps=10, collision_boxes_path=None, dock_enabled=False))
+    env = ISSEnv(ISSConfig(
+        max_steps=10, physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     env.reset(seed=0)
     zero = np.zeros(6, dtype=np.float32)
     for _ in range(9):
@@ -68,8 +70,10 @@ def test_collision_terminates_and_reports_in_info():
     env = ISSEnv(ISSConfig(
         max_steps=100,
         # A box covering the whole start sphere guarantees an immediate hit.
-        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     ))
     env.reset(seed=0)
     _, reward, terminated, truncated, info = env.step(np.zeros(6, dtype=np.float32))
@@ -83,11 +87,9 @@ def test_collision_terminates_and_reports_in_info():
 def test_docking_terminates_and_reports_success():
     env = ISSEnv(ISSConfig(
         max_steps=100,
-        collision_boxes_path=None,
-        dock_enabled=True,
+        physics=PhysicsConfig(collision_boxes_path=None),
         # Dock target at the start sphere radius, so reset lands essentially on it.
-        dock_max_distance_m=200.0,
-        dock_max_velocity_m_s=10.0,
+        dock=DockConfig(enabled=True, max_distance_m=200.0, max_velocity_m_s=10.0),
     ))
     env.reset(seed=0)
     _, _, terminated, truncated, info = env.step(np.zeros(6, dtype=np.float32))
@@ -98,10 +100,10 @@ def test_docking_terminates_and_reports_success():
 
 
 def test_actions_are_clipped_to_the_action_space():
-    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=False)
+    cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     huge = np.full(6, 1e9, dtype=np.float32)
     clamped = np.concatenate(
-        [np.full(3, cfg.control_limit_force_n), np.full(3, cfg.control_limit_torque_nm)]
+        [np.full(3, cfg.control.limit_force_n), np.full(3, cfg.control.limit_torque_nm)]
     ).astype(np.float32)
 
     env_huge = ISSEnv(cfg)

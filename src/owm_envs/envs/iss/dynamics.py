@@ -58,22 +58,22 @@ class ISSDynamics:
 
         self._integrator = Integrator(cfg.dt)
 
-        inertia = jnp.asarray(cfg.inertia_diag, dtype=jnp.float32)
-        self._mass = jnp.asarray(cfg.mass, dtype=jnp.float32)
+        inertia = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
+        self._mass = jnp.asarray(cfg.physics.mass, dtype=jnp.float32)
         self._inertia_diag = jnp.maximum(inertia, 1e-6)
         self._inv_inertia_diag = 1.0 / self._inertia_diag
-        self._linear_damping = jnp.asarray(cfg.linear_damping, dtype=jnp.float32)
-        self._angular_damping = jnp.asarray(cfg.angular_damping, dtype=jnp.float32)
-        self._chaser_radius = jnp.asarray(cfg.dragon_collision_radius_m, dtype=jnp.float32)
-        self._start_radius = jnp.asarray(cfg.start_radius_m, dtype=jnp.float32)
+        self._linear_damping = jnp.asarray(cfg.physics.linear_damping, dtype=jnp.float32)
+        self._angular_damping = jnp.asarray(cfg.physics.angular_damping, dtype=jnp.float32)
+        self._chaser_radius = jnp.asarray(cfg.physics.dragon_collision_radius_m, dtype=jnp.float32)
+        self._start_radius = jnp.asarray(cfg.physics.start_radius_m, dtype=jnp.float32)
 
-        centers, half_extents = load_collision_boxes(cfg.collision_boxes_path)
+        centers, half_extents = load_collision_boxes(cfg.physics.collision_boxes_path)
         self._box_centers = jnp.asarray(centers, dtype=jnp.float32)
         self._box_half_extents = jnp.asarray(half_extents, dtype=jnp.float32)
 
-        self._dock_position = jnp.asarray(cfg.dock_position, dtype=jnp.float32)
-        self._dock_max_distance = jnp.asarray(cfg.dock_max_distance_m, dtype=jnp.float32)
-        self._dock_max_velocity = jnp.asarray(cfg.dock_max_velocity_m_s, dtype=jnp.float32)
+        self._dock_position = jnp.asarray(cfg.dock.position, dtype=jnp.float32)
+        self._dock_max_distance = jnp.asarray(cfg.dock.max_distance_m, dtype=jnp.float32)
+        self._dock_max_velocity = jnp.asarray(cfg.dock.max_velocity_m_s, dtype=jnp.float32)
 
     def _eom(self, x: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
         vel_w = x[3:6]
@@ -103,7 +103,7 @@ class ISSDynamics:
         return jnp.any(dist <= self._chaser_radius)
 
     def _docked(self, pos_w: jnp.ndarray, vel_w: jnp.ndarray) -> jnp.ndarray:
-        if not self.cfg.dock_enabled:
+        if not self.cfg.dock.enabled:
             return jnp.array(False)
         near = jnp.linalg.norm(pos_w - self._dock_position) <= self._dock_max_distance
         slow = jnp.linalg.norm(vel_w) <= self._dock_max_velocity

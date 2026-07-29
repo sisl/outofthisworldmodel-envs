@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
-FREE_FLIGHT = dict(collision_boxes_path=None, dock_enabled=False)
+FREE_FLIGHT = dict(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
 
 
 def test_spaces_are_batched_correctly():
@@ -95,8 +95,10 @@ def test_truncation_is_flagged_at_max_steps():
 def test_terminated_sub_env_autoresets_on_the_next_step():
     env = ISSVectorEnv(num_envs=2, cfg=ISSConfig(
         max_steps=100,
-        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     ))
     env.reset(seed=0)
     zero = np.zeros((2, 6), dtype=np.float32)
@@ -123,8 +125,10 @@ def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
     """
     cfg = ISSConfig(
         max_steps=100,
-        collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     )
     env = ISSVectorEnv(num_envs=2, cfg=cfg)
     env.reset(seed=0)
@@ -135,7 +139,7 @@ def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
 
     large = np.tile(
         np.array(
-            [cfg.control_limit_force_n] * 3 + [cfg.control_limit_torque_nm] * 3,
+            [cfg.control.limit_force_n] * 3 + [cfg.control.limit_torque_nm] * 3,
             dtype=np.float32,
         ),
         (2, 1),
@@ -150,7 +154,7 @@ def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
     np.testing.assert_array_equal(obs[:, 3:6], 0.0)
     np.testing.assert_array_equal(obs[:, 10:13], 0.0)
     np.testing.assert_allclose(
-        np.linalg.norm(obs[:, 0:3], axis=1), cfg.start_radius_m, rtol=1e-5
+        np.linalg.norm(obs[:, 0:3], axis=1), cfg.physics.start_radius_m, rtol=1e-5
     )
 
 

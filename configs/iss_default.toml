@@ -1,0 +1,42 @@
+dt = 0.05
+max_steps = 2000
+
+[physics]
+mass = 12000.0
+inertia_diag = [
+    80000.0,
+    80000.0,
+    50000.0,
+]
+linear_damping = 0.005
+angular_damping = 0.02
+dragon_collision_radius_m = 2.25
+start_radius_m = 100.0
+collision_boxes_path = "default"
+
+[control]
+limit_force_n = 18000.0
+limit_torque_nm = 90000.0
+
+[dock]
+position = [
+    0.225,
+    -24.5,
+    -2.5,
+]
+quaternion = [
+    0.7071068,
+    -0.7071068,
+    0.0,
+    0.0,
+]
+enabled = true
+max_distance_m = 0.1
+max_velocity_m_s = 0.5
+
+[reward_weights]
+position = 1.0
+velocity = 0.35
+angular_velocity = 0.1
+control_effort = 0.05
+collision = 1000000.0

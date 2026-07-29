@@ -139,3 +139,22 @@ def test_toml_roundtrips_explicit_none_over_a_non_none_default(tmp_path):
     reloaded = WithFallback.from_toml(path)
     assert reloaded == original
     assert reloaded.value is None
+
+
+def test_toml_roundtrips_explicit_none_inside_a_nested_submodel(tmp_path):
+    # The dotted-path recording in _explicit_null_paths recurses into nested
+    # submodels, so a field set to None *inside* a table (not just at the top
+    # level) must still round-trip as None, not resurrect its non-None
+    # default -- the nesting is exactly what could break the path recording.
+    class WithFallback(ConfigModel):
+        value: str | None = "fallback"
+
+    class Section(ConfigModel):
+        inner: WithFallback = WithFallback()
+
+    original = Section(inner=WithFallback(value=None))
+    path = tmp_path / "nested_explicit_none.toml"
+    original.to_toml(path)
+    reloaded = Section.from_toml(path)
+    assert reloaded == original
+    assert reloaded.inner.value is None

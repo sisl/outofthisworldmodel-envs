@@ -107,7 +107,7 @@ def _shortest_arc_from_body_z(target_dir: jnp.ndarray) -> jnp.ndarray:
 
 def _build_random(cfg: ISSConfig) -> PolicyFn:
     low = jnp.array(
-        [-cfg.control_limit_force_n] * 3 + [-cfg.control_limit_torque_nm] * 3,
+        [-cfg.control.limit_force_n] * 3 + [-cfg.control.limit_torque_nm] * 3,
         dtype=jnp.float32,
     )
     high = -low
@@ -120,7 +120,7 @@ def _build_random(cfg: ISSConfig) -> PolicyFn:
 
 
 def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasFn]:
-    inertia_diag = jnp.asarray(cfg.inertia_diag, dtype=jnp.float32)
+    inertia_diag = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
     radius_range = jnp.asarray(params.radius_range_m, dtype=jnp.float32)
     omega_range = jnp.asarray(params.angular_speed_range_rad_s, dtype=jnp.float32)
 
@@ -166,9 +166,9 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
 
 
 def _build_dock(cfg: ISSConfig, params: DockParams) -> PolicyFn:
-    inertia_diag = jnp.asarray(cfg.inertia_diag, dtype=jnp.float32)
-    dock_pos = jnp.asarray(cfg.dock_position, dtype=jnp.float32)
-    dock_quat = quat_normalize(jnp.asarray(cfg.dock_quaternion, dtype=jnp.float32))
+    inertia_diag = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
+    dock_pos = jnp.asarray(cfg.dock.position, dtype=jnp.float32)
+    dock_quat = quat_normalize(jnp.asarray(cfg.dock.quaternion, dtype=jnp.float32))
 
     def policy_fn(state, key, extras):
         del key, extras

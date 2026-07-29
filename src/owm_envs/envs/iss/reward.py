@@ -14,7 +14,7 @@ behaviour is preserved here.
 
 One term formula does diverge: seamstress's reward.goal is the all-zero state
 (conf/control/control_international_space_station.yaml), so its position term
-targets the ISS origin. This port instead targets `cfg.dock_position`, ~24.6 m
+targets the ISS origin. This port instead targets `cfg.dock.position`, ~24.6 m
 away. That divergence is deliberate, not an oversight -- this is a docking
 task, and pulling the chaser toward the ISS origin would reward it for
 approaching the very structure the collision term penalises it for hitting;
@@ -41,7 +41,7 @@ def iss_reward(
     w = cfg.reward_weights
 
     goal_position = jnp.asarray(
-        cfg.reward_goal_position if cfg.reward_goal_position is not None else cfg.dock_position,
+        cfg.reward_goal_position if cfg.reward_goal_position is not None else cfg.dock.position,
         dtype=jnp.float32,
     )
 

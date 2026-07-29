@@ -33,7 +33,7 @@ def _observation_space(cfg: ISSConfig) -> spaces.Box:
 
 def _action_space(cfg: ISSConfig) -> spaces.Box:
     high = np.array(
-        [cfg.control_limit_force_n] * 3 + [cfg.control_limit_torque_nm] * 3,
+        [cfg.control.limit_force_n] * 3 + [cfg.control.limit_torque_nm] * 3,
         dtype=np.float32,
     )
     return spaces.Box(low=-high, high=high, dtype=np.float32)

@@ -3,7 +3,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import ISSConfig, default_collision_boxes_path
+from owm_envs.envs.iss.config import (
+    DockConfig,
+    ISSConfig,
+    PhysicsConfig,
+    default_collision_boxes_path,
+)
 from owm_envs.envs.iss.dynamics import STATE_LABELS, ISSDynamics
 
 ZERO_ACTION = jnp.zeros((6,), dtype=jnp.float32)
@@ -22,14 +27,18 @@ def test_state_is_13_dimensional():
 
 
 def test_zero_action_from_rest_stays_at_rest():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     s = make_state(pos=(50.0, 0.0, 0.0))
     s_next, _ = dyn.step(s, ZERO_ACTION)
     np.testing.assert_allclose(np.asarray(s_next), np.asarray(s), atol=1e-5)
 
 
 def test_constant_velocity_translates():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     s = make_state(pos=(50.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0))
     s_next, _ = dyn.step(s, ZERO_ACTION)
     # dt=0.05 with a small linear damping term, so slightly under 0.05 m.
@@ -37,7 +46,9 @@ def test_constant_velocity_translates():
 
 
 def test_body_force_accelerates_along_body_axis():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     s = make_state()
     action = jnp.array([12000.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
     s_next, _ = dyn.step(s, action)
@@ -47,7 +58,9 @@ def test_body_force_accelerates_along_body_axis():
 
 
 def test_quaternion_stays_normalized_over_long_rollout():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     s = make_state(omega=(0.5, -0.3, 0.2))
     for _ in range(500):
         s, _ = dyn.step(s, ZERO_ACTION)
@@ -65,8 +78,10 @@ def test_angular_damping_decays_spin():
     # angular_damping here so the effect is well above float32 resolution
     # (relative change ~1.25e-4) and this test actually checks that the
     # damping term is wired into the EOM.
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False,
-                                angular_damping=200.0))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None, angular_damping=200.0),
+        dock=DockConfig(enabled=False),
+    ))
     s = make_state(omega=(1.0, 0.0, 0.0))
     s_next, _ = dyn.step(s, ZERO_ACTION)
     assert float(s_next[10]) < 1.0
@@ -80,7 +95,9 @@ def test_angular_damping_is_inert_at_default_config():
     # decrement underflows on every single step rather than accumulating.
     # If this test starts failing, the defaults or the float32 dtype mandate
     # changed and angular damping is now actually observable in this sim.
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     s = make_state(omega=(1.0, 0.0, 0.0))
     s_next, _ = dyn.step(s, ZERO_ACTION)
     assert float(s_next[10]) == 1.0
@@ -92,8 +109,10 @@ def test_angular_damping_is_inert_at_default_config():
 
 def test_collision_fires_inside_a_box():
     dyn = ISSDynamics(ISSConfig(
-        collision_boxes_path=[{"center": [10.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [10.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     ))
     _, events = dyn.step(make_state(pos=(10.0, 0.0, 0.0)), ZERO_ACTION)
     assert bool(events.collision) is True
@@ -101,8 +120,10 @@ def test_collision_fires_inside_a_box():
 
 def test_collision_does_not_fire_far_away():
     dyn = ISSDynamics(ISSConfig(
-        collision_boxes_path=[{"center": [10.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}],
-        dock_enabled=False,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [10.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}]
+        ),
+        dock=DockConfig(enabled=False),
     ))
     _, events = dyn.step(make_state(pos=(500.0, 0.0, 0.0)), ZERO_ACTION)
     assert bool(events.collision) is False
@@ -110,12 +131,11 @@ def test_collision_does_not_fire_far_away():
 
 def test_collision_accounts_for_chaser_radius():
     # Box half-extent 2.0 at origin, chaser radius 2.25 => contact out to 4.25 m.
-    cfg_kwargs = dict(
+    physics = PhysicsConfig(
         collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [4.0, 4.0, 4.0]}],
-        dock_enabled=False,
         dragon_collision_radius_m=2.25,
     )
-    dyn = ISSDynamics(ISSConfig(**cfg_kwargs))
+    dyn = ISSDynamics(ISSConfig(physics=physics, dock=DockConfig(enabled=False)))
     _, near = dyn.step(make_state(pos=(4.0, 0.0, 0.0)), ZERO_ACTION)
     _, far = dyn.step(make_state(pos=(6.0, 0.0, 0.0)), ZERO_ACTION)
     assert bool(near.collision) is True
@@ -123,9 +143,11 @@ def test_collision_accounts_for_chaser_radius():
 
 
 def test_dock_requires_both_distance_and_speed():
-    cfg = ISSConfig(collision_boxes_path=None, dock_enabled=True,
-                    dock_position=(0.0, 0.0, 0.0),
-                    dock_max_distance_m=0.1, dock_max_velocity_m_s=0.5)
+    cfg = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=True, position=(0.0, 0.0, 0.0),
+                        max_distance_m=0.1, max_velocity_m_s=0.5),
+    )
     dyn = ISSDynamics(cfg)
 
     _, slow_and_close = dyn.step(make_state(pos=(0.0, 0.0, 0.0)), ZERO_ACTION)
@@ -139,14 +161,16 @@ def test_dock_requires_both_distance_and_speed():
 
 
 def test_dock_disabled_never_fires():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False,
-                                dock_position=(0.0, 0.0, 0.0)))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False, position=(0.0, 0.0, 0.0)),
+    ))
     _, events = dyn.step(make_state(), ZERO_ACTION)
     assert bool(events.docked) is False
 
 
 def test_reset_places_chaser_on_the_start_sphere():
-    dyn = ISSDynamics(ISSConfig(start_radius_m=100.0))
+    dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_m=100.0)))
     s = dyn.reset(jax.random.PRNGKey(0))
     assert s.shape == (13,)
     assert np.isclose(float(jnp.linalg.norm(s[0:3])), 100.0, atol=1e-3)
@@ -158,7 +182,7 @@ def test_reset_places_chaser_on_the_start_sphere():
 def test_reset_points_body_z_at_the_iss():
     from owm_envs.core.quaternion import rotate_body_to_world
 
-    dyn = ISSDynamics(ISSConfig(start_radius_m=100.0))
+    dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_m=100.0)))
     s = dyn.reset(jax.random.PRNGKey(3))
     nose_world = rotate_body_to_world(s[6:10], jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32))
     to_iss = -s[0:3] / jnp.linalg.norm(s[0:3])
@@ -175,7 +199,9 @@ def test_reset_is_deterministic_per_key():
 
 
 def test_step_is_jit_compatible():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=default_collision_boxes_path()))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=default_collision_boxes_path())
+    ))
     jitted = jax.jit(dyn.step)
     s_next, events = jitted(make_state(pos=(100.0, 0.0, 0.0)), ZERO_ACTION)
     assert s_next.shape == (13,)
@@ -183,7 +209,9 @@ def test_step_is_jit_compatible():
 
 
 def test_step_is_vmap_compatible():
-    dyn = ISSDynamics(ISSConfig(collision_boxes_path=None, dock_enabled=False))
+    dyn = ISSDynamics(ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    ))
     states = jnp.stack([make_state(pos=(float(i), 0.0, 0.0)) for i in range(4)])
     actions = jnp.zeros((4, 6), dtype=jnp.float32)
     s_next, events = jax.vmap(dyn.step)(states, actions)

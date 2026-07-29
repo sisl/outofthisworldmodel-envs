@@ -4,6 +4,7 @@ import yaml
 
 from owm_envs.envs.iss.config import (
     ISSConfig,
+    PhysicsConfig,
     RewardWeights,
     default_collision_boxes_path,
     load_collision_boxes,
@@ -14,15 +15,15 @@ def test_default_config_matches_iss2_values():
     cfg = ISSConfig()
     assert cfg.dt == 0.05
     assert cfg.max_steps == 2000
-    assert cfg.mass == 12000.0
-    assert cfg.inertia_diag == (80000.0, 80000.0, 50000.0)
-    assert cfg.start_radius_m == 100.0
+    assert cfg.physics.mass == 12000.0
+    assert cfg.physics.inertia_diag == (80000.0, 80000.0, 50000.0)
+    assert cfg.physics.start_radius_m == 100.0
     # 9x actuator limits from iss2 -- deliberately unphysical, a dataset-variety knob.
-    assert cfg.control_limit_force_n == 18000.0
-    assert cfg.control_limit_torque_nm == 90000.0
-    assert cfg.dock_enabled is True
-    assert cfg.dock_max_distance_m == 0.1
-    assert cfg.dock_max_velocity_m_s == 0.5
+    assert cfg.control.limit_force_n == 18000.0
+    assert cfg.control.limit_torque_nm == 90000.0
+    assert cfg.dock.enabled is True
+    assert cfg.dock.max_distance_m == 0.1
+    assert cfg.dock.max_velocity_m_s == 0.5
 
 
 def test_config_is_frozen():
@@ -34,7 +35,9 @@ def test_config_is_frozen():
 
 
 def test_config_roundtrips_through_yaml(tmp_path):
-    original = ISSConfig(dt=0.02, max_steps=500, start_radius_m=250.0)
+    original = ISSConfig(
+        dt=0.02, max_steps=500, physics=PhysicsConfig(start_radius_m=250.0)
+    )
     path = tmp_path / "run_config.yaml"
     original.to_yaml(path)
     assert ISSConfig.from_yaml(path) == original
@@ -63,14 +66,28 @@ def test_reward_goal_position_survives_the_roundtrip(tmp_path):
     assert loaded == original
 
 
+def test_collision_boxes_path_explicit_none_survives_toml_roundtrip(tmp_path):
+    # collision_boxes_path defaults to DEFAULT_COLLISION_BOXES ("default"), not
+    # None, and now lives inside the nested `physics` table. The explicit-null
+    # dotted-path machinery in ConfigModel must still record it correctly
+    # through that extra level of nesting, or a caller who opted out of
+    # collision geometry would silently get the default geometry back.
+    original = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None))
+    path = tmp_path / "run_config.toml"
+    original.to_toml(path)
+    loaded = ISSConfig.from_toml(path)
+    assert loaded.physics.collision_boxes_path is None
+    assert loaded == original
+
+
 def test_shipped_default_config_file_matches_code_defaults():
-    # configs/iss_default.yaml is the committed, versioned record of the
+    # configs/iss_default.toml is the committed, versioned record of the
     # defaults. If someone changes a default in code without regenerating it,
     # this fails -- which is the point.
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[3]
-    assert ISSConfig.from_yaml(repo_root / "configs" / "iss_default.yaml") == ISSConfig()
+    assert ISSConfig.from_toml(repo_root / "configs" / "iss_default.toml") == ISSConfig()
 
 
 def test_invalid_config_is_rejected_at_load(tmp_path):

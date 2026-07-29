@@ -24,8 +24,49 @@ from ...core.models import ConfigModel
 # geometry shipped with this package". A plain sentinel (rather than baking
 # default_collision_boxes_path()'s absolute, install-location-dependent path
 # into the field default) keeps the default portable across machines and
-# installs, and keeps configs/iss_default.yaml diffable/reviewable.
+# installs, and keeps configs/iss_default.toml diffable/reviewable.
 DEFAULT_COLLISION_BOXES = "default"
+
+
+class PhysicsConfig(ConfigModel):
+    """Chaser mass properties, damping, and collision geometry."""
+
+    mass: float = 12_000.0
+    inertia_diag: tuple[float, float, float] = (80_000.0, 80_000.0, 50_000.0)
+    linear_damping: float = 0.005
+    angular_damping: float = 0.02
+
+    dragon_collision_radius_m: float = 2.25
+    start_radius_m: float = 100.0
+
+    # A path to a YAML file, an already-loaded list of box dicts (useful in
+    # tests), DEFAULT_COLLISION_BOXES to use the 318-box ISS geometry shipped
+    # with this package (the default), or None to opt out of collision
+    # geometry entirely.
+    collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES
+
+
+class ControlConfig(ConfigModel):
+    """Actuator limits.
+
+    9x the baseline (was 2000 N / 10000 N*m). Traversal time scales as
+    1/sqrt(F_max), so 9x force gives ~3x faster chaser motion. Not physically
+    realistic for a real Dragon -- purely a synthetic-dataset variety knob.
+    """
+
+    limit_force_n: float = 18_000.0
+    limit_torque_nm: float = 90_000.0
+
+
+class DockConfig(ConfigModel):
+    """Dock pose and the success criteria for reaching it."""
+
+    position: tuple[float, float, float] = (0.225, -24.5, -2.5)
+    # Maps body +z onto world +y: 90 deg rotation about world -x.
+    quaternion: tuple[float, float, float, float] = (0.7071068, -0.7071068, 0.0, 0.0)
+    enabled: bool = True
+    max_distance_m: float = 0.1
+    max_velocity_m_s: float = 0.5
 
 
 class RewardWeights(ConfigModel):
@@ -50,39 +91,16 @@ class ISSConfig(ConfigModel):
     # renderer visibly glitches, so iss2 caps episodes here.
     max_steps: int = 2000
 
-    mass: float = 12_000.0
-    inertia_diag: tuple[float, float, float] = (80_000.0, 80_000.0, 50_000.0)
-    linear_damping: float = 0.005
-    angular_damping: float = 0.02
-
-    dragon_collision_radius_m: float = 2.25
-    start_radius_m: float = 100.0
-
-    dock_position: tuple[float, float, float] = (0.225, -24.5, -2.5)
-    # Maps body +z onto world +y: 90 deg rotation about world -x.
-    dock_quaternion: tuple[float, float, float, float] = (0.7071068, -0.7071068, 0.0, 0.0)
-    dock_enabled: bool = True
-    dock_max_distance_m: float = 0.1
-    dock_max_velocity_m_s: float = 0.5
-
-    # A path to a YAML file, an already-loaded list of box dicts (useful in
-    # tests), DEFAULT_COLLISION_BOXES to use the 318-box ISS geometry shipped
-    # with this package (the default), or None to opt out of collision
-    # geometry entirely.
-    collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES
-
-    # 9x the baseline (was 2000 N / 10000 N*m). Traversal time scales as
-    # 1/sqrt(F_max), so 9x force gives ~3x faster chaser motion. Not physically
-    # realistic for a real Dragon -- purely a synthetic-dataset variety knob.
-    control_limit_force_n: float = 18_000.0
-    control_limit_torque_nm: float = 90_000.0
+    physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
+    control: ControlConfig = Field(default_factory=ControlConfig)
+    dock: DockConfig = Field(default_factory=DockConfig)
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     # Overrides the reward's position-error target. When None (default),
-    # iss_reward measures distance to `dock_position`, as it should for a
+    # iss_reward measures distance to `dock.position`, as it should for a
     # docking task. Seamstress's own control config instead sets the reward
     # goal to the ISS origin [0, 0, 0] -- but that point is INSIDE the
-    # station's collision hull (dock_position, ~24.63 m away, is not), so
+    # station's collision hull (dock.position, ~24.63 m away, is not), so
     # seamstress's MPPI was being pulled toward a position it can never reach
     # without incurring the -1e6 collision penalty. This field exists to
     # deliberately reproduce that seamstress behaviour, or to target some
