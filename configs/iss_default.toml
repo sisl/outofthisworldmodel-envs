@@ -35,8 +35,8 @@ max_distance_m = 0.1
 max_velocity_m_s = 0.5
 
 [reward_weights]
-position = 1.0
-velocity = 0.35
-angular_velocity = 0.1
-control_effort = 0.05
-collision = 1000000.0
+position = -1.0
+velocity = -0.35
+angular_velocity = -0.1
+control_effort = -0.05
+collision = -1000000.0

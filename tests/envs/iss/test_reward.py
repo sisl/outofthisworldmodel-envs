@@ -36,15 +36,15 @@ def test_default_weights_combine_multiple_terms():
         state_at((1.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), omega=(1.0, 0.0, 0.0)),
         ZERO_ACTION, NO_EVENTS, cfg,
     )
-    # -(position=1.0*1 + velocity=0.35*1 + angular_velocity=0.1*1) == -1.45
+    # position=-1.0*1 + velocity=-0.35*1 + angular_velocity=-0.1*1 == -1.45
     assert np.isclose(float(r), -1.45, atol=1e-4)
 
 
 def test_position_term_is_summed_squared_not_norm():
-    # weight 1.0 on position, everything else zeroed => r == -sum(diff**2)
+    # weight -1.0 on position, everything else zeroed => r == -sum(diff**2)
     cfg = ISSConfig(
         dock=DockConfig(position=(0.0, 0.0, 0.0)),
-        reward_weights=RewardWeights(position=1.0, velocity=0.0, angular_velocity=0.0,
+        reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
     r = iss_reward(state_at((3.0, 4.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
@@ -54,7 +54,7 @@ def test_position_term_is_summed_squared_not_norm():
 def test_velocity_term_penalizes_speed():
     cfg = ISSConfig(
         dock=DockConfig(position=(0.0, 0.0, 0.0)),
-        reward_weights=RewardWeights(position=0.0, velocity=1.0, angular_velocity=0.0,
+        reward_weights=RewardWeights(position=0.0, velocity=-1.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
     r = iss_reward(state_at((0.0, 0.0, 0.0), vel=(2.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
@@ -64,7 +64,7 @@ def test_velocity_term_penalizes_speed():
 def test_angular_velocity_term_penalizes_spin():
     cfg = ISSConfig(
         dock=DockConfig(position=(0.0, 0.0, 0.0)),
-        reward_weights=RewardWeights(position=0.0, velocity=0.0, angular_velocity=1.0,
+        reward_weights=RewardWeights(position=0.0, velocity=0.0, angular_velocity=-1.0,
                                      control_effort=0.0, collision=0.0),
     )
     r = iss_reward(state_at((0.0, 0.0, 0.0), omega=(1.0, 2.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
@@ -75,7 +75,7 @@ def test_control_effort_term_penalizes_actuation():
     cfg = ISSConfig(
         dock=DockConfig(position=(0.0, 0.0, 0.0)),
         reward_weights=RewardWeights(position=0.0, velocity=0.0, angular_velocity=0.0,
-                                     control_effort=1.0, collision=0.0),
+                                     control_effort=-1.0, collision=0.0),
     )
     action = jnp.array([3.0, 0.0, 0.0, 4.0, 0.0, 0.0], dtype=jnp.float32)
     r = iss_reward(state_at((0.0, 0.0, 0.0)), action, NO_EVENTS, cfg)
@@ -86,7 +86,7 @@ def test_collision_applies_the_full_penalty_weight():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
     hit = Events(collision=jnp.array(True), docked=jnp.array(False))
     r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
-    assert np.isclose(float(r), -cfg.reward_weights.collision, atol=1.0)
+    assert np.isclose(float(r), cfg.reward_weights.collision, atol=1.0)
 
 
 def test_docking_is_not_penalized():
@@ -99,7 +99,7 @@ def test_docking_is_not_penalized():
 def test_reward_goal_position_none_targets_the_dock_position():
     cfg = ISSConfig(
         dock=DockConfig(position=(1.0, 0.0, 0.0)),
-        reward_weights=RewardWeights(position=1.0, velocity=0.0, angular_velocity=0.0,
+        reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
     assert cfg.reward_goal_position is None
@@ -111,8 +111,24 @@ def test_reward_goal_position_override_targets_the_override_not_the_dock():
     cfg = ISSConfig(
         dock=DockConfig(position=(1.0, 0.0, 0.0)),
         reward_goal_position=(0.0, 0.0, 0.0),
-        reward_weights=RewardWeights(position=1.0, velocity=0.0, angular_velocity=0.0,
+        reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
     r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), -16.0, atol=1e-4)  # (4-0)^2, not (4-1)^2
+
+
+def test_penalties_are_negative_rewards():
+    """The weights are negative AND the sum is not negated. Getting exactly one
+    of those right turns every penalty into a reward."""
+    cfg = ISSConfig(reward_goal_position=(0.0, 0.0, 0.0))
+    far = iss_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    near = iss_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    assert float(far) < float(near) < 0.0, "being further away must score worse"
+
+
+def test_collision_is_catastrophic_not_rewarded():
+    cfg = ISSConfig(reward_goal_position=(0.0, 0.0, 0.0))
+    hit = Events(collision=jnp.array(True), docked=jnp.array(False))
+    r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
+    assert float(r) < -1000.0, "a collision must be a large NEGATIVE reward"

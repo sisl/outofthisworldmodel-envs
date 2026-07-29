@@ -51,7 +51,7 @@ def iss_reward(
     control_effort = jnp.sum(action**2)
     collision = events.collision.astype(jnp.float32)
 
-    return -(
+    return (
         w.position * position_error
         + w.velocity * velocity_error
         + w.angular_velocity * angular_velocity_error

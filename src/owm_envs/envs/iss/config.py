@@ -74,19 +74,22 @@ class DockConfig(ConfigModel):
 
 
 class RewardWeights(ConfigModel):
-    """Weights for the five reward terms. Carried from seamstress iss2.
+    """Penalty weights for the five reward terms. Carried from seamstress iss2.
 
-    NOTE: `collision` at 1e6 was tuned for MPPI planning, where rewards are
+    Negative so that `iss_reward` is a plain weighted sum of these against
+    non-negative error terms -- no separate negation needed at the call site.
+
+    NOTE: `collision` at -1e6 was tuned for MPPI planning, where rewards are
     averaged over a horizon. As a per-step Gymnasium reward it is an enormous
     negative spike that will dominate RL gradients. Retuning is deliberately
     left to the consumer.
     """
 
-    position: float = 1.0
-    velocity: float = 0.35
-    angular_velocity: float = 0.1
-    control_effort: float = 0.05
-    collision: float = 1_000_000.0
+    position: float = -1.0
+    velocity: float = -0.35
+    angular_velocity: float = -0.1
+    control_effort: float = -0.05
+    collision: float = -1_000_000.0
 
 
 class ISSConfig(ConfigModel):
