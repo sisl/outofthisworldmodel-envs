@@ -129,51 +129,75 @@ class ScanDriver:
         return self._segment(emitted, spec, records_policy_ids)
 
     @staticmethod
-    def _segment(emitted, spec: RolloutSpec, records_policy_ids: bool) -> TrajectoryBatch:
-        """Cut the flat per-lane scan output into episodes at the `done` flags."""
+    def _segment_episodes(emitted, spec: RolloutSpec, records_policy_ids: bool) -> list[dict]:
+        """Cut the flat per-lane scan output into per-episode dicts, in
+        time-major completion order.
+
+        Iterating lane-major (all of lane 0's episodes, then lane 1's, ...)
+        and stopping as soon as `spec.num_episodes` is reached would exhaust
+        the count from the first few lanes and never touch the rest --
+        requesting 10 episodes over 8 lanes would take 2 each from lanes 0-4
+        and none from lanes 5-7, biasing the dataset toward a subset of the
+        reset-key stream. Iterating time-major (t outer, lane inner) instead
+        completes episodes in the same order VectorEnvDriver collects them
+        chronologically across lanes, so truncating to `spec.num_episodes`
+        keeps coverage spread across every lane.
+
+        Each dict also carries "lane", the lane it was cut from. pack_episodes
+        ignores unknown keys; tests use it to check lane coverage.
+        """
         states, next_states, actions, rewards, terminated, truncated, done, extras = (
             np.asarray(x) for x in emitted
         )
-        obs_dim = states.shape[-1]
         act_dim = actions.shape[-1]
         zero_action = np.zeros((1, act_dim), dtype=np.float32)
         zero_reward = np.zeros((1,), dtype=np.float32)
 
-        episodes = []
         num_lanes, horizon = done.shape
-        for lane in range(num_lanes):
-            start = 0
-            for t in range(horizon):
-                if done[lane, t]:
-                    episodes.append(
-                        {
-                            # N+1 observations: the N pre-step states plus the
-                            # terminal `next_state` from the iteration where
-                            # `done` fired.
-                            "obs": np.concatenate(
-                                [states[lane, start : t + 1], next_states[lane, t : t + 1]],
-                                axis=0,
-                            ),
-                            # N+1 actions: the N real actions plus a zero pad,
-                            # matching VectorEnvDriver's convention.
-                            "act": np.concatenate(
-                                [actions[lane, start : t + 1], zero_action], axis=0
-                            ),
-                            "rew": np.concatenate(
-                                [rewards[lane, start : t + 1], zero_reward], axis=0
-                            ),
-                            "terminated": bool(terminated[lane, t]),
-                            "truncated": bool(truncated[lane, t]),
-                            "policy_id": int(extras[lane, start, _UNION_POLICY_IDX])
-                            if records_policy_ids
-                            else 0,
-                        }
-                    )
-                    start = t + 1
-                    if len(episodes) >= spec.num_episodes:
-                        break
+        starts = [0] * num_lanes
+        episodes: list[dict] = []
+        for t in range(horizon):
+            for lane in range(num_lanes):
+                if not done[lane, t]:
+                    continue
+                start = starts[lane]
+                episodes.append(
+                    {
+                        # N+1 observations: the N pre-step states plus the
+                        # terminal `next_state` from the iteration where
+                        # `done` fired.
+                        "obs": np.concatenate(
+                            [states[lane, start : t + 1], next_states[lane, t : t + 1]],
+                            axis=0,
+                        ),
+                        # N+1 actions: the N real actions plus a zero pad,
+                        # matching VectorEnvDriver's convention.
+                        "act": np.concatenate(
+                            [actions[lane, start : t + 1], zero_action], axis=0
+                        ),
+                        "rew": np.concatenate(
+                            [rewards[lane, start : t + 1], zero_reward], axis=0
+                        ),
+                        "terminated": bool(terminated[lane, t]),
+                        "truncated": bool(truncated[lane, t]),
+                        "policy_id": int(extras[lane, start, _UNION_POLICY_IDX])
+                        if records_policy_ids
+                        else 0,
+                        "lane": lane,
+                    }
+                )
+                starts[lane] = t + 1
+                if len(episodes) >= spec.num_episodes:
+                    break
             if len(episodes) >= spec.num_episodes:
                 break
+
+        return episodes
+
+    @staticmethod
+    def _segment(emitted, spec: RolloutSpec, records_policy_ids: bool) -> TrajectoryBatch:
+        """Cut the flat per-lane scan output into episodes and pack them."""
+        episodes = ScanDriver._segment_episodes(emitted, spec, records_policy_ids)
 
         if len(episodes) < spec.num_episodes:
             raise RuntimeError(
@@ -181,6 +205,8 @@ class ScanDriver:
                 f"needed {spec.num_episodes}"
             )
 
+        obs_dim = episodes[0]["obs"].shape[-1]
+        act_dim = episodes[0]["act"].shape[-1]
         return pack_episodes(
             episodes[: spec.num_episodes],
             obs_dim=obs_dim,
