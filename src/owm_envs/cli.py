@@ -64,6 +64,12 @@ def generate(
     """Roll out trajectories and write a dataset run directory."""
     if env != "iss":
         raise typer.BadParameter(f"unknown environment '{env}'; only 'iss' exists")
+    if render and not lerobot:
+        raise typer.BadParameter(
+            "--render has no effect with --no-lerobot: there is no writer to consume the "
+            "rendered frames, so rendering would be pure wasted cost. Drop --render, or "
+            "drop --no-lerobot so the frames are written."
+        )
 
     if num_envs < 1:
         # Unguarded, this reaches the scan driver's horizon calculation
