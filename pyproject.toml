@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Training data environments for the Out of this World Model (OWM) world model"
 requires-python = ">=3.11"
 dependencies = [
+    "astrojax>=0.7.3",
     "jax>=0.4.30",
     "gymnasium>=1.0",
     "numpy>=1.26",

@@ -59,6 +59,26 @@ def test_quat_derivative_is_orthogonal_to_quat():
     assert abs(float(jnp.dot(q, q_dot))) < 1e-6
 
 
+def test_astrojax_swap_preserves_known_rotations():
+    """Characterisation test: values captured from the pre-astrojax implementation.
+
+    These are not derived from astrojax -- they pin the behaviour that existed
+    before the swap, so a convention mismatch (scalar-first vs scalar-last, or a
+    transposed rotation matrix) fails loudly rather than silently rotating
+    everything wrongly.
+    """
+    q = quat_normalize(jnp.array([0.5, 0.5, 0.5, 0.5], dtype=jnp.float32))
+    # +x -> +y -> +z cyclic permutation for this quaternion
+    np.testing.assert_allclose(
+        np.asarray(rotate_body_to_world(q, jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32))),
+        [0.0, 1.0, 0.0], atol=1e-5,
+    )
+    np.testing.assert_allclose(
+        np.asarray(rotate_body_to_world(q, jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32))),
+        [0.0, 0.0, 1.0], atol=1e-5,
+    )
+
+
 def test_zero_omega_gives_zero_derivative():
     q = quat_normalize(jnp.array([0.2, 0.3, -0.1, 0.9], dtype=jnp.float32))
     q_dot = quat_derivative_from_omega_body(q, jnp.zeros(3, dtype=jnp.float32))

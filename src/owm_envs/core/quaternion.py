@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import jax.numpy as jnp
-
+from astrojax.attitude_representations.quaternion import Quaternion
 
 # --------------------------------------------------------------------------------------
 # Quaternion conventions
 #
-# - Quaternion q = [w, x, y, z]
+# - Quaternion q = [w, x, y, z] (astrojax scalar-first, matches this convention).
 # - Unit quaternion represents a rotation.
 #
 # q_bw maps BODY vectors into WORLD vectors (body -> world).
@@ -19,18 +19,32 @@ import jax.numpy as jnp
 #   q_dot = 0.5 * Omega(omega_body) @ q
 #
 # where Omega(omega) is a 4x4 matrix defined below.
+#
+# These are thin array-level wrappers rather than direct astrojax use at the call
+# sites: the dynamics and policies operate on a flat 13-element state vector and
+# slice `state[6:10]`, so keeping the object boundary here confines the dependency
+# to one module and leaves the RK4 integrand a pure array-to-array function.
+#
+# Note: astrojax's `Quaternion.to_rotation_matrix()` returns the transpose of this
+# module's q_bw convention (its multiplication and conjugate match ours exactly,
+# but its rotation-matrix conversion does not). `quat_to_rotmat` transposes it back
+# so callers see the same body -> world matrix as before the swap.
+#
+# `omega_matrix_body` and `quat_derivative_from_omega_body` are implemented locally
+# because astrojax provides no attitude kinematics -- there is no equivalent of
+# q_dot = 0.5 * Omega(omega) * q. That is the one function the integrator calls
+# every step.
 # --------------------------------------------------------------------------------------
 
 
 def quat_normalize(q: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
     """Return q normalized to unit length."""
-    n = jnp.linalg.norm(q)
-    return q / jnp.maximum(n, eps)
+    return Quaternion.from_vector(q).normalize().to_vector()
 
 
 def quat_conjugate(q: jnp.ndarray) -> jnp.ndarray:
     """Conjugate of quaternion [w,x,y,z] -> [w,-x,-y,-z]."""
-    return jnp.array([q[0], -q[1], -q[2], -q[3]], dtype=q.dtype)
+    return Quaternion.from_vector(q).conjugate().to_vector()
 
 
 def quat_multiply(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
@@ -40,17 +54,7 @@ def quat_multiply(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
     If q represents rotation, then:
       R(q1 ⊗ q2) = R(q1) @ R(q2)
     """
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    return jnp.array(
-        [
-            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-        ],
-        dtype=q1.dtype,
-    )
+    return (Quaternion.from_vector(q1) * Quaternion.from_vector(q2)).to_vector()
 
 
 def quat_to_rotmat(q: jnp.ndarray) -> jnp.ndarray:
@@ -59,29 +63,8 @@ def quat_to_rotmat(q: jnp.ndarray) -> jnp.ndarray:
 
     Assumes q = [w,x,y,z] and maps body -> world if q is q_bw.
     """
-    q = quat_normalize(q)
-    w, x, y, z = q
-
-    ww = w * w
-    xx = x * x
-    yy = y * y
-    zz = z * z
-
-    wx = w * x
-    wy = w * y
-    wz = w * z
-    xy = x * y
-    xz = x * z
-    yz = y * z
-
-    return jnp.array(
-        [
-            [ww + xx - yy - zz, 2.0 * (xy - wz), 2.0 * (xz + wy)],
-            [2.0 * (xy + wz), ww - xx + yy - zz, 2.0 * (yz - wx)],
-            [2.0 * (xz - wy), 2.0 * (yz + wx), ww - xx - yy + zz],
-        ],
-        dtype=q.dtype,
-    )
+    r = Quaternion.from_vector(q).to_rotation_matrix().to_matrix()
+    return r.T
 
 
 def rotate_body_to_world(q_bw: jnp.ndarray, v_body: jnp.ndarray) -> jnp.ndarray:
