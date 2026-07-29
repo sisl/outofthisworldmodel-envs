@@ -11,6 +11,34 @@ Verified against lerobot 0.4.4:
 
 lerobot is an optional extra. The import is function-local so the rest of the
 package imports and tests without it.
+
+Schema: two features carry the quickdraw-compatible payload --
+`observation_vector` (float32, obs_dim) and `action` (float32, act_dim) --
+kept at exactly that name, dtype and shape so nothing downstream that expects
+quickdraw's layout breaks. Four more features carry outcome metadata that
+would otherwise be lost once a TrajectoryBatch is discarded: `reward` (the
+per-frame reward; zero on the final, zero-padded action slot of an episode,
+consistent with that slot not being a real action), `terminated`,
+`truncated`, and `policy_id`. The latter three are per-EPISODE facts, written
+onto every frame of that episode -- deliberate redundancy so a dataset can be
+filtered frame-wise (e.g. "give me every frame of every collision episode")
+without joining back to episode boundaries.
+
+`reward` and `policy_id` use shape (1, 1), not the seemingly more natural
+scalar shape (1,). This is not a style choice: lerobot 0.4.4's schema-to-HF
+conversion (`get_hf_features_from_features`) special-cases any feature whose
+shape is exactly `(1,)` into a plain HuggingFace `datasets.Value`, whose
+`encode_example` calls Python's `float()`/`int()` on the stored array. Under
+numpy>=2.0 (installed: 2.5.1) those raise `TypeError: only 0-dimensional
+arrays can be converted to Python scalars` for any array with `ndim != 0`,
+which every value `add_frame` accepts is (its own validator requires an
+`np.ndarray` with `.shape` matching the declared feature shape, i.e. `(1,)`,
+which always has `ndim == 1`). Verified directly: `terminated`/`truncated`
+survive at shape `(1,)` only because `bool()` -- unlike `float()`/`int()` --
+does not raise for a single-element array; `reward`/`policy_id` do not, for
+either float32 or int64. Shape `(1, 1)` takes the `Array2D` path instead,
+which round-trips correctly. It reads back as a (1, 1) array rather than a
+bare scalar; callers should `.reshape(())` or index `[0, 0]`.
 """
 
 from __future__ import annotations
@@ -45,6 +73,12 @@ def write_lerobot_split(
             "names": None,
         },
         "action": {"dtype": "float32", "shape": (batch.actions.shape[-1],), "names": None},
+        # (1, 1), not (1,): see the module docstring for why the scalar shape
+        # is unwritable for non-boolean features on this lerobot version.
+        "reward": {"dtype": "float32", "shape": (1, 1), "names": None},
+        "terminated": {"dtype": "bool", "shape": (1,), "names": None},
+        "truncated": {"dtype": "bool", "shape": (1,), "names": None},
+        "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
     }
 
     dataset = LeRobotDataset.create(
@@ -53,6 +87,9 @@ def write_lerobot_split(
 
     for episode in range(batch.num_episodes):
         length = int(batch.lengths[episode])
+        terminated = bool(batch.terminated[episode])
+        truncated = bool(batch.truncated[episode])
+        policy_id = int(batch.policy_ids[episode]) if batch.policy_ids is not None else 0
         for t in range(length):
             dataset.add_frame(
                 {
@@ -60,6 +97,10 @@ def write_lerobot_split(
                         batch.observations[episode, t], dtype=np.float32
                     ),
                     "action": np.asarray(batch.actions[episode, t], dtype=np.float32),
+                    "reward": np.array([[batch.rewards[episode, t]]], dtype=np.float32),
+                    "terminated": np.array([terminated]),
+                    "truncated": np.array([truncated]),
+                    "policy_id": np.array([[policy_id]], dtype=np.int64),
                     "task": task_name,
                 }
             )
