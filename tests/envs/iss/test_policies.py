@@ -104,8 +104,11 @@ def test_union_selects_all_three_subpolicies_across_seeds():
 
 
 def test_union_weights_must_sum_positive():
+    # Raised by the PolicyConfig field validator at construction time now,
+    # rather than inside make_policy/_build_union -- still a ValueError
+    # (pydantic.ValidationError subclasses it), so this still holds.
     with pytest.raises(ValueError):
-        make_policy(CFG, PolicyConfig(union_weights=(0.0, 0.0, 0.0)), "union")
+        PolicyConfig(union_weights=(0.0, 0.0, 0.0))
 
 
 def test_union_weights_rejects_negative_component():
@@ -115,12 +118,13 @@ def test_union_weights_rejects_negative_component():
         PolicyConfig(union_weights=(-1.0, 2.0, 0.0))
 
 
-def test_union_weights_all_zeros_still_rejected():
+def test_union_weights_all_zeros_rejected_at_config_load():
+    from pydantic import ValidationError
+
     # All-zeros passes the non-negative check (0.0 is not negative) but must
-    # still fail the existing sum-must-be-positive check in _build_union.
-    PolicyConfig(union_weights=(0.0, 0.0, 0.0))
-    with pytest.raises(ValueError):
-        make_policy(CFG, PolicyConfig(union_weights=(0.0, 0.0, 0.0)), "union")
+    # still fail the sum-must-be-positive check, at config-load time.
+    with pytest.raises(ValidationError, match="sum to > 0"):
+        PolicyConfig(union_weights=(0.0, 0.0, 0.0))
 
 
 def test_union_weights_with_a_zero_component_is_still_accepted():

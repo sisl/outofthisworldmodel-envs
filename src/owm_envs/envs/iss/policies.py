@@ -63,12 +63,14 @@ class PolicyConfig(ConfigModel):
 
     @field_validator("union_weights")
     @classmethod
-    def _reject_negative_weights(
+    def _validate_union_weights(
         cls, v: tuple[float, float, float]
     ) -> tuple[float, float, float]:
         for w in v:
             if w < 0.0:
                 raise ValueError(f"union_weights must be non-negative, got {w}")
+        if sum(v) <= 0.0:
+            raise ValueError(f"union_weights must sum to > 0, got {v}")
         return v
 
 
