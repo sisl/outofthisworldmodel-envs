@@ -1,11 +1,12 @@
 """Generic rollout driver: drives any gymnasium VectorEnv in a Python loop.
 
-This is the universal path. It needs only `reset` and `step`, so a future
-Basilisk or brahe environment inherits dataset generation by implementing the
-Gymnasium pair and nothing else. It deliberately does not import JAX.
-
-The policy is still JAX here because the ISS policies are, but the driver only
-ever sees `policy_fn(state, key, extras) -> action` as an opaque callable.
+This is the universal path: it needs only `reset`, `step`, and an opaque
+`PolicySource` (see `types.PolicySource`), so a future Basilisk or brahe
+environment inherits dataset generation by implementing the Gymnasium pair
+and nothing else. Neither this module nor `types.py` imports JAX or any
+backend-specific type -- the policy source owns all of that, and the driver
+only ever sees numpy observations, numpy actions, and an opaque per-episode
+state it hands back to the policy source unexamined.
 """
 
 from __future__ import annotations
@@ -14,24 +15,13 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..envs.iss.config import ISSConfig
-from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
-from .types import RolloutSpec, TrajectoryBatch, pack_episodes
-
-# Sub-policy index lives at extras[0] for the union mixture (see policies.py).
-_UNION_POLICY_IDX = 0
+from .types import PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
 
 
 class VectorEnvDriver:
-    def __init__(
-        self,
-        env_factory: Callable[[], Any],
-        cfg: ISSConfig,
-        policy_cfg: PolicyConfig,
-    ):
+    def __init__(self, env_factory: Callable[[], Any], policy_source: PolicySource):
         self.env_factory = env_factory
-        self.cfg = cfg
-        self.policy_cfg = policy_cfg
+        self.policy_source = policy_source
 
     def generate(self, spec: RolloutSpec) -> TrajectoryBatch:
         if spec.num_episodes < 1:
@@ -39,21 +29,15 @@ class VectorEnvDriver:
         if spec.max_steps < 1:
             raise ValueError(f"max_steps must be >= 1, got {spec.max_steps}")
 
-        import jax  # local: keeps the module importable for non-JAX backends
-
         env = self.env_factory()
         num_envs = env.num_envs
         obs_dim = env.single_observation_space.shape[0]
         act_dim = env.single_action_space.shape[0]
+        records_policy_ids = self.policy_source.records_policy_ids
 
-        policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
-        extras_width = EXTRAS_DIM[self.policy_cfg.type]
-        records_policy_ids = self.policy_cfg.type == "union"
+        rng = np.random.default_rng(spec.seed)
 
-        key = jax.random.PRNGKey(spec.seed)
-        key, reset_key = jax.random.split(key)
-
-        obs, _ = env.reset(seed=int(jax.random.randint(reset_key, (), 0, 2**31 - 1)))
+        obs, _ = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
 
         # Per-lane episode accumulators. Each episode stores N + 1
         # observations (the seed state plus each post-step state, including
@@ -65,29 +49,32 @@ class VectorEnvDriver:
         lane_obs: list[list[np.ndarray]] = [[o.copy()] for o in obs]
         lane_act: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
         lane_rew: list[list[float]] = [[] for _ in range(num_envs)]
+        lane_step = [0] * num_envs
         # True for a lane between finalizing an env-terminated/truncated
         # episode and the following step() call, which is when NEXT_STEP
         # autoreset actually hands back the fresh reset observation.
         lane_awaiting_reset = [False] * num_envs
-        key, *lane_keys = jax.random.split(key, num_envs + 1)
-        lane_extras = [self._sample_extras(extras_fn, k, extras_width) for k in lane_keys]
+        lane_episode_state = [
+            self.policy_source.new_episode(int(seed))
+            for seed in rng.integers(0, 2**31 - 1, size=num_envs)
+        ]
 
         finished: list[dict[str, Any]] = []
         zero_action = np.zeros((act_dim,), dtype=np.float32)
 
-        action_low = np.asarray(env.action_space.low, dtype=np.float32)
-        action_high = np.asarray(env.action_space.high, dtype=np.float32)
+        action_low = np.asarray(env.single_action_space.low, dtype=np.float32)
+        action_high = np.asarray(env.single_action_space.high, dtype=np.float32)
 
         while len(finished) < spec.num_episodes:
             actions = np.zeros((num_envs, act_dim), dtype=np.float32)
-            key, *act_keys = jax.random.split(key, num_envs + 1)
             for lane in range(num_envs):
                 actions[lane] = np.asarray(
-                    policy_fn(obs[lane], act_keys[lane], lane_extras[lane]), dtype=np.float32
+                    self.policy_source.act(obs[lane], lane_episode_state[lane], lane_step[lane]),
+                    dtype=np.float32,
                 )
             # The env clips internally but doesn't hand the clipped action
             # back, so clip here too -- what we record must match what was
-            # actually applied, not the scripted policy's raw PD output.
+            # actually applied, not the policy source's raw output.
             actions = np.clip(actions, action_low, action_high)
 
             next_obs, rewards, terminations, truncations, _ = env.step(actions)
@@ -101,20 +88,22 @@ class VectorEnvDriver:
                     # transition to record.
                     lane_obs[lane] = [next_obs[lane].copy()]
                     lane_awaiting_reset[lane] = False
+                    lane_step[lane] = 0
                     continue
 
                 lane_act[lane].append(actions[lane].copy())
                 lane_rew[lane].append(float(rewards[lane]))
                 lane_obs[lane].append(next_obs[lane].copy())
+                lane_step[lane] += 1
 
-                # The env's own truncation is driven by cfg.max_steps, which is
-                # independent of spec.max_steps (the rollout horizon requested
-                # here) and typically much larger. There is no per-lane reset
-                # API on VectorEnv, so once a lane hits the requested horizon
-                # without the env itself terminating/truncating it, the driver
-                # closes out the episode locally as truncated and keeps
-                # stepping that lane's underlying physics into the next
-                # episode's window.
+                # The env's own truncation is driven by its own config, which
+                # is independent of spec.max_steps (the rollout horizon
+                # requested here) and typically much larger. There is no
+                # per-lane reset API on VectorEnv, so once a lane hits the
+                # requested horizon without the env itself
+                # terminating/truncating it, the driver closes out the
+                # episode locally as truncated and keeps stepping that
+                # lane's underlying physics into the next episode's window.
                 env_done = bool(terminations[lane]) or bool(truncations[lane])
                 horizon_hit = len(lane_act[lane]) >= spec.max_steps
                 if env_done or horizon_hit:
@@ -128,15 +117,16 @@ class VectorEnvDriver:
                                 "rew": np.asarray(lane_rew[lane], dtype=np.float32),
                                 "terminated": bool(terminations[lane]),
                                 "truncated": bool(truncations[lane]) or (horizon_hit and not env_done),
-                                "policy_id": int(lane_extras[lane][_UNION_POLICY_IDX])
+                                "policy_id": self.policy_source.policy_id(lane_episode_state[lane])
                                 if records_policy_ids
                                 else 0,
                             }
                         )
                     lane_act[lane] = []
                     lane_rew[lane] = []
-                    key, subkey = jax.random.split(key)
-                    lane_extras[lane] = self._sample_extras(extras_fn, subkey, extras_width)
+                    lane_episode_state[lane] = self.policy_source.new_episode(
+                        int(rng.integers(0, 2**31 - 1))
+                    )
                     if env_done:
                         lane_obs[lane] = []
                         lane_awaiting_reset[lane] = True
@@ -145,17 +135,10 @@ class VectorEnvDriver:
                         # running, so the next episode's window starts right
                         # where this one's terminal observation left off.
                         lane_obs[lane] = [next_obs[lane].copy()]
+                        lane_step[lane] = 0
 
             obs = next_obs
 
         return pack_episodes(
             finished[: spec.num_episodes], obs_dim, act_dim, records_policy_ids
         )
-
-    @staticmethod
-    def _sample_extras(extras_fn, key, width):
-        import jax.numpy as jnp
-
-        if extras_fn is None:
-            return jnp.zeros((width,), dtype=jnp.float32)
-        return extras_fn(key)

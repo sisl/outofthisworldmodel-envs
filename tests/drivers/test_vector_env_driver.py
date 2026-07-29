@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 
@@ -5,6 +8,7 @@ from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.iss.policy_source import IssPolicySource
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT = dict(collision_boxes_path=None, dock_enabled=False)
@@ -15,9 +19,30 @@ def make_driver(num_envs=2, policy_type="dock", **cfg_kwargs):
     policy_cfg = PolicyConfig(type=policy_type)
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-        cfg=cfg,
-        policy_cfg=policy_cfg,
+        policy_source=IssPolicySource(cfg, policy_cfg),
     )
+
+
+class _ConstantPolicySource:
+    """A trivial PolicySource with no JAX and no ISS types anywhere in it --
+    the extensibility claim the driver seam exists to make real."""
+
+    records_policy_ids = False
+
+    def __init__(self, action: np.ndarray):
+        self._action = np.asarray(action, dtype=np.float32)
+
+    def new_episode(self, seed: int):
+        del seed
+        return None
+
+    def act(self, observation, episode_state, step):
+        del observation, episode_state, step
+        return self._action.copy()
+
+    def policy_id(self, episode_state):
+        del episode_state
+        return 0
 
 
 def test_generates_the_requested_number_of_episodes():
@@ -121,3 +146,40 @@ def test_actions_stay_within_the_control_limits():
 def test_rejects_a_non_positive_episode_count():
     with pytest.raises(ValueError):
         make_driver().generate(RolloutSpec(num_episodes=0, max_steps=10, seed=0))
+
+
+def test_module_does_not_import_jax():
+    # The whole point of the driver seam: a future Basilisk or brahe backend
+    # must not have to bring JAX along just to get dataset generation. Check
+    # in a subprocess so this is a real assertion about what importing the
+    # module does, not just about what happens to already be loaded here.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import owm_envs.drivers.vector_env_driver; print('jax' in sys.modules)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False", result.stderr
+
+
+def test_driver_works_with_a_non_iss_non_jax_policy_source():
+    cfg = ISSConfig(**FREE_FLIGHT)
+    action = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=np.float32)
+    driver = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+        policy_source=_ConstantPolicySource(action),
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=2, max_steps=5, seed=0))
+    batch.validate()
+    assert batch.num_episodes == 2
+    assert batch.policy_ids is None
+    for i, length in enumerate(batch.lengths):
+        # Every real action (all but the final zero-padded slot) is the
+        # constant action the fake policy source always returns.
+        np.testing.assert_array_equal(
+            batch.actions[i, : length - 1], np.tile(action, (length - 1, 1))
+        )

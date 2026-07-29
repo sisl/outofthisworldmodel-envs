@@ -13,7 +13,7 @@ Gymnasium pair.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -98,6 +98,26 @@ class Driver(Protocol):
     `spec.seed`."""
 
     def generate(self, spec: RolloutSpec) -> TrajectoryBatch: ...
+
+
+class PolicySource(Protocol):
+    """Supplies actions to a driver. Backend-specific; the driver treats it as opaque.
+
+    The driver never sees a JAX key, a JAX array, or a backend-specific config
+    type -- the source owns all of that internally, and hands back only numpy
+    arrays and an opaque `episode_state` it doesn't examine.
+    """
+
+    records_policy_ids: bool
+
+    def new_episode(self, seed: int) -> Any:
+        """Return opaque per-episode state (e.g. sampled hyperparameters)."""
+
+    def act(self, observation: np.ndarray, episode_state: Any, step: int) -> np.ndarray:
+        """Return an action as a numpy array, given a numpy observation."""
+
+    def policy_id(self, episode_state: Any) -> int:
+        """Sub-policy index for mixture policies; 0 when not a mixture."""
 
 
 def pack_episodes(
