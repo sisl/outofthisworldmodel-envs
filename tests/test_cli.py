@@ -266,6 +266,31 @@ def test_generate_gives_a_legible_error_when_lerobot_is_missing(tmp_path, monkey
     # Failed before doing any rollout work or writing partial output.
     assert not out.exists()
 
+
+def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
+    # Rendering is the longest and most failure-prone step (GPU init, encoder,
+    # missing extras) and it runs after the metadata is built. Building must
+    # not have written anything, or a run that dies here looks finished.
+    import owm_envs.datasets.video as video
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("gpu unavailable")
+
+    monkeypatch.setattr(video, "render_batch_frames", boom)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "1", "--steps", "4",
+         "--policy", "dock", "--num-envs", "1", "--driver", "vector", "--render"],
+    )
+    assert isinstance(result.exception, RuntimeError)
+    assert "gpu unavailable" in str(result.exception)
+    for name in ("normalization_stats.json", "dataset_card.json", "summary.json",
+                 "env_config.yaml", "policy_config.yaml"):
+        assert not (out / name).exists(), f"{name} survived a failed render"
+
+
 def test_render_without_lerobot_is_rejected(tmp_path):
     # --render with --no-lerobot would render every frame and then throw them
     # all away -- nothing consumes them. This must fail fast, before paying
