@@ -221,8 +221,12 @@ def test_collision_sweep_is_jit_and_vmap_compatible():
 def test_dock_requires_both_distance_and_speed():
     cfg = ISSConfig(
         physics=PhysicsConfig(collision_boxes_path=None),
+        # Attitude gate off: this test isolates distance/speed, and the
+        # states below use the identity quaternion, not dock's default
+        # docking-port orientation.
         dock=DockConfig(enabled=True, position=(0.0, 0.0, 0.0),
-                        max_distance_m=0.1, max_velocity_m_s=0.5),
+                        max_distance_m=0.1, max_velocity_m_s=0.5,
+                        max_attitude_error_deg=None),
     )
     dyn = ISSDynamics(cfg)
 
@@ -275,6 +279,10 @@ def test_dock_requires_body_rates_when_the_gate_is_set():
     cfg = ISSConfig(dock=DockConfig(
         enabled=True, position=(0.0, 0.0, 0.0), max_distance_m=1.0,
         max_velocity_m_s=1.0, max_body_rate_rad_s=0.01,
+        # Attitude gate off: this test isolates body rate, and the states
+        # below use the identity quaternion, not dock's default docking-port
+        # orientation.
+        max_attitude_error_deg=None,
     ), physics=PhysicsConfig(collision_boxes_path=None))
     dyn = ISSDynamics(cfg)
     still = make_state(pos=(0.0, 0.0, 0.0), omega=(0.0, 0.0, 0.0))
@@ -283,10 +291,14 @@ def test_dock_requires_body_rates_when_the_gate_is_set():
     assert bool(dyn.step(tumbling, ZERO_ACTION)[1].docked) is False
 
 
-def test_gates_default_to_off_admitting_any_attitude_and_rate():
-    # Preserves the pre-change behaviour when the new fields are not set.
+def test_gates_can_be_explicitly_disabled_to_admit_any_attitude_and_rate():
+    # max_attitude_error_deg / max_body_rate_rad_s default to 5 deg / 0.5
+    # deg/s, not off -- but explicit None still admits any attitude/rate,
+    # preserving the position-and-velocity-only success criteria for callers
+    # who opt out of the gates.
     cfg = ISSConfig(dock=DockConfig(
         enabled=True, position=(0.0, 0.0, 0.0), max_distance_m=1.0, max_velocity_m_s=1.0,
+        max_attitude_error_deg=None, max_body_rate_rad_s=None,
     ), physics=PhysicsConfig(collision_boxes_path=None))
     dyn = ISSDynamics(cfg)
     wild = make_state(pos=(0.0, 0.0, 0.0), quat=(0.0, 1.0, 0.0, 0.0), omega=(9.0, 9.0, 9.0))

@@ -89,7 +89,13 @@ def test_docking_terminates_and_reports_success():
         max_steps=100,
         physics=PhysicsConfig(collision_boxes_path=None),
         # Dock target at the start sphere radius, so reset lands essentially on it.
-        dock=DockConfig(enabled=True, max_distance_m=200.0, max_velocity_m_s=10.0),
+        # Attitude/rate gates off: this test isolates distance/speed, and reset's
+        # nose-at-ISS attitude does not generally match dock's docking-port
+        # orientation or sit still.
+        dock=DockConfig(
+            enabled=True, max_distance_m=200.0, max_velocity_m_s=10.0,
+            max_attitude_error_deg=None, max_body_rate_rad_s=None,
+        ),
     ))
     env.reset(seed=0)
     _, _, terminated, truncated, info = env.step(np.zeros(6, dtype=np.float32))
