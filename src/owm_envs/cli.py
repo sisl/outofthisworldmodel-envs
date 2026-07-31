@@ -54,10 +54,22 @@ def generate(
     config: Optional[Path] = typer.Option(None, help="ISSConfig YAML to load."),
     split: str = typer.Option("train", help="Split name for the output."),
     lerobot: bool = typer.Option(True, "--lerobot/--no-lerobot", help="Write a LeRobot dataset."),
+    render: bool = typer.Option(
+        False,
+        "--render/--no-render",
+        help="Render an egocentric video feed (slow: ~0.1 s/frame; off by default).",
+    ),
+    render_view: str = typer.Option("DRAGON_FPV", help="Camera view to render, when --render is set."),
 ) -> None:
     """Roll out trajectories and write a dataset run directory."""
     if env != "iss":
         raise typer.BadParameter(f"unknown environment '{env}'; only 'iss' exists")
+    if render and not lerobot:
+        raise typer.BadParameter(
+            "--render has no effect with --no-lerobot: there is no writer to consume the "
+            "rendered frames, so rendering would be pure wasted cost. Drop --render, or "
+            "drop --no-lerobot so the frames are written."
+        )
 
     if num_envs < 1:
         # Unguarded, this reaches the scan driver's horizon calculation
@@ -102,10 +114,22 @@ def generate(
         cfg=cfg, policy_cfg=policy_cfg, batches={split: batch}, fps=fps, seed=seed
     )
 
+    frames = None
+    if render:
+        from .datasets.video import render_batch_frames
+        from .render.iss_scene import RenderConfig
+
+        render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
+        total = int(batch.lengths.sum())
+        typer.echo(
+            f"[render] {total} frames at ~0.1 s/frame -> roughly {total * 0.1 / 60:.1f} min"
+        )
+        frames = render_batch_frames(batch, render_cfg, view=render_view)
+
     if lerobot:
         from .datasets.lerobot_writer import write_lerobot_split
 
-        write_lerobot_split(out / split, f"{env}/{split}", batch, fps=fps)
+        write_lerobot_split(out / split, f"{env}/{split}", batch, fps=fps, frames=frames)
         typer.echo(f"[generate] wrote LeRobot split to {out / split}")
 
     metadata.write(out)
