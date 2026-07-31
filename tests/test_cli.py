@@ -138,6 +138,41 @@ def test_explicit_fps_is_honoured_but_warns_when_it_contradicts_dt(tmp_path):
     assert "does not match the simulation rate" in result.output
 
 
+def test_explicit_fps_matching_the_simulation_rate_is_silent(tmp_path):
+    # Pins that the warnings above discriminate: an implementation that warned
+    # on every explicit --fps would satisfy them without being right.
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+         "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot",
+         "--fps", "20"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "[warn]" not in result.output
+
+
+def test_explicit_fps_warns_when_the_rate_is_not_whole(tmp_path):
+    # dt = 0.03 is 33.33... frames per second. 33 is the nearest integer but
+    # still wrong, and it is the value most likely to be passed by hand, so
+    # accepting it silently would stamp inaccurate metadata with no signal.
+    from owm_envs.envs.iss.config import ISSConfig
+
+    cfg_path = tmp_path / "env.yaml"
+    ISSConfig(dt=0.03).to_yaml(cfg_path)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "2",
+         "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
+         "--no-lerobot", "--fps", "33"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert json.loads((out / "dataset_card.json").read_text())["fps"] == 33
+    assert "cannot match the simulation rate" in result.output
+
+
 def test_fps_default_is_refused_when_the_rate_is_not_whole(tmp_path):
     # dt = 0.03 gives 33.33... frames per second, which no integer fps
     # represents; guessing 33 would silently misstate the interval.

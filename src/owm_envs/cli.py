@@ -127,6 +127,10 @@ def _resolve_fps(requested: int | None, dt: float) -> int:
     reads back to recover the interval between frames. When it disagrees with
     1/dt, every recovered interval is wrong and the video plays at the wrong
     speed, so the default tracks dt rather than any fixed rate.
+
+    A dt whose reciprocal is not whole has no exact integer fps at all. The
+    default is refused there rather than rounded, and an explicit value is
+    warned about, since it cannot be right -- only chosen deliberately.
     """
     simulation_fps = _simulation_fps(dt)
     if requested is None:
@@ -139,11 +143,21 @@ def _resolve_fps(requested: int | None, dt: float) -> int:
         return simulation_fps
     if requested < 1:
         raise typer.BadParameter(f"--fps must be >= 1, got {requested}")
-    if simulation_fps is not None and requested != simulation_fps:
+    mismatch = "inter-frame interval that the physics did not use"
+    if simulation_fps is None:
+        # No integer can match a non-whole rate, so an explicit --fps is
+        # necessarily wrong here rather than merely disagreeing. Warn on its
+        # own terms: comparing it to a rounded rate would imply some other
+        # integer would have been right.
+        typer.echo(
+            f"[warn] --fps {requested} cannot match the simulation rate "
+            f"{1.0 / dt:.6g} (dt={dt}), which is not whole; no integer fps "
+            f"can, so the dataset will report an {mismatch}"
+        )
+    elif requested != simulation_fps:
         typer.echo(
             f"[warn] --fps {requested} does not match the simulation rate "
-            f"{simulation_fps} (dt={dt}); the dataset will report an "
-            "inter-frame interval that the physics did not use"
+            f"{simulation_fps} (dt={dt}); the dataset will report an {mismatch}"
         )
     return requested
 
