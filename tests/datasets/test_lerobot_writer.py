@@ -122,9 +122,73 @@ def test_selects_terminated_episode_frames_via_feature(tmp_path):
     assert selected_markers == [0.0, 1.0, 2.0]
 
 
+def test_is_last_marks_exactly_the_final_frame_of_each_episode(tmp_path):
+    """The end-of-episode signal a frame-wise consumer needs.
+
+    `terminated`/`truncated` are broadcast across every frame of an episode,
+    so neither identifies WHERE the episode ends. `is_last` does, and it marks
+    the one frame per episode whose action is the zero pad rather than a real
+    action.
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    batch = batch_with_metadata()  # 5 frames then 3 frames
+    write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=20)
+    ds = LeRobotDataset("iss/train", root=tmp_path / "train")
+
+    last_frames = [i for i in range(ds.num_frames) if bool(ds[i]["is_last"])]
+    assert last_frames == [4, 7]
+    assert len(last_frames) == batch.num_episodes
+
+    # Dropping those frames leaves exactly the usable transitions.
+    assert ds.num_frames - len(last_frames) == batch.total_transitions
+
+
+def test_episode_lengths_recoverable_from_written_dataset(tmp_path):
+    """True episode length survives the write, by two independent routes."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    batch = batch_with_metadata()
+    write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=20)
+    ds = LeRobotDataset("iss/train", root=tmp_path / "train")
+
+    expected = [int(n) for n in batch.lengths]
+
+    # Route 1: lerobot's own per-episode bookkeeping.
+    assert list(ds.meta.episodes["length"]) == expected
+
+    # Route 2: counting frames up to and including each is_last marker.
+    lengths, run = [], 0
+    for i in range(ds.num_frames):
+        run += 1
+        if bool(ds[i]["is_last"]):
+            lengths.append(run)
+            run = 0
+    assert lengths == expected
+
+
+def test_terminal_frame_carries_zero_pad_action(tmp_path):
+    """is_last identifies the frame that must be dropped: its action is the
+    zero pad written past the terminal state, not an action that was taken."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    batch = batch_with_metadata()
+    # Every real action is non-zero, so a zero action can only be the pad.
+    batch.actions[0, :4] = 1.0
+    batch.actions[1, :2] = 1.0
+    write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=20)
+    ds = LeRobotDataset("iss/train", root=tmp_path / "train")
+
+    for i in range(ds.num_frames):
+        row = ds[i]
+        action_is_pad = not np.any(np.asarray(row["action"]))
+        assert action_is_pad == bool(row["is_last"])
+
+
 def test_observation_and_action_schema_unchanged(tmp_path):
-    """quickdraw-style consumers only look at these two features; the schema
-    extension must not rename or reshape either of them."""
+    """observation_vector and action are the two features a trajectory
+    consumer reads; the outcome-metadata features must not rename or reshape
+    either of them."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     write_lerobot_split(tmp_path / "train", "iss/train", batch_with_metadata(), fps=24)

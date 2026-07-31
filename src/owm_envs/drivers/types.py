@@ -31,25 +31,51 @@ class RolloutSpec:
 class TrajectoryBatch:
     """Episodes as zero-padded arrays plus their true lengths.
 
+    Array dimensions:
+      E        episode count, `num_episodes`
+      T        padded time width: the longest episode's length. Every episode
+               occupies a T-wide row regardless of its own length, with the
+               unused tail zero-filled, so shorter episodes carry padding
+               and only `lengths[e]` entries of row `e` are real.
+      obs_dim  observation vector width (13 for the ISS environment)
+      act_dim  action vector width (6 for the ISS environment)
+
     Padded rather than ragged so that two drivers' outputs can be compared
     elementwise by the equivalence test -- a ragged comparison would need
     bespoke logic that could itself be wrong.
 
-    Convention, carried from seamstress: an episode of N environment steps
-    stores N + 1 observations, N + 1 actions, and N + 1 rewards, so `length`
-    counts observations, not steps. `observations[length - 1]` is the
-    TERMINAL state -- the collision, the successful dock, or the final state
-    at truncation -- and storing it is the point: without it the dataset
-    would contain no collision or docking states for a world model to learn
-    from. `actions[i]` takes `observations[i]` to `observations[i + 1]` for i
-    in [0, length - 2]; `actions[length - 1]` is a zero-padded no-op past the
-    terminal state, and `rewards[length - 1]` is 0.0.
+    WHERE AN EPISODE ENDS. `lengths[e]` is the single authority and counts
+    OBSERVATIONS, not steps or transitions. An episode of N environment steps
+    stores N + 1 observations, N + 1 actions, and N + 1 rewards, so
+    `lengths[e] == N + 1`. Nothing else needs to be inspected to find the
+    boundary: padding is not a reliable end marker, because a real trailing
+    observation can itself be all-zero.
+
+    Slicing an episode:
+      obs = observations[e, : lengths[e]]        # all real, terminal included
+      act = actions[e, : lengths[e] - 1]         # real actions only
+      rew = rewards[e, : lengths[e] - 1]         # real rewards only
+
+    `observations[e, lengths[e] - 1]` is the TERMINAL state -- the collision,
+    the successful dock, or the final state at truncation -- and storing it is
+    the point: without it the dataset would contain no collision or docking
+    states for a world model to learn from. `terminated[e]` and `truncated[e]`
+    say which of those it is; both drivers set exactly one of the two, and
+    `validate` rejects any episode that sets both.
+
+    `actions[e, i]` takes `observations[e, i]` to `observations[e, i + 1]` for
+    i in [0, lengths[e] - 2], which is why the action and reward slices above
+    stop one short. The final in-length slot is not a real step:
+    `actions[e, lengths[e] - 1]` is a zero pad and `rewards[e, lengths[e] - 1]`
+    is 0.0, because no action was taken from the terminal state. Reading
+    actions out to `lengths[e]` therefore injects one spurious zero action per
+    episode; `total_transitions` and `compute_norm_stats` both subtract it.
     """
 
     observations: np.ndarray  # (E, T, obs_dim) float32
     actions: np.ndarray  # (E, T, act_dim) float32
     rewards: np.ndarray  # (E, T) float32
-    lengths: np.ndarray  # (E,) int32
+    lengths: np.ndarray  # (E,) int32, real observations per episode
     terminated: np.ndarray  # (E,) bool
     truncated: np.ndarray  # (E,) bool
     policy_ids: np.ndarray | None  # (E,) int32, or None when not a mixture
