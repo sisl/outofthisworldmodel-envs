@@ -35,8 +35,11 @@ class PhysicsConfig(ConfigModel):
     # reversed-sign accelerations rather than a load error.
     mass: float = Field(default=12_000.0, gt=0, allow_inf_nan=False)
     inertia_diag: tuple[float, float, float] = (80_000.0, 80_000.0, 50_000.0)
-    linear_damping: float = 0.005
-    angular_damping: float = 0.02
+    # Free-body motion in vacuum has no medium to damp against, so the
+    # physical default is zero. Non-zero values are a deliberate, unphysical
+    # artificial-stabilisation knob, not a default choice.
+    linear_damping: float = 0.0
+    angular_damping: float = 0.0
 
     # Radii, not divisors -- a negative value is geometrically meaningless
     # (it would shrink the collision box or flip the start position to the

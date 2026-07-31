@@ -41,8 +41,9 @@ def test_constant_velocity_translates():
     ))
     s = make_state(pos=(50.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0))
     s_next, _ = dyn.step(s, ZERO_ACTION)
-    # dt=0.05 with a small linear damping term, so slightly under 0.05 m.
-    assert 0.045 < float(s_next[0] - s[0]) <= 0.05
+    # linear_damping defaults to 0.0 (vacuum, no medium to damp against), so
+    # constant velocity over dt=0.05 covers exactly 0.05 m.
+    assert np.isclose(float(s_next[0] - s[0]), 0.05, atol=1e-6)
 
 
 def test_body_force_accelerates_along_body_axis():
@@ -88,15 +89,18 @@ def test_angular_damping_decays_spin():
 
 
 def test_angular_damping_is_inert_at_default_config():
-    # Pins the float32 precision gotcha documented above: with the shipped
-    # defaults (angular_damping=0.02, inertia_diag[0]=80000), the per-step
+    # Pins the float32 precision gotcha documented above: at angular_damping
+    # =0.02 (the old shipped default; the field now defaults to 0.0, the
+    # physical value for vacuum, so this pins the value explicitly rather
+    # than relying on the default) with inertia_diag[0]=80000, the per-step
     # decay is far below float32 resolution, so omega is bit-for-bit
     # unchanged -- both after one step and after a longer rollout, since the
     # decrement underflows on every single step rather than accumulating.
-    # If this test starts failing, the defaults or the float32 dtype mandate
-    # changed and angular damping is now actually observable in this sim.
+    # If this test starts failing, the float32 dtype mandate changed and
+    # angular damping is now actually observable in this sim.
     dyn = ISSDynamics(ISSConfig(
-        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+        physics=PhysicsConfig(collision_boxes_path=None, angular_damping=0.02),
+        dock=DockConfig(enabled=False),
     ))
     s = make_state(omega=(1.0, 0.0, 0.0))
     s_next, _ = dyn.step(s, ZERO_ACTION)
