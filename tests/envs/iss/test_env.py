@@ -137,3 +137,12 @@ def test_render_fps_tracks_the_configured_timestep():
 
     # Per-instance, so one env's dt does not leak into the next.
     assert ISSEnv(ISSConfig(dt=0.02)).metadata["render_fps"] == 50
+
+
+@pytest.mark.parametrize("dt", [2.0, 2.5, 10.0])
+def test_render_fps_stays_a_usable_rate_for_coarse_timesteps(dt):
+    # 1/dt rounds to zero at any dt >= 2 -- including exactly 2.0, where the
+    # tie 0.5 rounds to even -- and zero is not a frame rate anything can
+    # divide by or feed to an encoder. These dt values are unrealistic for
+    # this environment but ISSConfig accepts them.
+    assert ISSEnv(ISSConfig(dt=dt)).metadata["render_fps"] == 1

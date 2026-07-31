@@ -31,6 +31,17 @@ def _observation_space(cfg: ISSConfig) -> spaces.Box:
     return spaces.Box(low=low, high=high, dtype=np.float32)
 
 
+def _render_fps(cfg: ISSConfig) -> int:
+    """Playback rate for one frame per simulation step, as a positive integer.
+
+    That rate is 1/dt, but Gymnasium's render_fps has to be a usable frame
+    rate: consumers divide by it or hand it to a video encoder. Any dt of 2 s
+    or more rounds to zero -- exactly 2.0 included, since Python rounds a tie
+    to even -- so the result is floored at 1.
+    """
+    return max(1, round(1.0 / cfg.dt))
+
+
 def _action_space(cfg: ISSConfig) -> spaces.Box:
     high = np.array(
         [cfg.control.limit_force_n] * 3 + [cfg.control.limit_torque_nm] * 3,
@@ -46,9 +57,8 @@ class ISSEnv(gym.Env):
 
     def __init__(self, cfg: ISSConfig | None = None, render_mode: str | None = None):
         self.cfg = cfg or ISSConfig()
-        # One frame per step, so the playback rate is the simulation rate.
         # Per-instance because it depends on cfg.dt, which the class does not know.
-        self.metadata = {**self.metadata, "render_fps": round(1.0 / self.cfg.dt)}
+        self.metadata = {**self.metadata, "render_fps": _render_fps(self.cfg)}
         self.dynamics = ISSDynamics(self.cfg)
         self.observation_space = _observation_space(self.cfg)
         self.action_space = _action_space(self.cfg)

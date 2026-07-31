@@ -22,7 +22,7 @@ from gymnasium.vector.utils import batch_space
 
 from .config import ISSConfig
 from .dynamics import ISSDynamics
-from .env import _action_space, _observation_space
+from .env import _action_space, _observation_space, _render_fps
 from .reward import iss_reward
 
 
@@ -37,9 +37,8 @@ class ISSVectorEnv(VectorEnv):
 
     def __init__(self, num_envs: int = 1, cfg: ISSConfig | None = None):
         self.cfg = cfg or ISSConfig()
-        # One frame per step, so the playback rate is the simulation rate.
         # Per-instance because it depends on cfg.dt, which the class does not know.
-        self.metadata = {**self.metadata, "render_fps": round(1.0 / self.cfg.dt)}
+        self.metadata = {**self.metadata, "render_fps": _render_fps(self.cfg)}
         self.num_envs = int(num_envs)
         self.dynamics = ISSDynamics(self.cfg)
 
