@@ -180,7 +180,13 @@ def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
             path = _RESOURCES_DIR / path
         if not path.exists():
             raise FileNotFoundError(f"collision_boxes file not found: {path}")
-        return load_collision_boxes(yaml.safe_load(path.read_text()))
+        # An empty file (or one that's just `null`) parses to None. That's a
+        # real, specified path holding zero boxes, not "no path configured"
+        # -- route it to the empty box set directly rather than recursing
+        # into the source-is-None branch above, which would misattribute it
+        # and warn about a path that was in fact given.
+        loaded = yaml.safe_load(path.read_text())
+        return load_collision_boxes(loaded if loaded is not None else [])
 
     centers: list[np.ndarray] = []
     half_extents: list[np.ndarray] = []

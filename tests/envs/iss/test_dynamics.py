@@ -69,12 +69,14 @@ def test_quaternion_stays_normalized_over_long_rollout():
 
 
 def test_angular_damping_decays_spin():
-    # At the default angular_damping=0.02 and inertia_diag[0]=80000, the true
-    # per-step change is domega = -angular_damping/inertia * omega * dt
-    # = -0.02/80000 * 1.0 * 0.05 = -1.25e-8 -- a relative change of 1.25e-8,
-    # about 10x below float32's ULP at 1.0 (~1.19e-7). It rounds away to
-    # exactly 1.0 every step and never accumulates (each step re-quantizes to
-    # float32), so the default config cannot exercise this path at all -- see
+    # At the old angular_damping=0.02 default (the field now defaults to
+    # 0.0, fully inert since there's no damping term at all) and
+    # inertia_diag[0]=80000, the true per-step change would be domega =
+    # -angular_damping/inertia * omega * dt = -0.02/80000 * 1.0 * 0.05 =
+    # -1.25e-8 -- a relative change of 1.25e-8, about 10x below float32's
+    # ULP at 1.0 (~1.19e-7). It would round away to exactly 1.0 every step
+    # and never accumulate (each step re-quantizes to float32), so neither
+    # 0.02 nor the current 0.0 default can exercise this path at all -- see
     # test_angular_damping_is_inert_at_default_config below. Override
     # angular_damping here so the effect is well above float32 resolution
     # (relative change ~1.25e-4) and this test actually checks that the

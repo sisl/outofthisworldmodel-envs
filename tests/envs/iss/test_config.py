@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 import yaml
@@ -119,11 +121,31 @@ def test_load_collision_boxes_none_gives_empty_arrays():
     assert half_extents.shape == (0, 3)
 
 
+def test_load_collision_boxes_none_warns():
+    # A silently collision-free environment can never terminate on
+    # collision, so opting out via None must say so.
+    with pytest.warns(UserWarning, match="no collision geometry"):
+        load_collision_boxes(None)
+
+
 def test_load_collision_boxes_missing_file_raises(tmp_path):
     # Silently returning an empty set here would make a misconfigured path
     # look like "no collision" at runtime. Fail loudly instead.
     with pytest.raises(FileNotFoundError):
         load_collision_boxes(str(tmp_path / "nope.yaml"))
+
+
+def test_load_collision_boxes_empty_file_gives_empty_arrays_without_warning(tmp_path):
+    # An empty YAML file parses to None, same as the sentinel for "no path
+    # configured" -- but here a real path *was* given, it just holds zero
+    # boxes. That must not be misattributed to the None-path warning.
+    path = tmp_path / "empty.yaml"
+    path.write_text("")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        centers, half_extents = load_collision_boxes(str(path))
+    assert centers.shape == (0, 3)
+    assert half_extents.shape == (0, 3)
 
 
 @pytest.mark.parametrize("mass", [0.0, -1.0, float("inf"), float("nan")])
