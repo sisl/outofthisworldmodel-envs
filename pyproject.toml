@@ -11,11 +11,21 @@ dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "tomli-w>=1.0",
+    "typer>=0.12",
 ]
 
 [project.optional-dependencies]
 render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow"]
-datasets = ["lerobot"]
+# Bounded below 0.5: datasets/lerobot_writer.py targets the 0.4.x API and
+# depends on version-specific behaviour of create(), the feature schema, and
+# add_frame -- including the (1, 1) feature shapes, which are a workaround for
+# how this version converts declared shapes to HuggingFace types. uv.lock
+# holds 0.4.4 for development, but a published install resolves afresh and
+# would otherwise be free to take a release that changes any of that.
+datasets = ["lerobot>=0.4.4,<0.5"]
+
+[project.scripts]
+owm-envs = "owm_envs.cli:app"
 
 [build-system]
 requires = ["hatchling"]

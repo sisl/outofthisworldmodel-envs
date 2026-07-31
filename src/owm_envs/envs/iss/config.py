@@ -125,7 +125,11 @@ class RewardWeights(ConfigModel):
 
 
 class ISSConfig(ConfigModel):
-    dt: float = 0.05
+    # Strictly positive and finite: dt scales every RK4 stage, so zero freezes
+    # the simulation and a negative value integrates backwards in time. It is
+    # also a divisor -- the recorded frame rate is 1/dt -- so zero would raise
+    # rather than produce a wrong number.
+    dt: float = Field(default=0.05, gt=0, allow_inf_nan=False)
     # 2000 * 0.05 = 100 s. Past this the Earth-rotation texture sampling in the
     # renderer visibly glitches, so episodes are capped here.
     max_steps: int = 2000

@@ -127,3 +127,22 @@ def test_step_before_reset_raises():
     env = ISSEnv()
     with pytest.raises(RuntimeError, match="reset"):
         env.step(np.zeros(6, dtype=np.float32))
+
+
+def test_render_fps_tracks_the_configured_timestep():
+    # One frame per step, so render_fps is the simulation rate. A fixed value
+    # here would misstate the playback speed for any dt but one.
+    assert ISSEnv().metadata["render_fps"] == round(1.0 / ISSConfig().dt)
+    assert ISSEnv(ISSConfig(dt=0.01)).metadata["render_fps"] == 100
+
+    # Per-instance, so one env's dt does not leak into the next.
+    assert ISSEnv(ISSConfig(dt=0.02)).metadata["render_fps"] == 50
+
+
+@pytest.mark.parametrize("dt", [2.0, 2.5, 10.0])
+def test_render_fps_stays_a_usable_rate_for_coarse_timesteps(dt):
+    # 1/dt rounds to zero at any dt >= 2 -- including exactly 2.0, where the
+    # tie 0.5 rounds to even -- and zero is not a frame rate anything can
+    # divide by or feed to an encoder. These dt values are unrealistic for
+    # this environment but ISSConfig accepts them.
+    assert ISSEnv(ISSConfig(dt=dt)).metadata["render_fps"] == 1

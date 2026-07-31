@@ -1,0 +1,236 @@
+"""Normalization statistics and the run-directory metadata.
+
+A run directory holds normalization_stats.json, dataset_card.json and
+summary.json, alongside env_config.yaml and policy_config.yaml -- the as-run
+record of exactly what produced the data.
+
+Those files are built and written in two steps (`build_run_metadata` then
+`RunMetadata.write`) so their presence means the run finished, not merely
+that it started. `SUMMARY_FILENAME` is the marker a consumer should test
+for; it lands last, by a single atomic rename.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+import numpy as np
+from pydantic import Field
+
+from ..core.models import ConfigModel
+from ..drivers.types import TrajectoryBatch
+from ..envs.iss.config import ISSConfig
+from ..envs.iss.policies import PolicyConfig
+
+_STD_FLOOR = 1e-6
+
+# The file whose presence means a run finished. See RunMetadata.write.
+SUMMARY_FILENAME = "summary.json"
+
+
+def _staging_path(final: Path) -> Path:
+    """Temporary sibling of `final` to build content at before moving it.
+
+    A sibling rather than a system temp file: `os.replace` is only atomic
+    within one filesystem, and /tmp is routinely a different one.
+    """
+    return final.with_name(f".{final.name}.partial")
+
+
+def _place(final: Path, text: str) -> None:
+    """Put `text` at `final` without it ever being visible half-written.
+
+    Writing directly would leave the path present but truncated for the
+    duration of the write, so a reader could parse an incomplete file. The
+    content is built under a temporary name and moved in one operation.
+    """
+    staged = _staging_path(final)
+    staged.write_text(text)
+    os.replace(staged, final)
+
+
+class SplitSpec(ConfigModel):
+    num_episodes: int = 64
+    max_steps: int = 2000
+    seed: int = 0
+
+
+class GenerationConfig(ConfigModel):
+    splits: dict[str, SplitSpec] = Field(
+        default_factory=lambda: {
+            "train": SplitSpec(num_episodes=64, seed=0),
+            "val": SplitSpec(num_episodes=8, seed=1),
+        }
+    )
+    num_envs: int = 8
+    # None means "use the environment's own simulation rate, 1/dt", which is
+    # the rate the recorded frames actually occur at. A fixed default here
+    # would silently disagree with dt for any dt but one.
+    fps: int | None = None
+    driver: Literal["auto", "scan", "vector"] = "auto"
+
+
+def _real_rows(arr: np.ndarray, lengths: np.ndarray) -> np.ndarray:
+    """Concatenate only the unpadded rows: (E, T, D) + lengths -> (sum(lengths), D)."""
+    return np.concatenate([arr[i, : int(n)] for i, n in enumerate(lengths)], axis=0)
+
+
+def compute_norm_stats(batch: TrajectoryBatch) -> dict:
+    """Per-dimension mean and std over REAL transitions only.
+
+    Padding is zeros; including it would drag every mean toward zero in
+    proportion to how often episodes terminate early, silently corrupting
+    normalization for anything trained downstream.
+
+    Observations use all `lengths[i]` entries per episode. Actions do not:
+    per TrajectoryBatch's convention, the action at index `lengths[i] - 1` is
+    a zero-padded no-op past the terminal state, not a real action -- it sits
+    inside `lengths` but isn't real. Including it would mix one zero action
+    into every episode's statistics, the same padding-bias bug this function
+    exists to avoid, just smaller. So actions use `lengths[i] - 1` entries.
+    """
+    obs = _real_rows(batch.observations, batch.lengths)
+    # NOT a typo / NOT the same call as above with `lengths` swapped for
+    # `lengths - 1` by mistake: the last action slot inside `lengths` is a
+    # zero pad, not a taken action (see TrajectoryBatch's docstring), so it
+    # must be dropped here even though the observation at that same index is
+    # real and IS kept above. rewards are not touched by this function at
+    # all -- no run metadata currently reports reward statistics.
+    act = _real_rows(batch.actions, np.maximum(batch.lengths - 1, 0))
+    if act.shape[0] == 0:
+        # Every episode is a lone observation with no step taken, so there is
+        # nothing to take action statistics over. numpy would return NaN for
+        # mean and std of an empty array, and json.dumps writes that as the
+        # bare token NaN -- invalid JSON that a strict parser rejects and a
+        # lenient one silently propagates into training as a NaN normalizer.
+        raise ValueError(
+            "batch holds no real actions: every episode has length 1, which "
+            "stores a single observation and no transition"
+        )
+    return {
+        "observation_vector": {
+            "mean": obs.mean(0).tolist(),
+            "std": (obs.std(0) + _STD_FLOOR).tolist(),
+        },
+        "action": {
+            "mean": act.mean(0).tolist(),
+            "std": (act.std(0) + _STD_FLOOR).tolist(),
+        },
+    }
+
+
+@dataclass(frozen=True)
+class RunMetadata:
+    """Built run metadata, not yet on disk.
+
+    Building and writing are separate so a caller can compute this as soon as
+    the rollout is done -- surfacing a bad batch before any expensive
+    downstream work -- while `write` stays the last thing that touches the
+    run directory. These files are what marks a run complete, so a run that
+    fails partway leaves a directory visibly missing them rather than one
+    that looks finished.
+    """
+
+    stats: dict
+    card: dict
+    counts: dict
+    cfg: ISSConfig
+    policy_cfg: PolicyConfig
+
+    def write(self, run_dir: str | Path) -> None:
+        """Flush stats, card, summary, and the as-run configs into `run_dir`.
+
+        SUMMARY_FILENAME is the completion marker. Five files cannot be
+        created in one filesystem operation, so instead each is staged under
+        a temporary name and moved into place by `os.replace`, and the marker
+        is moved last. A reader therefore never observes a truncated file,
+        and the marker's own move -- a single atomic rename -- is the instant
+        the run becomes complete. Everything else is already in place by
+        then, so `summary.json` present means all of it is.
+
+        Consumers should test for the marker, not for any other file: the
+        others exist during the flush, before the run is finished.
+        """
+        run_dir = Path(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        # Writing over an earlier run: drop its marker before touching
+        # anything else. Left in place it would vouch for a mixture of the
+        # old files and the new ones for the length of the flush, and if a
+        # replacement below failed it would go on vouching for that mixture
+        # indefinitely -- the exact state the marker exists to rule out.
+        (run_dir / SUMMARY_FILENAME).unlink(missing_ok=True)
+
+        _place(run_dir / "normalization_stats.json", json.dumps(self.stats, indent=2))
+        _place(run_dir / "dataset_card.json", json.dumps(self.card, indent=2))
+
+        # The as-run record: exactly the configuration that produced this data.
+        # ConfigModel.to_yaml writes straight to the path it is given, so it
+        # gets staged the same way rather than serialized in place.
+        for model, name in (
+            (self.cfg, "env_config.yaml"),
+            (self.policy_cfg, "policy_config.yaml"),
+        ):
+            staged = _staging_path(run_dir / name)
+            model.to_yaml(staged)
+            os.replace(staged, run_dir / name)
+
+        _place(
+            run_dir / SUMMARY_FILENAME,
+            json.dumps(
+                {
+                    "dataset_root": str(run_dir),
+                    "counts": self.counts,
+                    "normalization_stats": self.stats,
+                },
+                indent=2,
+            ),
+        )
+
+
+def build_run_metadata(
+    *,
+    cfg: ISSConfig,
+    policy_cfg: PolicyConfig,
+    batches: dict[str, TrajectoryBatch],
+    fps: int,
+    seed: int,
+) -> RunMetadata:
+    """Compute the run metadata. Touches no files -- see RunMetadata.write."""
+    reference = batches.get("train") or next(iter(batches.values()))
+    stats = compute_norm_stats(reference)
+
+    counts = {}
+    for name, batch in batches.items():
+        transitions = batch.total_transitions
+        seconds = transitions * cfg.dt
+        counts[name] = {
+            "episodes": batch.num_episodes,
+            "transitions": transitions,
+            "terminated": int(batch.terminated.sum()),
+            "truncated": int(batch.truncated.sum()),
+            "seconds": round(seconds, 2),
+            "minutes": round(seconds / 60.0, 3),
+            "hours": round(seconds / 3600.0, 5),
+        }
+
+    card = {
+        "env": "iss",
+        "fps": fps,
+        "seed": seed,
+        "dt": cfg.dt,
+        "splits": {
+            name: {"episodes": b.num_episodes, "transitions": b.total_transitions}
+            for name, b in batches.items()
+        },
+        "policy_type": policy_cfg.type,
+        "union_weights": list(policy_cfg.union_weights),
+    }
+
+    return RunMetadata(
+        stats=stats, card=card, counts=counts, cfg=cfg, policy_cfg=policy_cfg
+    )

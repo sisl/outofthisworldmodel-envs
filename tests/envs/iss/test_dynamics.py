@@ -69,17 +69,14 @@ def test_quaternion_stays_normalized_over_long_rollout():
 
 
 def test_angular_damping_decays_spin():
-    # At the old angular_damping=0.02 default (the field now defaults to
-    # 0.0, fully inert since there's no damping term at all) and
-    # inertia_diag[0]=80000, the true per-step change would be domega =
-    # -angular_damping/inertia * omega * dt = -0.02/80000 * 1.0 * 0.05 =
-    # -1.25e-8 -- a relative change of 1.25e-8, about 10x below float32's
-    # ULP at 1.0 (~1.19e-7). It would round away to exactly 1.0 every step
-    # and never accumulate (each step re-quantizes to float32), so neither
-    # 0.02 nor the current 0.0 default can exercise this path at all -- see
-    # test_angular_damping_is_inert_at_default_config below. Override
-    # angular_damping here so the effect is well above float32 resolution
-    # (relative change ~1.25e-4) and this test actually checks that the
+    # At angular_damping=0.02 with inertia_diag[0]=80000, the per-step change
+    # is domega = -angular_damping/inertia * omega * dt = -0.02/80000 * 1.0 *
+    # 0.05 = -1.25e-8, a relative change about 10x below float32's ULP at 1.0
+    # (~1.19e-7): it rounds away to exactly 1.0 every step and never
+    # accumulates, since each step re-quantizes to float32 (see
+    # test_angular_damping_is_inert_at_default_config below). Override
+    # angular_damping to 200.0 here so the relative change (~1.25e-4) is well
+    # above float32 resolution, letting this test actually check that the
     # damping term is wired into the EOM.
     dyn = ISSDynamics(ISSConfig(
         physics=PhysicsConfig(collision_boxes_path=None, angular_damping=200.0),
@@ -91,15 +88,16 @@ def test_angular_damping_decays_spin():
 
 
 def test_angular_damping_is_inert_at_default_config():
-    # Pins the float32 precision gotcha documented above: at angular_damping
-    # =0.02 (the old shipped default; the field now defaults to 0.0, the
-    # physical value for vacuum, so this pins the value explicitly rather
-    # than relying on the default) with inertia_diag[0]=80000, the per-step
-    # decay is far below float32 resolution, so omega is bit-for-bit
-    # unchanged -- both after one step and after a longer rollout, since the
-    # decrement underflows on every single step rather than accumulating.
-    # If this test starts failing, the float32 dtype mandate changed and
-    # angular damping is now actually observable in this sim.
+    # angular_damping is set explicitly to 0.02 here rather than relying on
+    # the config default (0.0, the physical value for vacuum), to exercise
+    # the float32 precision limit documented in test_angular_damping_decays_
+    # spin above: at angular_damping=0.02 with inertia_diag[0]=80000, the
+    # per-step decay is far below float32 resolution, so omega is
+    # bit-for-bit unchanged both after one step and after a longer rollout,
+    # since the decrement underflows on every single step rather than
+    # accumulating. This assertion would only fail if this simulator's
+    # dtype precision changed enough to make angular damping numerically
+    # observable here.
     dyn = ISSDynamics(ISSConfig(
         physics=PhysicsConfig(collision_boxes_path=None, angular_damping=0.02),
         dock=DockConfig(enabled=False),

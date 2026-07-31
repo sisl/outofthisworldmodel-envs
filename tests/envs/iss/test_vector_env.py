@@ -117,12 +117,11 @@ def test_terminated_sub_env_autoresets_on_the_next_step():
 
 
 def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
-    """Regression test for a plan defect: the autoreset lane was integrated one
-    physics step forward with the caller's action before being returned,
-    instead of being replaced with the pure reset observation. A zero action
-    would not catch this (a resting reset state barely moves under zero
-    force -- see test_zero_action_from_rest_stays_at_rest in Task 3), so this
-    drives the autoreset step with a large nonzero action.
+    """On an autoreset step, the returned observation must be the pure reset
+    state, not one physics step forward under the caller's action. A zero
+    action cannot distinguish the two cases -- a resting reset state barely
+    moves under zero force -- so this drives the autoreset step with a large
+    nonzero action instead.
     """
     cfg = ISSConfig(
         max_steps=100,
@@ -160,11 +159,10 @@ def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
 
 
 def test_truncation_timing_restarts_after_autoreset():
-    # Regression test for vector_env.py's `self._step_index[autoreset] = 0`:
-    # deleting that line leaves the suite green, since the existing autoreset
-    # test only takes two steps. With max_steps=2, a lane must truncate
-    # exactly two steps after each reset -- including the reset that happens
-    # via autoreset, not just the very first one. A stale step index would
+    # Each lane's step index must reset to 0 whenever that lane resets,
+    # including via autoreset, not just on the initial reset() call. With
+    # max_steps=2, a lane must truncate exactly two steps after each reset --
+    # a step index left over from the previous episode would instead
     # truncate the new episode early (one step in, not two).
     env = ISSVectorEnv(num_envs=2, cfg=ISSConfig(max_steps=2, **FREE_FLIGHT))
     env.reset(seed=0)
@@ -181,8 +179,8 @@ def test_truncation_timing_restarts_after_autoreset():
     _, _, terminations, truncations, _ = env.step(zero)
     assert not truncations.any() and not terminations.any()
 
-    # Episode 2, one real step in: must NOT truncate yet. With the step-index
-    # reset deleted, the stale index from episode 1 would fire truncation here.
+    # Episode 2, one real step in: must NOT truncate yet. A step index carried
+    # over from episode 1 would instead fire truncation here.
     _, _, terminations, truncations, _ = env.step(zero)
     assert not truncations.any() and not terminations.any()
 
@@ -196,9 +194,18 @@ def test_autoreset_mode_is_declared_in_metadata():
     assert "autoreset_mode" in env.metadata
 
 
+def test_render_fps_tracks_the_configured_timestep():
+    # Same rule as ISSEnv: one frame per step, so render_fps is 1/dt.
+    assert ISSVectorEnv(num_envs=2).metadata["render_fps"] == round(1.0 / ISSConfig().dt)
+    assert ISSVectorEnv(num_envs=2, cfg=ISSConfig(dt=0.01)).metadata["render_fps"] == 100
+    # Overriding it must not disturb the autoreset declaration alongside it.
+    assert "autoreset_mode" in ISSVectorEnv(num_envs=2, cfg=ISSConfig(dt=0.01)).metadata
+
+
 def test_integer_seed_path_is_unchanged():
-    # Regression guard: the per-env seed list handling must not perturb the
-    # existing integer-seed derivation that other reproducibility tests rely on.
+    # The integer-seed reset path must derive per-env keys via
+    # jax.random.split on a single PRNGKey; other reproducibility tests
+    # depend on this exact derivation.
     env = ISSVectorEnv(num_envs=4, cfg=ISSConfig())
     obs, _ = env.reset(seed=11)
 
@@ -231,9 +238,9 @@ def test_per_env_seed_list_wrong_length_raises():
 
 
 def test_unseeded_resets_differ_across_instances():
-    # Regression test: an unseeded reset() used to initialise the persistent
-    # key to the constant PRNGKey(0), making every unseeded env deterministic
-    # and identical -- violating Gymnasium's unseeded-reset contract.
+    # Gymnasium's unseeded-reset contract requires reset() without a seed to
+    # be non-deterministic across instances, so the persistent key must not
+    # be initialised to a constant.
     a, _ = ISSVectorEnv(num_envs=4).reset()
     b, _ = ISSVectorEnv(num_envs=4).reset()
     assert not np.allclose(a, b)

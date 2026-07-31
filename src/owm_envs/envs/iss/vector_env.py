@@ -22,19 +22,23 @@ from gymnasium.vector.utils import batch_space
 
 from .config import ISSConfig
 from .dynamics import ISSDynamics
-from .env import _action_space, _observation_space
+from .env import _action_space, _observation_space, _render_fps
 from .reward import iss_reward
 
 
 class ISSVectorEnv(VectorEnv):
+    # render_fps is overridden per instance in __init__; the class-level value
+    # is the rate implied by ISSConfig's own default dt.
     metadata = {
         "render_modes": [],
-        "render_fps": 24,
+        "render_fps": 20,
         "autoreset_mode": AutoresetMode.NEXT_STEP,
     }
 
     def __init__(self, num_envs: int = 1, cfg: ISSConfig | None = None):
         self.cfg = cfg or ISSConfig()
+        # Per-instance because it depends on cfg.dt, which the class does not know.
+        self.metadata = {**self.metadata, "render_fps": _render_fps(self.cfg)}
         self.num_envs = int(num_envs)
         self.dynamics = ISSDynamics(self.cfg)
 
