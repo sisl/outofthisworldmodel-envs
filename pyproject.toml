@@ -1,0 +1,31 @@
+[project]
+name = "owm-envs"
+version = "0.1.0"
+description = "Training data environments for the Out of this World Model (OWM) world model"
+requires-python = ">=3.11"
+dependencies = [
+    "astrojax>=0.8.0",
+    "jax>=0.4.30",
+    "gymnasium>=1.0",
+    "numpy>=1.26",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow"]
+datasets = ["lerobot"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/owm_envs"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
