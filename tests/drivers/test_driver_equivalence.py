@@ -56,6 +56,38 @@ def drivers_for(cfg, num_envs=2):
     return vec, scan
 
 
+@pytest.mark.parametrize(
+    ("env_max_steps", "spec_max_steps", "expected_length"),
+    [
+        (10, 40, 11),  # the environment's own limit binds
+        (40, 10, 11),  # the requested rollout horizon binds
+        (20, 20, 21),  # both, together
+    ],
+)
+def test_both_drivers_truncate_at_whichever_limit_comes_first(
+    env_max_steps, spec_max_steps, expected_length
+):
+    # Two independent step limits exist: ISSConfig.max_steps, which the
+    # Gymnasium adapters truncate at, and RolloutSpec.max_steps, the horizon
+    # this rollout asked for. An episode must end at the smaller of the two
+    # regardless of driver -- otherwise --driver changes how long the
+    # trajectories in a dataset are, for one unchanged config.
+    cfg = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+        max_steps=env_max_steps,
+    )
+    vec, scan = drivers_for(cfg)
+    spec = RolloutSpec(num_episodes=2, max_steps=spec_max_steps, seed=0)
+
+    a = vec.generate(spec)
+    b = scan.generate(spec)
+
+    assert a.lengths.tolist() == [expected_length] * 2
+    np.testing.assert_array_equal(a.lengths, b.lengths)
+    np.testing.assert_array_equal(a.truncated, b.truncated)
+
+
 def test_both_drivers_agree_on_free_flight_trajectories():
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     vec, scan = drivers_for(cfg)

@@ -56,6 +56,14 @@ class ScanDriver:
         if spec.max_steps < 1:
             raise ValueError(f"max_steps must be >= 1, got {spec.max_steps}")
 
+        # An episode ends at whichever limit comes first: the horizon this
+        # rollout asked for, or the environment's own configured step limit.
+        # ISSEnv and ISSVectorEnv both truncate at cfg.max_steps, so honouring
+        # spec.max_steps alone would make this path produce longer episodes
+        # than the identical config produces through the Gymnasium adapters --
+        # the same request answered differently depending on --driver.
+        max_steps = min(spec.max_steps, self.cfg.max_steps)
+
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
         extras_width = EXTRAS_DIM[self.policy_cfg.type]
         records_policy_ids = self.policy_cfg.type == "union"
@@ -81,7 +89,7 @@ class ScanDriver:
 
             next_index = step_index + 1
             terminated = jnp.logical_or(events.collision, events.docked)
-            truncated = jnp.logical_and(~terminated, next_index >= spec.max_steps)
+            truncated = jnp.logical_and(~terminated, next_index >= max_steps)
             done = jnp.logical_or(terminated, truncated)
 
             # Emit the PRE-step state (`state`) alongside `next_state`: the
@@ -103,7 +111,7 @@ class ScanDriver:
 
         # Horizon long enough that num_envs lanes yield at least num_episodes
         # episodes even if every episode runs the full max_steps.
-        horizon = int(np.ceil(spec.num_episodes / self.num_envs)) * spec.max_steps
+        horizon = int(np.ceil(spec.num_episodes / self.num_envs)) * max_steps
 
         # Mirror VectorEnvDriver's seeding exactly (a numpy Generator draws the
         # integer env seed that becomes the JAX key's origin -- see
