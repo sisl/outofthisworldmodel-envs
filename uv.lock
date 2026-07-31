@@ -1953,7 +1953,7 @@ requires-dist = [
     { name = "gymnasium", specifier = ">=1.0" },
     { name = "imageio", marker = "extra == 'render'" },
     { name = "jax", specifier = ">=0.4.30" },
-    { name = "lerobot", marker = "extra == 'datasets'" },
+    { name = "lerobot", marker = "extra == 'datasets'", specifier = ">=0.4.4,<0.5" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pillow", marker = "extra == 'render'" },
     { name = "pydantic", specifier = ">=2.0" },
