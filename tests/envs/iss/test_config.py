@@ -217,9 +217,9 @@ def test_load_collision_boxes_empty_file_gives_empty_arrays_without_warning(tmp_
 
 @pytest.mark.parametrize("mass", [0.0, -1.0, float("inf"), float("nan")])
 def test_non_positive_or_non_finite_mass_is_rejected(mass):
-    # Regression test: mass used to accept 0.0/negative, then _eom's
-    # force-over-mass division produced inf/reversed-sign acceleration on the
-    # first non-zero-force step instead of failing at config load. inf/NaN
+    # mass is a divisor in _eom's force-over-mass acceleration: 0.0 gives inf
+    # and a negative value reverses the sign, so both must be rejected at
+    # config load rather than surfacing as a bad acceleration later. inf/NaN
     # are equally meaningless as a divisor.
     from pydantic import ValidationError
 
