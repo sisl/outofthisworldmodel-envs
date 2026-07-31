@@ -15,7 +15,7 @@ from typing import Optional
 
 import typer
 
-from .datasets.stats import write_run_metadata
+from .datasets.stats import build_run_metadata
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig
 from .envs.iss.policies import PolicyConfig
@@ -95,8 +95,12 @@ def generate(
         f"[generate] {batch.num_episodes} episodes, {batch.total_transitions} transitions"
     )
 
-    out.mkdir(parents=True, exist_ok=True)
-    write_run_metadata(out, cfg=cfg, policy_cfg=policy_cfg, batches={split: batch}, fps=fps, seed=seed)
+    # Built now so a batch that cannot produce statistics fails here, before
+    # any dataset is written, but flushed last: these files are what marks the
+    # run complete, so a failure downstream must not leave them behind.
+    metadata = build_run_metadata(
+        cfg=cfg, policy_cfg=policy_cfg, batches={split: batch}, fps=fps, seed=seed
+    )
 
     if lerobot:
         from .datasets.lerobot_writer import write_lerobot_split
@@ -104,6 +108,7 @@ def generate(
         write_lerobot_split(out / split, f"{env}/{split}", batch, fps=fps)
         typer.echo(f"[generate] wrote LeRobot split to {out / split}")
 
+    metadata.write(out)
     typer.echo(f"[done] {out}")
 
 

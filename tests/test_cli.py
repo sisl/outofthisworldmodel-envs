@@ -193,6 +193,32 @@ def test_fps_default_is_refused_when_the_rate_is_not_whole(tmp_path):
     assert not out.exists()
 
 
+def test_failed_dataset_write_leaves_no_completed_run_marker(tmp_path, monkeypatch):
+    # The run metadata is what makes a directory look like a finished run.
+    # If the LeRobot write fails, downstream automation must be able to tell
+    # -- so none of those files may exist.
+    import owm_envs.datasets.lerobot_writer as writer
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("encoder exploded")
+
+    monkeypatch.setattr(writer, "write_lerobot_split", boom)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+         "--policy", "dock", "--num-envs", "2", "--driver", "vector"],
+    )
+    # The run must have got as far as the dataset write and failed there,
+    # otherwise this passes trivially by never reaching the metadata step.
+    assert isinstance(result.exception, RuntimeError)
+    assert "encoder exploded" in str(result.exception)
+    for name in ("normalization_stats.json", "dataset_card.json", "summary.json",
+                 "env_config.yaml", "policy_config.yaml"):
+        assert not (out / name).exists(), f"{name} survived a failed run"
+
+
 def test_non_positive_num_envs_is_rejected(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(

@@ -3,7 +3,12 @@ import json
 import numpy as np
 import pytest
 
-from owm_envs.datasets.stats import GenerationConfig, SplitSpec, compute_norm_stats, write_run_metadata
+from owm_envs.datasets.stats import (
+    GenerationConfig,
+    SplitSpec,
+    build_run_metadata,
+    compute_norm_stats,
+)
 from owm_envs.drivers.types import TrajectoryBatch
 from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
@@ -80,15 +85,27 @@ def test_action_stats_exclude_the_zero_pad_slot():
     assert np.isclose(stats["action"]["mean"][0], 5.0, atol=1e-4)
 
 
-def test_write_run_metadata_emits_every_expected_file(tmp_path):
-    write_run_metadata(
-        tmp_path,
+def test_building_metadata_touches_no_files(tmp_path):
+    # The separation exists so nothing lands on disk until every artifact of
+    # the run has succeeded. If building wrote anything, a run that failed
+    # later would still leave a directory that looks like a finished one.
+    run_dir = tmp_path / "run"
+    build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
+        fps=20, seed=0,
+    )
+    assert not run_dir.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_run_metadata_write_emits_every_expected_file(tmp_path):
+    build_run_metadata(
         cfg=ISSConfig(),
         policy_cfg=PolicyConfig(type="union"),
         batches={"train": batch_with_padding()},
         fps=24,
         seed=0,
-    )
+    ).write(tmp_path)
     for name in (
         "normalization_stats.json",
         "dataset_card.json",
@@ -103,13 +120,18 @@ def test_as_run_configs_round_trip(tmp_path):
     # The whole point of the as-run record: reload it and get the same config.
     cfg = ISSConfig(physics=PhysicsConfig(start_radius_m=250.0))
     policy_cfg = PolicyConfig(type="orbit")
-    write_run_metadata(tmp_path, cfg=cfg, policy_cfg=policy_cfg, batches={"train": batch_with_padding()}, fps=24, seed=0)
+    build_run_metadata(
+        cfg=cfg, policy_cfg=policy_cfg, batches={"train": batch_with_padding()}, fps=24, seed=0
+    ).write(tmp_path)
     assert ISSConfig.from_yaml(tmp_path / "env_config.yaml") == cfg
     assert PolicyConfig.from_yaml(tmp_path / "policy_config.yaml") == policy_cfg
 
 
 def test_summary_counts_real_transitions_not_padded_ones(tmp_path):
-    write_run_metadata(tmp_path, cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()}, fps=24, seed=0)
+    build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
+        fps=24, seed=0,
+    ).write(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["counts"]["train"]["episodes"] == 2
     # lengths [4, 2] -> (4-1) + (2-1) = 4 real transitions, not 8 (padded
@@ -156,10 +178,10 @@ def test_one_real_action_is_enough(tmp_path):
     assert stats["action"]["mean"][0] == 5.0
     assert all(np.isfinite(stats["action"]["std"]))
 
-    write_run_metadata(
-        tmp_path, cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch},
+    build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch},
         fps=20, seed=0,
-    )
+    ).write(tmp_path)
     # json.loads rejects the bare NaN token only with parse_constant raising.
     text = (tmp_path / "normalization_stats.json").read_text()
     assert "NaN" not in text

@@ -3,11 +3,16 @@
 A run directory holds normalization_stats.json, dataset_card.json and
 summary.json, alongside env_config.yaml and policy_config.yaml -- the as-run
 record of exactly what produced the data.
+
+Those files are built and written in two steps (`build_run_metadata` then
+`RunMetadata.write`) so their presence means the run finished, not merely
+that it started.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -92,22 +97,58 @@ def compute_norm_stats(batch: TrajectoryBatch) -> dict:
     }
 
 
-def write_run_metadata(
-    run_dir: str | Path,
+@dataclass(frozen=True)
+class RunMetadata:
+    """Built run metadata, not yet on disk.
+
+    Building and writing are separate so a caller can compute this as soon as
+    the rollout is done -- surfacing a bad batch before any expensive
+    downstream work -- while `write` stays the last thing that touches the
+    run directory. These files are what marks a run complete, so a run that
+    fails partway leaves a directory visibly missing them rather than one
+    that looks finished.
+    """
+
+    stats: dict
+    card: dict
+    counts: dict
+    cfg: ISSConfig
+    policy_cfg: PolicyConfig
+
+    def write(self, run_dir: str | Path) -> None:
+        """Flush stats, card, summary, and the as-run configs into `run_dir`."""
+        run_dir = Path(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        (run_dir / "normalization_stats.json").write_text(json.dumps(self.stats, indent=2))
+        (run_dir / "dataset_card.json").write_text(json.dumps(self.card, indent=2))
+        (run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "dataset_root": str(run_dir),
+                    "counts": self.counts,
+                    "normalization_stats": self.stats,
+                },
+                indent=2,
+            )
+        )
+
+        # The as-run record: exactly the configuration that produced this data.
+        self.cfg.to_yaml(run_dir / "env_config.yaml")
+        self.policy_cfg.to_yaml(run_dir / "policy_config.yaml")
+
+
+def build_run_metadata(
     *,
     cfg: ISSConfig,
     policy_cfg: PolicyConfig,
     batches: dict[str, TrajectoryBatch],
     fps: int,
     seed: int,
-) -> None:
-    """Write stats, card, summary, and the as-run configs into `run_dir`."""
-    run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
-
+) -> RunMetadata:
+    """Compute the run metadata. Touches no files -- see RunMetadata.write."""
     reference = batches.get("train") or next(iter(batches.values()))
     stats = compute_norm_stats(reference)
-    (run_dir / "normalization_stats.json").write_text(json.dumps(stats, indent=2))
 
     counts = {}
     for name, batch in batches.items():
@@ -135,15 +176,7 @@ def write_run_metadata(
         "policy_type": policy_cfg.type,
         "union_weights": list(policy_cfg.union_weights),
     }
-    (run_dir / "dataset_card.json").write_text(json.dumps(card, indent=2))
 
-    (run_dir / "summary.json").write_text(
-        json.dumps(
-            {"dataset_root": str(run_dir), "counts": counts, "normalization_stats": stats},
-            indent=2,
-        )
+    return RunMetadata(
+        stats=stats, card=card, counts=counts, cfg=cfg, policy_cfg=policy_cfg
     )
-
-    # The as-run record: exactly the configuration that produced this data.
-    cfg.to_yaml(run_dir / "env_config.yaml")
-    policy_cfg.to_yaml(run_dir / "policy_config.yaml")
