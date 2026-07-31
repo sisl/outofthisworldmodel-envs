@@ -158,6 +158,13 @@ class RunMetadata:
         run_dir = Path(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
 
+        # Writing over an earlier run: drop its marker before touching
+        # anything else. Left in place it would vouch for a mixture of the
+        # old files and the new ones for the length of the flush, and if a
+        # replacement below failed it would go on vouching for that mixture
+        # indefinitely -- the exact state the marker exists to rule out.
+        (run_dir / SUMMARY_FILENAME).unlink(missing_ok=True)
+
         _place(run_dir / "normalization_stats.json", json.dumps(self.stats, indent=2))
         _place(run_dir / "dataset_card.json", json.dumps(self.card, indent=2))
 

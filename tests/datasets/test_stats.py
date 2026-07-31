@@ -146,6 +146,31 @@ def test_a_failure_mid_flush_leaves_no_summary_marker(tmp_path):
     assert not (tmp_path / SUMMARY_FILENAME).exists()
 
 
+def test_rewriting_a_run_drops_the_old_marker_first(tmp_path):
+    # Writing over a finished run: the previous summary.json must not survive
+    # a failed rewrite, or it advertises a directory that is now half old
+    # metadata and half new as a complete, consistent run.
+    build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
+        fps=20, seed=0,
+    ).write(tmp_path)
+    assert (tmp_path / SUMMARY_FILENAME).exists()
+
+    rewrite = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(type="orbit"),
+        batches={"train": batch_with_padding()}, fps=50, seed=1,
+    )
+    with mock.patch.object(
+        PolicyConfig, "to_yaml", side_effect=OSError("disk full")
+    ), pytest.raises(OSError):
+        rewrite.write(tmp_path)
+
+    assert not (tmp_path / SUMMARY_FILENAME).exists()
+    # And the rewrite did get far enough to replace earlier files, which is
+    # what makes the surviving marker a lie rather than merely stale.
+    assert json.loads((tmp_path / "dataset_card.json").read_text())["fps"] == 50
+
+
 def test_no_staging_files_survive_a_successful_write(tmp_path):
     build_run_metadata(
         cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
