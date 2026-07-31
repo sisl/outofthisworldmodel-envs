@@ -10,6 +10,7 @@ written next to the dataset it produced as an as-run record.
 from __future__ import annotations
 
 import math
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +20,18 @@ from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
 
-# Sentinel for ISSConfig.collision_boxes_path meaning "use the 318-box ISS
-# geometry shipped with this package". A plain sentinel (rather than baking
-# default_collision_boxes_path()'s absolute, install-location-dependent path
-# into the field default) keeps the default portable across machines and
-# installs, and keeps configs/iss_default.toml diffable/reviewable.
-DEFAULT_COLLISION_BOXES = "default"
+# Directory holding geometry shipped with this package. A relative
+# collision_boxes_path is resolved against this directory, not the caller's
+# cwd, so the packaged default stays valid regardless of where it's loaded
+# from.
+_RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
+
+# Filename, within _RESOURCES_DIR, of the 318-box ISS geometry shipped with
+# this package. This is the default for PhysicsConfig.collision_boxes_path:
+# a real, relative path rather than a magic sentinel, so it stays portable
+# across machines/installs (an absolute path would make configs/iss_default
+# .toml install-location-dependent) while still naming an actual file.
+DEFAULT_COLLISION_BOXES_FILENAME = "collision_boxes.yaml"
 
 
 class PhysicsConfig(ConfigModel):
@@ -48,11 +55,13 @@ class PhysicsConfig(ConfigModel):
     dragon_collision_radius_m: float = Field(default=2.25, ge=0, allow_inf_nan=False)
     start_radius_m: float = Field(default=100.0, ge=0, allow_inf_nan=False)
 
-    # A path to a YAML file, an already-loaded list of box dicts (useful in
-    # tests), DEFAULT_COLLISION_BOXES to use the 318-box ISS geometry shipped
-    # with this package (the default), or None to opt out of collision
-    # geometry entirely.
-    collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES
+    # A path to a YAML file (relative paths resolve against this package's
+    # resources directory, so the default below finds the shipped geometry
+    # without hardcoding an install-location-dependent absolute path), an
+    # already-loaded list of box dicts (useful in tests), or None to opt out
+    # of collision geometry entirely -- which emits a warning, since a
+    # silently collision-free environment can never terminate on collision.
+    collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES_FILENAME
 
     @field_validator("inertia_diag")
     @classmethod
@@ -138,29 +147,37 @@ class ISSConfig(ConfigModel):
 
 
 def default_collision_boxes_path() -> str:
-    """Path to the 318-AABB ISS geometry shipped with this package."""
-    return str(Path(__file__).resolve().parent / "resources" / "collision_boxes.yaml")
+    """Absolute path to the 318-AABB ISS geometry shipped with this package."""
+    return str(_RESOURCES_DIR / DEFAULT_COLLISION_BOXES_FILENAME)
 
 
 def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
     """Load axis-aligned collision boxes.
 
     `source` may be:
-      - None                     -> empty box set
-      - DEFAULT_COLLISION_BOXES  -> the 318-box ISS geometry shipped with this package
-      - a path to a YAML file containing a list of {center, size} dicts
+      - None            -> no geometry: empty box set, with a warning, since a
+                            silently collision-free environment can never
+                            terminate on collision
+      - a relative path -> resolved against this package's resources
+                            directory (DEFAULT_COLLISION_BOXES_FILENAME there
+                            is the shipped 318-box ISS geometry)
+      - an absolute path -> a YAML file containing a list of {center, size} dicts
       - an already-loaded list of {center, size} or {center, half_extents} dicts
 
     Returns (centers (N,3) float32, half_extents (N,3) float32).
     """
     if source is None:
+        warnings.warn(
+            "collision_boxes_path is None: no collision geometry will be "
+            "loaded, so episodes can never terminate on collision.",
+            stacklevel=2,
+        )
         return _empty_boxes()
-
-    if source == DEFAULT_COLLISION_BOXES:
-        return load_collision_boxes(default_collision_boxes_path())
 
     if isinstance(source, (str, Path)):
         path = Path(source)
+        if not path.is_absolute():
+            path = _RESOURCES_DIR / path
         if not path.exists():
             raise FileNotFoundError(f"collision_boxes file not found: {path}")
         return load_collision_boxes(yaml.safe_load(path.read_text()))

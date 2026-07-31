@@ -67,8 +67,8 @@ def test_reward_goal_position_survives_the_roundtrip(tmp_path):
 
 
 def test_collision_boxes_path_explicit_none_survives_toml_roundtrip(tmp_path):
-    # collision_boxes_path defaults to DEFAULT_COLLISION_BOXES ("default"), not
-    # None, and now lives inside the nested `physics` table. The explicit-null
+    # collision_boxes_path defaults to the shipped geometry's filename, not
+    # None, and lives inside the nested `physics` table. The explicit-null
     # dotted-path machinery in ConfigModel must still record it correctly
     # through that extra level of nesting, or a caller who opted out of
     # collision geometry would silently get the default geometry back.
