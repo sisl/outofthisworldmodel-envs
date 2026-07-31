@@ -21,9 +21,9 @@ from pydantic import Field, field_validator
 from ...core.models import ConfigModel
 
 # Directory holding geometry shipped with this package. A relative
-# collision_boxes_path is resolved against this directory, not the caller's
-# cwd, so the packaged default stays valid regardless of where it's loaded
-# from.
+# collision_boxes_path is resolved against the caller's cwd first (so a
+# user-supplied file wins), falling back to this directory so the packaged
+# default stays valid regardless of where it's loaded from.
 _RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
 
 # Filename, within _RESOURCES_DIR, of the 318-box ISS geometry shipped with
@@ -55,10 +55,11 @@ class PhysicsConfig(ConfigModel):
     dragon_collision_radius_m: float = Field(default=2.25, ge=0, allow_inf_nan=False)
     start_radius_m: float = Field(default=100.0, ge=0, allow_inf_nan=False)
 
-    # A path to a YAML file (relative paths resolve against this package's
-    # resources directory, so the default below finds the shipped geometry
-    # without hardcoding an install-location-dependent absolute path), an
-    # already-loaded list of box dicts (useful in tests), or None to opt out
+    # A path to a YAML file (relative paths resolve against the cwd first,
+    # then this package's resources directory, so the default below finds
+    # the shipped geometry without hardcoding an install-location-dependent
+    # absolute path), an already-loaded list of box dicts (useful in tests),
+    # or None to opt out
     # of collision geometry entirely -- which emits a warning, since a
     # silently collision-free environment can never terminate on collision.
     collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES_FILENAME
@@ -158,9 +159,11 @@ def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
       - None            -> no geometry: empty box set, with a warning, since a
                             silently collision-free environment can never
                             terminate on collision
-      - a relative path -> resolved against this package's resources
-                            directory (DEFAULT_COLLISION_BOXES_FILENAME there
-                            is the shipped 318-box ISS geometry)
+      - a relative path -> resolved against the current working directory
+                            first (a user-supplied file, e.g. "my_boxes.yaml"),
+                            then against this package's resources directory
+                            (DEFAULT_COLLISION_BOXES_FILENAME there is the
+                            shipped 318-box ISS geometry)
       - an absolute path -> a YAML file containing a list of {center, size} dicts
       - an already-loaded list of {center, size} or {center, half_extents} dicts
 
@@ -177,8 +180,23 @@ def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
     if isinstance(source, (str, Path)):
         path = Path(source)
         if not path.is_absolute():
-            path = _RESOURCES_DIR / path
-        if not path.exists():
+            cwd_path = Path.cwd() / path
+            package_path = _RESOURCES_DIR / path
+            # The cwd must win: a user-supplied relative path (e.g. "./my_
+            # boxes.yaml") means "relative to where I'm running from"
+            # everywhere else, and if the package directory won instead, a
+            # user file that happens to share a name with a packaged asset
+            # would silently load the wrong geometry.
+            if cwd_path.exists():
+                path = cwd_path
+            elif package_path.exists():
+                path = package_path
+            else:
+                raise FileNotFoundError(
+                    "collision_boxes file not found in either location "
+                    f"tried: {cwd_path} or {package_path}"
+                )
+        elif not path.exists():
             raise FileNotFoundError(f"collision_boxes file not found: {path}")
         # An empty file (or one that's just `null`) parses to None. That's a
         # real, specified path holding zero boxes, not "no path configured"

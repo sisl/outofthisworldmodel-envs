@@ -5,9 +5,11 @@ import pytest
 import yaml
 
 from owm_envs.envs.iss.config import (
+    DEFAULT_COLLISION_BOXES_FILENAME,
     ISSConfig,
     PhysicsConfig,
     RewardWeights,
+    _RESOURCES_DIR,
     default_collision_boxes_path,
     load_collision_boxes,
 )
@@ -133,6 +135,71 @@ def test_load_collision_boxes_missing_file_raises(tmp_path):
     # look like "no collision" at runtime. Fail loudly instead.
     with pytest.raises(FileNotFoundError):
         load_collision_boxes(str(tmp_path / "nope.yaml"))
+
+
+def test_load_collision_boxes_relative_path_resolves_against_cwd(tmp_path, monkeypatch):
+    # A user's own geometry, referenced by a relative path, must resolve
+    # against wherever they're running from -- not get silently redirected
+    # into the package's resources directory, where it doesn't exist.
+    boxes = [{"center": [1.0, 2.0, 3.0], "size": [2.0, 2.0, 2.0]}]
+    (tmp_path / "my_boxes.yaml").write_text(yaml.safe_dump(boxes))
+    monkeypatch.chdir(tmp_path)
+
+    centers, half_extents = load_collision_boxes("my_boxes.yaml")
+
+    np.testing.assert_allclose(centers, [[1.0, 2.0, 3.0]])
+    np.testing.assert_allclose(half_extents, [[1.0, 1.0, 1.0]])
+
+
+def test_load_collision_boxes_relative_path_still_finds_shipped_default(
+    tmp_path, monkeypatch
+):
+    # The shipped default filename must keep resolving to the packaged
+    # geometry, from an arbitrary cwd that doesn't itself contain the file.
+    monkeypatch.chdir(tmp_path)
+    centers, half_extents = load_collision_boxes(DEFAULT_COLLISION_BOXES_FILENAME)
+    assert centers.shape == (318, 3)
+    assert half_extents.shape == (318, 3)
+
+
+def test_load_collision_boxes_cwd_wins_over_package_on_name_collision(
+    tmp_path, monkeypatch
+):
+    # If a user's cwd happens to hold a file with the same name as the
+    # shipped default, their file must win -- otherwise a relative path
+    # would be ambiguous and could silently load the wrong geometry.
+    boxes = [{"center": [0.0, 0.0, 0.0], "size": [1.0, 1.0, 1.0]}]
+    (tmp_path / DEFAULT_COLLISION_BOXES_FILENAME).write_text(yaml.safe_dump(boxes))
+    monkeypatch.chdir(tmp_path)
+
+    centers, half_extents = load_collision_boxes(DEFAULT_COLLISION_BOXES_FILENAME)
+
+    assert centers.shape == (1, 3)
+    np.testing.assert_allclose(centers, [[0.0, 0.0, 0.0]])
+
+
+def test_load_collision_boxes_missing_relative_path_names_both_locations(
+    tmp_path, monkeypatch
+):
+    # Neither the cwd nor the package resources directory has this file --
+    # the error should say where it looked, not just that it failed.
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError) as excinfo:
+        load_collision_boxes("nope.yaml")
+    message = str(excinfo.value)
+    assert str(tmp_path / "nope.yaml") in message
+    assert str(_RESOURCES_DIR / "nope.yaml") in message
+
+
+def test_load_collision_boxes_absolute_path_still_works(tmp_path):
+    boxes = [{"center": [4.0, 5.0, 6.0], "size": [2.0, 2.0, 2.0]}]
+    path = tmp_path / "abs_boxes.yaml"
+    path.write_text(yaml.safe_dump(boxes))
+
+    centers, half_extents = load_collision_boxes(str(path))
+
+    np.testing.assert_allclose(centers, [[4.0, 5.0, 6.0]])
+    np.testing.assert_allclose(half_extents, [[1.0, 1.0, 1.0]])
 
 
 def test_load_collision_boxes_empty_file_gives_empty_arrays_without_warning(tmp_path):
