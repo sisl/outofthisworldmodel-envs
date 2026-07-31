@@ -163,12 +163,12 @@ def test_rejects_a_non_positive_episode_count():
 
 
 def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
-    # Regression test: spec.max_steps (5) is far below the env's own horizon
-    # (cfg.max_steps defaults to 2000), and free flight never terminates
-    # early, so every episode must be cut short by the driver itself. A
-    # single lane makes each episode in `finished` unambiguously that lane's
-    # Nth episode, so "does episode N start where episode N-1 ended" is a
-    # direct check, not a structural approximation.
+    # spec.max_steps (5) is far below the env's own horizon (cfg.max_steps
+    # defaults to 2000), and free flight never terminates early, so every
+    # episode must be cut short by the driver itself. A single lane makes
+    # each episode in `finished` unambiguously that lane's Nth episode, so
+    # "does episode N start where episode N-1 ended" is a direct check, not
+    # a structural approximation.
     cfg = free_flight_cfg()
     batch = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=1, cfg=cfg),
@@ -444,10 +444,10 @@ class _CountingPolicySource:
 
 
 def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
-    # Regression test for the P2 finding: under NEXT_STEP autoreset, the
-    # step() call following a lane's termination discards whatever action
-    # was submitted for it -- so calling policy_source.act() for that lane
-    # is pointless at best. It's actively wrong for a stateful policy source
+    # Under NEXT_STEP autoreset, the step() call following a lane's
+    # termination discards whatever action was submitted for it -- so
+    # calling policy_source.act() for that lane is pointless at best. It's
+    # actively wrong for a stateful policy source
     # (an OU noise process, an RNN hidden state, anything with an internal
     # counter): that call would consume or mutate state on behalf of the
     # lane's *next* episode using its terminal observation from the

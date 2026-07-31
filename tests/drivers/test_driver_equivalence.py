@@ -144,9 +144,10 @@ def test_both_drivers_start_every_episode_from_an_independent_reset():
     # sequence, so "does episode N start where episode N-1 ended" is a direct
     # per-driver check rather than something inferred from interleaved,
     # multi-lane output order (which the two drivers do not even produce in
-    # the same order -- see module docstring). This is the regime that
-    # exposed VectorEnvDriver silently chaining episodes together instead of
-    # resetting: spec.max_steps (5) is far below either driver's own horizon.
+    # the same order -- see module docstring). spec.max_steps (5) is far
+    # below either driver's own horizon, so this is the regime where a
+    # driver that only reset between generate() calls would silently chain
+    # episodes together instead of starting each one from a real reset.
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     vec, scan = drivers_for(cfg, num_envs=1)
     spec = RolloutSpec(num_episodes=3, max_steps=5, seed=0)

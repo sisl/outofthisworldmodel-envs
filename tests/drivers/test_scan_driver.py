@@ -99,10 +99,11 @@ def test_lane_count_error_reports_the_raw_input():
 
 
 def test_segmentation_spreads_truncated_episodes_across_every_lane(monkeypatch):
-    # Reported case: 10 episodes over 8 lanes, free flight so every lane
-    # truncates at the same global step. Lane-major segmentation (the old
-    # behavior) would take 2 episodes each from lanes 0-4 and none from
-    # lanes 5-7; time-major segmentation should touch every lane instead.
+    # 10 episodes over 8 lanes, free flight so every lane truncates at the
+    # same global step. Segmenting lane-major (all of lane 0's episodes,
+    # then lane 1's, ...) and stopping once the requested count is reached
+    # would take 2 episodes each from lanes 0-4 and none from lanes 5-7;
+    # time-major segmentation touches every lane instead.
     captured: dict[str, list[dict]] = {}
     original = ScanDriver._segment_episodes
 
@@ -123,10 +124,10 @@ def test_segmentation_spreads_truncated_episodes_across_every_lane(monkeypatch):
 
 def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
     # ScanDriver autoresets in-scan on every `done` (see per_env_step), so
-    # this already holds -- this is the ScanDriver-side counterpart of the
-    # regression test that caught VectorEnvDriver silently chaining episodes
-    # together instead of resetting when spec.max_steps is far below the
-    # env's own horizon.
+    # each episode starts from an independent reset even when spec.max_steps
+    # (5) is far below the env's own horizon -- the segmenter cuts a fresh
+    # episode at every `done` rather than letting the scan run on and
+    # chaining what should be separate episodes together.
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     batch = make_driver(num_envs=1, policy_type="dock").generate(
         RolloutSpec(num_episodes=3, max_steps=5, seed=0)
