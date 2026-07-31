@@ -1,9 +1,13 @@
 import json
+import os
+from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pytest
 
 from owm_envs.datasets.stats import (
+    SUMMARY_FILENAME,
     GenerationConfig,
     SplitSpec,
     build_run_metadata,
@@ -96,6 +100,58 @@ def test_building_metadata_touches_no_files(tmp_path):
     )
     assert not run_dir.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_summary_marker_lands_last(tmp_path):
+    # summary.json is what a consumer tests for, so it must not appear while
+    # any other metadata file is still missing.
+    seen_when_summary_appeared = {}
+    real_replace = os.replace
+
+    def watched_replace(src, dst):
+        real_replace(src, dst)
+        if Path(dst).name == SUMMARY_FILENAME:
+            seen_when_summary_appeared["files"] = sorted(
+                p.name for p in Path(dst).parent.iterdir() if not p.name.startswith(".")
+            )
+
+    with mock.patch.object(os, "replace", watched_replace):
+        build_run_metadata(
+            cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
+            fps=20, seed=0,
+        ).write(tmp_path)
+
+    assert seen_when_summary_appeared["files"] == [
+        "dataset_card.json",
+        "env_config.yaml",
+        "normalization_stats.json",
+        "policy_config.yaml",
+        SUMMARY_FILENAME,
+    ]
+
+
+def test_a_failure_mid_flush_leaves_no_summary_marker(tmp_path):
+    # If the flush dies partway, the directory holds some metadata -- but not
+    # the marker, so nothing reads it as a finished run.
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
+        fps=20, seed=0,
+    )
+    with mock.patch.object(
+        PolicyConfig, "to_yaml", side_effect=OSError("disk full")
+    ), pytest.raises(OSError):
+        metadata.write(tmp_path)
+
+    assert (tmp_path / "normalization_stats.json").exists()  # got that far
+    assert not (tmp_path / SUMMARY_FILENAME).exists()
+
+
+def test_no_staging_files_survive_a_successful_write(tmp_path):
+    build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
+        fps=20, seed=0,
+    ).write(tmp_path)
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
 
 
 def test_run_metadata_write_emits_every_expected_file(tmp_path):

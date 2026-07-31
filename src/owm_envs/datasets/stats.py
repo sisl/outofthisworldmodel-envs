@@ -6,12 +6,14 @@ record of exactly what produced the data.
 
 Those files are built and written in two steps (`build_run_metadata` then
 `RunMetadata.write`) so their presence means the run finished, not merely
-that it started.
+that it started. `SUMMARY_FILENAME` is the marker a consumer should test
+for; it lands last, by a single atomic rename.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -25,6 +27,30 @@ from ..envs.iss.config import ISSConfig
 from ..envs.iss.policies import PolicyConfig
 
 _STD_FLOOR = 1e-6
+
+# The file whose presence means a run finished. See RunMetadata.write.
+SUMMARY_FILENAME = "summary.json"
+
+
+def _staging_path(final: Path) -> Path:
+    """Temporary sibling of `final` to build content at before moving it.
+
+    A sibling rather than a system temp file: `os.replace` is only atomic
+    within one filesystem, and /tmp is routinely a different one.
+    """
+    return final.with_name(f".{final.name}.partial")
+
+
+def _place(final: Path, text: str) -> None:
+    """Put `text` at `final` without it ever being visible half-written.
+
+    Writing directly would leave the path present but truncated for the
+    duration of the write, so a reader could parse an incomplete file. The
+    content is built under a temporary name and moved in one operation.
+    """
+    staged = _staging_path(final)
+    staged.write_text(text)
+    os.replace(staged, final)
 
 
 class SplitSpec(ConfigModel):
@@ -116,13 +142,38 @@ class RunMetadata:
     policy_cfg: PolicyConfig
 
     def write(self, run_dir: str | Path) -> None:
-        """Flush stats, card, summary, and the as-run configs into `run_dir`."""
+        """Flush stats, card, summary, and the as-run configs into `run_dir`.
+
+        SUMMARY_FILENAME is the completion marker. Five files cannot be
+        created in one filesystem operation, so instead each is staged under
+        a temporary name and moved into place by `os.replace`, and the marker
+        is moved last. A reader therefore never observes a truncated file,
+        and the marker's own move -- a single atomic rename -- is the instant
+        the run becomes complete. Everything else is already in place by
+        then, so `summary.json` present means all of it is.
+
+        Consumers should test for the marker, not for any other file: the
+        others exist during the flush, before the run is finished.
+        """
         run_dir = Path(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        (run_dir / "normalization_stats.json").write_text(json.dumps(self.stats, indent=2))
-        (run_dir / "dataset_card.json").write_text(json.dumps(self.card, indent=2))
-        (run_dir / "summary.json").write_text(
+        _place(run_dir / "normalization_stats.json", json.dumps(self.stats, indent=2))
+        _place(run_dir / "dataset_card.json", json.dumps(self.card, indent=2))
+
+        # The as-run record: exactly the configuration that produced this data.
+        # ConfigModel.to_yaml writes straight to the path it is given, so it
+        # gets staged the same way rather than serialized in place.
+        for model, name in (
+            (self.cfg, "env_config.yaml"),
+            (self.policy_cfg, "policy_config.yaml"),
+        ):
+            staged = _staging_path(run_dir / name)
+            model.to_yaml(staged)
+            os.replace(staged, run_dir / name)
+
+        _place(
+            run_dir / SUMMARY_FILENAME,
             json.dumps(
                 {
                     "dataset_root": str(run_dir),
@@ -130,12 +181,8 @@ class RunMetadata:
                     "normalization_stats": self.stats,
                 },
                 indent=2,
-            )
+            ),
         )
-
-        # The as-run record: exactly the configuration that produced this data.
-        self.cfg.to_yaml(run_dir / "env_config.yaml")
-        self.policy_cfg.to_yaml(run_dir / "policy_config.yaml")
 
 
 def build_run_metadata(
