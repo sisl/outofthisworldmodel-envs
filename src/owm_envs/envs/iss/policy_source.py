@@ -26,7 +26,7 @@ class _EpisodeState(NamedTuple):
     extras: jnp.ndarray
 
 
-class IssPolicySource:
+class ISSPolicySource:
     """Wraps `make_policy` behind the backend-agnostic PolicySource protocol."""
 
     def __init__(self, cfg: ISSConfig, policy_cfg: PolicyConfig):

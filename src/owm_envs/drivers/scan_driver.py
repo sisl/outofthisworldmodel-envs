@@ -5,10 +5,8 @@ to one call, with no Python-level per-timestep overhead. This requires a
 JAX-traceable backend, so it is an OPT-IN capability -- `VectorEnvDriver` is the
 universal path and this is the fast path for backends that can support it.
 
-Ported in structure from seamstress branch iss2,
-environments/environment_parallel.py::rollout_with_policy_jax. This version has
-no state_limits machinery and no 14th terminal state element; termination comes
-from Events plus a step counter.
+Termination comes from Events plus a step counter; it is not encoded as an
+extra absorbing element appended to the state vector.
 """
 
 from __future__ import annotations
@@ -29,9 +27,9 @@ _UNION_POLICY_IDX = 0
 def supports_fused_rollout(backend: object) -> bool:
     """Whether a backend can be traced into a fused scan.
 
-    Mirrors seamstress's `jax_compatible` flag. Backends that cannot be traced
-    (a Rust or C++ simulator behind Python bindings) set this False and fall
-    back to VectorEnvDriver with no change at the call site.
+    Backends that cannot be traced (a Rust or C++ simulator behind Python
+    bindings) set this False and fall back to VectorEnvDriver with no change
+    at the call site.
     """
     return bool(getattr(backend, "supports_fused_rollout", True))
 
@@ -94,7 +92,7 @@ class ScanDriver:
             emitted = (state, next_state, action, reward, terminated, truncated, done, extras)
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
-            # iteration, with newly sampled extras, exactly as seamstress does.
+            # iteration, with newly sampled extras.
             fresh_state = dynamics.reset(reset_key)
             fresh_extras = sample_extras(extras_key)
             new_state = jnp.where(done, fresh_state, next_state)

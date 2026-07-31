@@ -1,9 +1,9 @@
 """The guard against the two drivers silently diverging.
 
-seamstress has exactly this bug: its done-logic is implemented twice, once in
-JAX and once in numpy (environment_parallel.py:114-121 vs :221-226), free to
-drift. This port has two rollout implementations for real performance reasons,
-so it must prove they agree.
+Done-logic exists twice, once traced through JAX in `ScanDriver` and once in
+numpy in `VectorEnvDriver`, and two copies of the same rule are free to drift
+apart. The two implementations exist for real performance reasons, so they
+must prove they agree.
 
 Equivalence is tested with the `dock` policy, which is deterministic and ignores
 its PRNG key, so the comparison isolates rollout mechanics -- stepping,
@@ -46,11 +46,11 @@ DETERMINISTIC = PolicyConfig(type="dock")
 
 
 def drivers_for(cfg, num_envs=2):
-    from owm_envs.envs.iss.policy_source import IssPolicySource
+    from owm_envs.envs.iss.policy_source import ISSPolicySource
 
     vec = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-        policy_source=IssPolicySource(cfg, DETERMINISTIC),
+        policy_source=ISSPolicySource(cfg, DETERMINISTIC),
     )
     scan = ScanDriver(cfg=cfg, policy_cfg=DETERMINISTIC, num_envs=num_envs)
     return vec, scan
@@ -195,11 +195,11 @@ def test_both_drivers_agree_on_episode_length_distribution_for_a_stochastic_poli
     # logic would still show up as a different length distribution.
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     stochastic = PolicyConfig(type="random")
-    from owm_envs.envs.iss.policy_source import IssPolicySource
+    from owm_envs.envs.iss.policy_source import ISSPolicySource
 
     vec = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=4, cfg=cfg),
-        policy_source=IssPolicySource(cfg, stochastic),
+        policy_source=ISSPolicySource(cfg, stochastic),
     )
     scan = ScanDriver(cfg=cfg, policy_cfg=stochastic, num_envs=4)
     spec = RolloutSpec(num_episodes=8, max_steps=20, seed=3)

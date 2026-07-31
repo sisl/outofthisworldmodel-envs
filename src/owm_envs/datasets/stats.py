@@ -1,9 +1,8 @@
 """Normalization statistics and the run-directory metadata.
 
-Layout mirrors quickdraw's data_generation output so a generated run can be
-consumed by that training stack without an adapter: normalization_stats.json,
-dataset_card.json, summary.json. Added here: env_config.yaml and
-policy_config.yaml, the as-run record of exactly what produced the data.
+A run directory holds normalization_stats.json, dataset_card.json and
+summary.json, alongside env_config.yaml and policy_config.yaml -- the as-run
+record of exactly what produced the data.
 """
 
 from __future__ import annotations
@@ -37,7 +36,10 @@ class GenerationConfig(ConfigModel):
         }
     )
     num_envs: int = 8
-    fps: int = 24
+    # None means "use the environment's own simulation rate, 1/dt", which is
+    # the rate the recorded frames actually occur at. A fixed default here
+    # would silently disagree with dt for any dt but one.
+    fps: int | None = None
     driver: Literal["auto", "scan", "vector"] = "auto"
 
 

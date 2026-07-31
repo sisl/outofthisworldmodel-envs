@@ -8,7 +8,7 @@ from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
-from owm_envs.envs.iss.policy_source import IssPolicySource
+from owm_envs.envs.iss.policy_source import ISSPolicySource
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)
@@ -27,7 +27,7 @@ def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None):
     policy_cfg = PolicyConfig(type=policy_type)
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-        policy_source=IssPolicySource(cfg, policy_cfg),
+        policy_source=ISSPolicySource(cfg, policy_cfg),
     )
 
 
@@ -172,7 +172,7 @@ def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
     cfg = free_flight_cfg()
     batch = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=1, cfg=cfg),
-        policy_source=IssPolicySource(cfg, PolicyConfig(type="dock")),
+        policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
     ).generate(RolloutSpec(num_episodes=3, max_steps=5, seed=0))
     batch.validate()
     assert np.all(batch.truncated)
