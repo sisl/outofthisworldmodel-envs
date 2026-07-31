@@ -220,7 +220,7 @@ wheels = [
 
 [[package]]
 name = "astrojax"
-version = "0.7.3"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -229,9 +229,9 @@ dependencies = [
     { name = "optax" },
     { name = "polars" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b0/e2/c4e8383866d914cd0f84348cf853e2578df0f3753612cb58dbb264bfa276/astrojax-0.7.3.tar.gz", hash = "sha256:598b847aad545736aeda95c15667d3c8d2a56f79f343e3ee4ff18ba8f13bcfaf", size = 4786562, upload-time = "2026-05-02T00:42:26.918Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/96/0863a1ed27e2269b87dd3df813a2193069d7c2340f7492260dc717a3ecc1/astrojax-0.8.0.tar.gz", hash = "sha256:4ac05283df00e519be16e67f10079abd83db5e6491ac767055b932a15b4577e1", size = 4801891, upload-time = "2026-07-31T16:06:08.277Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cd/ab/96a23995f749edaffe63d42f352596be3d835aee9770ec0f3e04a4a00f2f/astrojax-0.7.3-py3-none-any.whl", hash = "sha256:1fba763a4d364e79298f288cf53d9a3fa436a2fdade6b5af815b22278055786d", size = 4850245, upload-time = "2026-05-02T00:42:24.98Z" },
+    { url = "https://files.pythonhosted.org/packages/70/68/85d4b2f1bbad1021d2012b670b5ffe8d87c981c6ce322b2c807cc8884496/astrojax-0.8.0-py3-none-any.whl", hash = "sha256:e984625ed32e70b3d364b5b2b8d23ea7f3faef7584278d5f507299ed890c1f03", size = 4867655, upload-time = "2026-07-31T16:06:06.495Z" },
 ]
 
 [[package]]
@@ -1918,7 +1918,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "astrojax", specifier = ">=0.7.3" },
+    { name = "astrojax", specifier = ">=0.8.0" },
     { name = "gymnasium", specifier = ">=1.0" },
     { name = "imageio", marker = "extra == 'render'" },
     { name = "jax", specifier = ">=0.4.30" },

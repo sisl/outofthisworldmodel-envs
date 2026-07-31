@@ -25,16 +25,24 @@ from astrojax.attitude_representations.quaternion import Quaternion
 # slice `state[6:10]`, so keeping the object boundary here confines the dependency
 # to one module and leaves the RK4 integrand a pure array-to-array function.
 #
-# Note: astrojax's `Quaternion.to_rotation_matrix()` returns the transpose of this
-# module's q_bw convention (its multiplication and conjugate match ours exactly,
-# but its rotation-matrix conversion does not). `quat_to_rotmat` transposes it back
-# so callers see the same body -> world matrix as before the swap.
+# Convention bridge: astrojax's `Quaternion.to_rotation_matrix()` returns the
+# ASTRODYNAMICS direction-cosine-matrix sense (reference -> body), matching brahe.
+# This package needs the GRAPHICS active-rotation sense (body -> world), because
+# the same matrix poses the spacecraft in the renderer. The two are transposes of
+# each other, so `quat_to_rotmat` transposes astrojax's result.
 #
-# `omega_matrix_body` and `quat_derivative_from_omega_body` are implemented locally
-# because astrojax provides no attitude kinematics -- there is no equivalent of
-# q_dot = 0.5 * Omega(omega) * q. That is the one function the integrator calls
-# every step.
-# --------------------------------------------------------------------------------------
+# This is NOT a defect being worked around and it is not waiting on an upstream
+# fix -- both conventions are correct in their own domains. Verified against
+# astrojax 0.7.3 and 0.8.0 (the release that aligned attitude representations to
+# brahe): both return the same matrix, and the transpose is required for both.
+# Its multiplication, conjugate and normalisation DO match this module's
+# convention exactly and are used directly.
+#
+# Concretely, for a 90-degree rotation about z, astrojax's raw matrix maps body
+# +x to world -y where this package needs +y. If you are tempted to drop the
+# transpose after an astrojax upgrade, check that specific case: the
+# characterisation test passes either way once the code and the convention
+# agree, so it will not catch a mismatch on its own.
 
 
 def quat_normalize(q: jnp.ndarray, eps: float = 1e-12) -> jnp.ndarray:
