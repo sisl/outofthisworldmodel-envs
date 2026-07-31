@@ -119,6 +119,13 @@ def _build_random(cfg: ISSConfig) -> PolicyFn:
 
 
 def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasFn]:
+    # This "orbit" is not a passively stable relative orbit -- it is a
+    # circular trajectory at a commanded angular speed around the target,
+    # held by continuous control. That's useful for training precisely
+    # because it forces trajectories that use control actuation to maintain
+    # both centre-pointing attitude and speed, exercising more of the action
+    # space and showing the consequences of actions, which helps a policy
+    # learn what its actions do.
     inertia_diag = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
     radius_range = jnp.asarray(params.radius_range_m, dtype=jnp.float32)
     omega_range = jnp.asarray(params.angular_speed_range_rad_s, dtype=jnp.float32)
