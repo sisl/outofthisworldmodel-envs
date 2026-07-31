@@ -14,15 +14,28 @@ below reflects what is actually documented rather than an assertion of terms.
 | `spacex_dragon_2_exterior.glb` | Sketchfab — "SpaceX Dragon 2 Exterior" | not recorded |
 | `nasa_starmap_2020/` | NASA SVS #4851, cubemapped via jaxry/panorama-to-cubemap | not recorded |
 | `moon/moon_small.glb` | Texture from NASA SVS #14959 (CGI Moon Kit), https://svs.gsfc.nasa.gov/14959/. **Mesh geometry source not recorded.** | not recorded |
-| `earth/patches/earth_color_patch.jpg`, `earth_clouds_patch.jpg` | Baked by `scripts/bake_earth_patches.py` from high-resolution equirectangular sources whose origin is **one of several candidates and cannot be attributed to a specific one** | not recorded |
+| `earth/patches/earth_color_patch.jpg`, `earth_clouds_patch.jpg` | Baked from high-resolution equirectangular imagery collected from the Earth sources listed below | not recorded |
+
+**Earth imagery sources.** The high-resolution equirectangular maps the patches
+are baked from were collected from these four:
+
+- https://sketchfab.com/3d-models/earth-41fc80d85dfd480281f21b74b2de2faa
+- https://science.nasa.gov/resource/earth-3d-model/
+- https://www.cgtrader.com/items/6013252/download-page
+- https://maps.drsys.eu/
+
+Which specific source produced each shipped patch was not recorded per file, so
+anyone assessing terms should check all four.
 
 The Earth patches are derived works: each is a 50°×50° crop downsampled to
-8192×8192 from a much larger source image, which is not redistributed here.
+8192×8192 from a much larger source image. The source imagery itself is not
+redistributed here — `scripts/bake_earth_patches.py` regenerates the patches
+from a local copy.
 
-**Unresolved before public release.** Two gaps remain. The Earth source imagery
-cannot be attributed to a specific origin, and while the Moon texture is now
-attributed to NASA SVS #14959, the provenance of `moon_small.glb`'s mesh
-geometry is still unrecorded. This is not cosmetic: Sketchfab models are
-commonly CC-BY, which legally requires attribution, and NASA imagery carries its
-own usage guidelines. Resolve both before this repository is made public or
-redistributed.
+**Before public release.** Licence terms were not recorded for any asset, and
+two provenance gaps remain: which of the four Earth sources produced each patch,
+and the mesh geometry of `moon_small.glb` (its texture is attributed to NASA SVS
+#14959). This is not cosmetic — Sketchfab and CGTrader assets carry per-item
+terms, some requiring attribution, and NASA imagery has its own usage
+guidelines. Confirm terms for each asset before this repository is made public
+or redistributed.
