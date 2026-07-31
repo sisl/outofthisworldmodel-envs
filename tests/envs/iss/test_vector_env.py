@@ -194,6 +194,14 @@ def test_autoreset_mode_is_declared_in_metadata():
     assert "autoreset_mode" in env.metadata
 
 
+def test_render_fps_tracks_the_configured_timestep():
+    # Same rule as ISSEnv: one frame per step, so render_fps is 1/dt.
+    assert ISSVectorEnv(num_envs=2).metadata["render_fps"] == round(1.0 / ISSConfig().dt)
+    assert ISSVectorEnv(num_envs=2, cfg=ISSConfig(dt=0.01)).metadata["render_fps"] == 100
+    # Overriding it must not disturb the autoreset declaration alongside it.
+    assert "autoreset_mode" in ISSVectorEnv(num_envs=2, cfg=ISSConfig(dt=0.01)).metadata
+
+
 def test_integer_seed_path_is_unchanged():
     # The integer-seed reset path must derive per-env keys via
     # jax.random.split on a single PRNGKey; other reproducibility tests

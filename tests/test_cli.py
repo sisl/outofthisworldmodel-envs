@@ -94,6 +94,70 @@ def test_summary_reports_the_episode_count_requested(tmp_path):
     assert summary["counts"]["train"]["episodes"] == 3
 
 
+def test_fps_defaults_to_the_simulation_rate(tmp_path):
+    # One frame is recorded per step, so a dataset stamped with any rate other
+    # than 1/dt reports an inter-frame interval the physics never used.
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+         "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot"],
+    )
+    assert result.exit_code == 0, result.stdout
+    card = json.loads((out / "dataset_card.json").read_text())
+    assert card["fps"] == round(1.0 / card["dt"])
+
+
+def test_fps_default_tracks_a_non_default_dt(tmp_path):
+    from owm_envs.envs.iss.config import ISSConfig
+
+    cfg_path = tmp_path / "env.yaml"
+    ISSConfig(dt=0.01).to_yaml(cfg_path)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "2",
+         "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
+         "--no-lerobot"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert json.loads((out / "dataset_card.json").read_text())["fps"] == 100
+
+
+def test_explicit_fps_is_honoured_but_warns_when_it_contradicts_dt(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+         "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot",
+         "--fps", "24"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert json.loads((out / "dataset_card.json").read_text())["fps"] == 24
+    assert "does not match the simulation rate" in result.output
+
+
+def test_fps_default_is_refused_when_the_rate_is_not_whole(tmp_path):
+    # dt = 0.03 gives 33.33... frames per second, which no integer fps
+    # represents; guessing 33 would silently misstate the interval.
+    from owm_envs.envs.iss.config import ISSConfig
+
+    cfg_path = tmp_path / "env.yaml"
+    ISSConfig(dt=0.03).to_yaml(cfg_path)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "1",
+         "--steps", "4", "--policy", "dock", "--num-envs", "1", "--driver", "vector",
+         "--no-lerobot"],
+    )
+    assert result.exit_code != 0
+    assert "--fps" in result.output
+    assert not out.exists()
+
+
 def test_non_positive_num_envs_is_rejected(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(

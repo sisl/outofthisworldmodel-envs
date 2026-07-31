@@ -27,14 +27,19 @@ from .reward import iss_reward
 
 
 class ISSVectorEnv(VectorEnv):
+    # render_fps is overridden per instance in __init__; the class-level value
+    # is the rate implied by ISSConfig's own default dt.
     metadata = {
         "render_modes": [],
-        "render_fps": 24,
+        "render_fps": 20,
         "autoreset_mode": AutoresetMode.NEXT_STEP,
     }
 
     def __init__(self, num_envs: int = 1, cfg: ISSConfig | None = None):
         self.cfg = cfg or ISSConfig()
+        # One frame per step, so the playback rate is the simulation rate.
+        # Per-instance because it depends on cfg.dt, which the class does not know.
+        self.metadata = {**self.metadata, "render_fps": round(1.0 / self.cfg.dt)}
         self.num_envs = int(num_envs)
         self.dynamics = ISSDynamics(self.cfg)
 

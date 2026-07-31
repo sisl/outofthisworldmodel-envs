@@ -46,7 +46,11 @@ def generate(
     seed: int = typer.Option(0, help="Base seed."),
     driver: str = typer.Option("auto", help="auto | scan | vector"),
     num_envs: int = typer.Option(8, help="Parallel lanes."),
-    fps: int = typer.Option(24, help="Frames per second recorded in the dataset."),
+    fps: Optional[int] = typer.Option(
+        None,
+        help="Frames per second recorded in the dataset. Defaults to the "
+        "simulation rate, 1/dt, from the environment config.",
+    ),
     config: Optional[Path] = typer.Option(None, help="ISSConfig YAML to load."),
     split: str = typer.Option("train", help="Split name for the output."),
     lerobot: bool = typer.Option(True, "--lerobot/--no-lerobot", help="Write a LeRobot dataset."),
@@ -76,6 +80,7 @@ def generate(
             ) from exc
 
     cfg = ISSConfig.from_yaml(config) if config is not None else ISSConfig()
+    fps = _resolve_fps(fps, cfg.dt)
     try:
         policy_cfg = PolicyConfig(type=policy)
     except Exception as exc:  # pydantic rejects unknown policy types
@@ -102,6 +107,47 @@ def generate(
     typer.echo(f"[done] {out}")
 
 
+def _simulation_fps(dt: float) -> int | None:
+    """Whole frames per second implied by `dt`, or None if 1/dt is not whole.
+
+    One frame is recorded per simulation step, so 1/dt is the rate at which
+    the recorded frames actually occur.
+    """
+    rate = 1.0 / dt
+    nearest = round(rate)
+    if nearest < 1 or abs(rate - nearest) > 1e-9:
+        return None
+    return int(nearest)
+
+
+def _resolve_fps(requested: int | None, dt: float) -> int:
+    """Frame rate to stamp on the dataset.
+
+    fps is metadata: it does not change the rollout, but it is what a consumer
+    reads back to recover the interval between frames. When it disagrees with
+    1/dt, every recovered interval is wrong and the video plays at the wrong
+    speed, so the default tracks dt rather than any fixed rate.
+    """
+    simulation_fps = _simulation_fps(dt)
+    if requested is None:
+        if simulation_fps is None:
+            raise typer.BadParameter(
+                f"dt={dt} gives a simulation rate of {1.0 / dt:.6g} frames per "
+                "second, which is not whole, so there is no exact integer fps "
+                "to default to; pass --fps explicitly"
+            )
+        return simulation_fps
+    if requested < 1:
+        raise typer.BadParameter(f"--fps must be >= 1, got {requested}")
+    if simulation_fps is not None and requested != simulation_fps:
+        typer.echo(
+            f"[warn] --fps {requested} does not match the simulation rate "
+            f"{simulation_fps} (dt={dt}); the dataset will report an "
+            "inter-frame interval that the physics did not use"
+        )
+    return requested
+
+
 class _Chosen:
     def __init__(self, name: str, driver: object):
         self.name = name
@@ -114,14 +160,14 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
     from .envs.iss.dynamics import ISSDynamics
     from .envs.iss.vector_env import ISSVectorEnv
 
-    from .envs.iss.policy_source import IssPolicySource
+    from .envs.iss.policy_source import ISSPolicySource
 
     def build_vector() -> _Chosen:
         return _Chosen(
             "vector",
             VectorEnvDriver(
                 env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-                policy_source=IssPolicySource(cfg, policy_cfg),
+                policy_source=ISSPolicySource(cfg, policy_cfg),
             ),
         )
 
