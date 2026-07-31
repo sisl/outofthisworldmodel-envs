@@ -52,9 +52,10 @@ def _reset_and_patch(monkeypatch):
 
 
 def test_render_batch_frames_builds_one_renderer_for_the_whole_batch():
-    # The bug this guards against: video.py used to construct a fresh
-    # ISSRenderer per episode, paying the full GLB/texture/cubemap load cost
-    # (~3.6 s plus ~200 MB of GPU uploads) N times for an N-episode batch.
+    # One renderer serves the whole batch: constructing an ISSRenderer loads
+    # the GLB/texture/cubemap assets and uploads ~200 MB to the GPU, costing
+    # ~3.6 s. A fresh renderer per episode would repeat that N times for an
+    # N-episode batch.
     batch = small_batch()
     frames = render_batch_frames(batch, _Cfg())
     assert len(frames) == batch.num_episodes
@@ -72,8 +73,8 @@ def test_render_episode_frames_reuses_a_passed_in_renderer():
 
 
 def test_render_episode_frames_without_a_renderer_builds_and_closes_its_own():
-    # Backward-compatible standalone use: no renderer given, so one is built
-    # and closed just for this call, as before.
+    # Standalone use: no renderer given, so one is built and closed just for
+    # this call.
     batch = small_batch()
     render_episode_frames(batch, 0, _Cfg())
     assert _FakeRenderer.instances == 1

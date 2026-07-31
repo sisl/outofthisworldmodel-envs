@@ -36,14 +36,14 @@ def test_update_applies_the_state_attitude(scene):
     # 90 deg about z: q = [cos45, 0, 0, sin45].
     # Body +x must map to world [0, 1, 0], and body +y to world [-1, 0, 0].
     #
-    # This pins the actual rotation direction rather than merely checking
-    # that the matrix "changed", because quat_to_rotmat (owm_envs.core.
-    # quaternion) deliberately transposes astrojax's rotation matrix to turn
-    # its reference->body DCM convention into the body->world active-
-    # rotation sense this scene needs. If that transpose were dropped, the
-    # capsule would rotate the wrong way in every frame -- body +x would map
-    # to world [0, -1, 0] instead -- and a "did it change" assertion would
-    # not catch it, but this one does.
+    # quat_to_rotmat (owm_envs.core.quaternion) deliberately transposes
+    # astrojax's rotation matrix to turn its reference->body DCM convention
+    # into the body->world active-rotation sense this scene needs. Checking
+    # the exact direction, not just that the matrix changed, is what
+    # distinguishes that sense from its transpose: without the transpose the
+    # capsule would rotate the wrong way in every frame, with body +x
+    # mapping to world [0, -1, 0] instead, which a "did it change" check
+    # would not catch.
     s = float(np.sin(np.pi / 4))
     c = float(np.cos(np.pi / 4))
     scene.update(state_at((0.0, 0.0, 0.0), quat=(c, 0.0, 0.0, s)))

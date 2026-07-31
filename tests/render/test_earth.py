@@ -63,8 +63,8 @@ def test_unknown_texture_kind_raises():
 
 
 def test_tier2_miss_warns_when_source_dir_has_unmatched_files(monkeypatch, tmp_path):
-    # A maintainer who drops a high-res source in under the wrong filename
-    # used to have tier 2 silently skipped -- this must be observable instead.
+    # A source directory that exists but contains no matching file warns
+    # rather than silently falling through to the baked patch.
     (tmp_path / "some_other_file.tif").write_bytes(b"not the expected name")
     monkeypatch.setattr("owm_envs.render.earth._source_dir", lambda: tmp_path)
     with pytest.warns(UserWarning, match="tier-2 bake"):

@@ -67,10 +67,10 @@ def test_vector_features_are_unchanged_when_video_is_added(tmp_path):
 
 
 def test_video_feature_shape_matches_a_nonsquare_clip(tmp_path):
-    # cli.py:83,89 and lerobot_writer.py:102-106 used to disagree on this: the
-    # CLI declared a square (fpv_size, fpv_size, 3) shape derived from
-    # image_width alone, while the renderer actually returns (H, W, 3). Any
-    # non-square render config made every add_frame() call fail validation.
+    # The declared feature shape comes from the clip itself: the renderer
+    # returns (H, W, 3), and H and W differ whenever the render config is
+    # non-square. A feature shape derived from image_width alone instead
+    # would fail every add_frame() call for such a config.
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     height, width = 96, 160
@@ -81,8 +81,9 @@ def test_video_feature_shape_matches_a_nonsquare_clip(tmp_path):
     write_lerobot_split(tmp_path / "e", "iss/e", small_batch(), fps=24, frames=frames)
     ds = LeRobotDataset("iss/e", root=tmp_path / "e")
     assert ds.features["observation.images.fpv"]["shape"] == (height, width, 3)
-    # Reading a frame back must not raise -- this is where add_frame()'s
-    # shape validator would have rejected every frame under the old bug.
+    # Reading a frame back must not raise: add_frame()'s shape validator
+    # checks every incoming frame against the declared feature shape, so a
+    # mismatch between the two would surface right here.
     assert ds[0]["observation.images.fpv"] is not None
     assert ds.num_frames == 7
 

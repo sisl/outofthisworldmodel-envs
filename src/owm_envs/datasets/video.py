@@ -31,8 +31,7 @@ def render_episode_frames(
     across episodes so a multi-episode batch pays the cost of loading the
     scene's GLBs, cubemap and Earth textures once, not once per episode. The
     caller owns that renderer's lifetime and must close it itself. When
-    omitted, a renderer is built and closed just for this one episode, as
-    before.
+    omitted, a renderer is built and closed just for this one episode.
     """
     length = int(batch.lengths[episode_index])
     owns_renderer = renderer is None

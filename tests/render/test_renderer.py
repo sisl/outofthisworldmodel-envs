@@ -47,8 +47,8 @@ def test_views_are_pairwise_distinct(renderer):
     # A uniform grey wash -- e.g. every view pointed at nothing -- would pass
     # a "some pixels are non-black" check while still being visually useless.
     # Requiring every pair of the six views to actually differ catches that;
-    # verified directly that the minimum pairwise mean-absolute difference
-    # across the six views is 4.4, well above noise.
+    # the observed minimum pairwise mean-absolute difference across the six
+    # views is 4.4, well above the diff > 1.0 threshold used here.
     frames = {view: renderer.render(a_state(), view=view) for view in VIEWS}
     for i, a in enumerate(VIEWS):
         for b in VIEWS[i + 1 :]:

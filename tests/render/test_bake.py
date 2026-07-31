@@ -1,9 +1,9 @@
 """The Earth patch baker must live inside the installed package.
 
-`bake_patch` used to be loaded from a `scripts/` path resolved relative to
-this repository's checkout layout, which does not exist in a `pip install`ed
-copy: the download-then-bake path (tier 3 in earth.py) would crash on
-success. It must now be an ordinary importable module under `src/`.
+A `scripts/` path resolved relative to this repository's checkout layout
+does not exist in a `pip install`ed copy, so loading `bake_patch` that way
+would make the download-then-bake path (tier 3 in earth.py) crash on
+success. It must be an ordinary importable module under `src/`.
 """
 
 from __future__ import annotations
@@ -22,9 +22,9 @@ def test_bake_patch_is_importable_from_the_package():
 
 
 def test_bake_patch_source_lives_under_src():
-    # Guards against a re-introduced importlib/spec_from_file_location trick
-    # that reaches outside the installed package (e.g. into a scripts/
-    # directory that a wheel never ships).
+    # Guards against an importlib/spec_from_file_location trick that reaches
+    # outside the installed package (e.g. into a scripts/ directory that a
+    # wheel never ships).
     package_root = owm_envs.__file__
     assert "src/owm_envs" in package_root.replace("\\", "/") or "/owm_envs/" in package_root
 
