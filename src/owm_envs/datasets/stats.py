@@ -70,6 +70,16 @@ def compute_norm_stats(batch: TrajectoryBatch) -> dict:
     # real and IS kept above. rewards are not touched by this function at
     # all -- no run metadata currently reports reward statistics.
     act = _real_rows(batch.actions, np.maximum(batch.lengths - 1, 0))
+    if act.shape[0] == 0:
+        # Every episode is a lone observation with no step taken, so there is
+        # nothing to take action statistics over. numpy would return NaN for
+        # mean and std of an empty array, and json.dumps writes that as the
+        # bare token NaN -- invalid JSON that a strict parser rejects and a
+        # lenient one silently propagates into training as a NaN normalizer.
+        raise ValueError(
+            "batch holds no real actions: every episode has length 1, which "
+            "stores a single observation and no transition"
+        )
     return {
         "observation_vector": {
             "mean": obs.mean(0).tolist(),

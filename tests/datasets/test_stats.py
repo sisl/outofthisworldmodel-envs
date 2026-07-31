@@ -118,6 +118,53 @@ def test_summary_counts_real_transitions_not_padded_ones(tmp_path):
     assert summary["counts"]["train"]["transitions"] == 4
 
 
+def test_batch_with_no_real_actions_is_rejected():
+    # lengths == 1 is a lone observation with no step taken, so there is
+    # nothing to take action statistics over. numpy yields NaN for an empty
+    # mean/std and json.dumps writes the bare token NaN, which is invalid
+    # JSON -- unusable as a normalizer either way, so fail here instead.
+    batch = TrajectoryBatch(
+        observations=np.zeros((2, 1, 13), dtype=np.float32),
+        actions=np.zeros((2, 1, 6), dtype=np.float32),
+        rewards=np.zeros((2, 1), dtype=np.float32),
+        lengths=np.array([1, 1], dtype=np.int32),
+        terminated=np.array([True, False]),
+        truncated=np.array([False, True]),
+        policy_ids=None,
+    )
+    batch.validate()  # structurally valid; the problem is that it is empty
+    with pytest.raises(ValueError, match="no real actions"):
+        compute_norm_stats(batch)
+
+
+def test_one_real_action_is_enough(tmp_path):
+    # The guard above must not reject the shortest batch that does carry a
+    # transition, and the stats it writes must stay finite JSON.
+    obs = np.zeros((1, 2, 13), dtype=np.float32)
+    act = np.zeros((1, 2, 6), dtype=np.float32)
+    act[0, 0, 0] = 5.0
+    batch = TrajectoryBatch(
+        observations=obs,
+        actions=act,
+        rewards=np.zeros((1, 2), dtype=np.float32),
+        lengths=np.array([2], dtype=np.int32),
+        terminated=np.array([True]),
+        truncated=np.array([False]),
+        policy_ids=None,
+    )
+    stats = compute_norm_stats(batch)
+    assert stats["action"]["mean"][0] == 5.0
+    assert all(np.isfinite(stats["action"]["std"]))
+
+    write_run_metadata(
+        tmp_path, cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch},
+        fps=20, seed=0,
+    )
+    # json.loads rejects the bare NaN token only with parse_constant raising.
+    text = (tmp_path / "normalization_stats.json").read_text()
+    assert "NaN" not in text
+
+
 def test_generation_config_round_trips(tmp_path):
     gen = GenerationConfig(
         splits={"train": SplitSpec(num_episodes=8, max_steps=100, seed=0),
