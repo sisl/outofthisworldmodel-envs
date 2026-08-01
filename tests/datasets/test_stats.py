@@ -457,6 +457,13 @@ def test_negative_split_seed_is_rejected():
         SplitSpec(num_episodes=2, seed=-1)
 
 
+def test_non_positive_split_sizes_are_rejected():
+    with pytest.raises(ValueError):
+        SplitSpec(num_episodes=0, seed=0)
+    with pytest.raises(ValueError):
+        SplitSpec(num_episodes=2, max_steps=0, seed=0)
+
+
 def test_path_like_split_names_are_rejected():
     with pytest.raises(ValueError, match="slug"):
         GenerationConfig(splits={

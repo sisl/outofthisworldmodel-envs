@@ -90,8 +90,8 @@ def code_provenance() -> dict:
 
 
 class SplitSpec(ConfigModel):
-    num_episodes: int = 64
-    max_steps: int = 2000
+    num_episodes: int = Field(default=64, ge=1)
+    max_steps: int = Field(default=2000, ge=1)
     seed: int = Field(default=0, ge=0)
     # None inherits the run-level policy. Set it to give this split its own
     # -- e.g. a dock-only val split against a union-policy train split.
