@@ -439,3 +439,16 @@ def test_code_provenance_degrades_when_git_is_unavailable(monkeypatch):
     prov = code_provenance()
     assert prov["git_commit"] is None
     assert prov["git_dirty"] is None
+
+
+def test_negative_split_seed_is_rejected():
+    with pytest.raises(ValueError):
+        SplitSpec(num_episodes=2, seed=-1)
+
+
+def test_path_like_split_names_are_rejected():
+    with pytest.raises(ValueError, match="slug"):
+        GenerationConfig(splits={
+            "train": SplitSpec(num_episodes=2, seed=0),
+            "../evil": SplitSpec(num_episodes=2, seed=1),
+        })

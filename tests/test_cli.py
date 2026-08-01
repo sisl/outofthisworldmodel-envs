@@ -430,3 +430,11 @@ def test_invalid_gen_config_file_is_rejected_cleanly(tmp_path):
     ])
     assert result.exit_code != 0
     assert "train" in result.output
+
+
+def test_negative_seed_split_flag_is_rejected_cleanly(tmp_path):
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"), "--steps", "8",
+        "--split", "train:2:-1", "--no-lerobot",
+    ])
+    assert result.exit_code != 0

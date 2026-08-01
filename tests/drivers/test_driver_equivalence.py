@@ -261,11 +261,10 @@ def _assert_batches_equal(a, b):
     np.testing.assert_array_equal(a.lengths, b.lengths)
 
 
-# A multi-split run reuses one driver instance across several `generate()`
-# calls, one per split -- if a driver carried state between calls, a split's
-# contents would depend on what was generated before it, and on the order
-# splits happen to be requested in. These tests prove `generate()` is a pure
-# function of `RolloutSpec` alone: calling it with one spec interleaved
+# Multi-split runs call generate() repeatedly (the CLI builds a driver per
+# split, but reuse must also be safe): generate() must be a pure function of
+# the RolloutSpec, or split contents would depend on generation order. These
+# tests prove this property: calling generate() with one spec interleaved
 # between calls with another must not perturb either spec's result, and a
 # fresh driver instance must reproduce the same result too.
 

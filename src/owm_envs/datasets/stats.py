@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
@@ -91,7 +92,7 @@ def code_provenance() -> dict:
 class SplitSpec(ConfigModel):
     num_episodes: int = 64
     max_steps: int = 2000
-    seed: int = 0
+    seed: int = Field(default=0, ge=0)
     # None inherits the run-level policy. Set it to give this split its own
     # -- e.g. a dock-only val split against a union-policy train split.
     policy: PolicyConfig | None = None
@@ -114,6 +115,12 @@ class GenerationConfig(ConfigModel):
     @field_validator("splits")
     @classmethod
     def _validate_splits(cls, v: dict[str, SplitSpec]) -> dict[str, SplitSpec]:
+        for name in v:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or ".." in name:
+                raise ValueError(
+                    f"split name {name!r} must be a plain slug "
+                    "(letters, digits, '_', '-', '.'; no path separators)"
+                )
         # Normalization statistics are computed from the train split alone
         # (the downstream trainer's contract), so a run without one has no
         # valid stats at all -- reject at config load, not at metadata time.
