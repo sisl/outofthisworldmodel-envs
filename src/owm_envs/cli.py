@@ -128,7 +128,10 @@ def generate(
             raise typer.BadParameter(
                 "--gen-config is exclusive with --split/--steps/--num-envs/--driver/--fps"
             )
-        gen = GenerationConfig.from_yaml(gen_config)
+        try:
+            gen = GenerationConfig.from_yaml(gen_config)
+        except ValidationError as exc:
+            raise typer.BadParameter(str(exc)) from exc
     else:
         resolved_steps = steps if steps is not None else 2000
         try:

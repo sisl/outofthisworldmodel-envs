@@ -420,3 +420,13 @@ def test_per_split_policy_is_rolled_and_recorded(tmp_path):
     card = json.loads((out / "dataset_card.json").read_text())
     assert card["splits"]["train"]["policy_type"] == "union"   # run-level default
     assert card["splits"]["val"]["policy_type"] == "dock"      # per-split override
+
+
+def test_invalid_gen_config_file_is_rejected_cleanly(tmp_path):
+    bad = tmp_path / "gen.yaml"
+    bad.write_text("splits:\n  val:\n    num_episodes: 2\n    seed: 1\n")
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"), "--gen-config", str(bad), "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert "train" in result.output
