@@ -85,3 +85,19 @@ def test_rollout_spec_is_frozen():
     spec = RolloutSpec(num_episodes=4, max_steps=100, seed=0)
     with pytest.raises(Exception):
         spec.num_episodes = 8
+
+
+def test_rollout_spec_rejects_both_num_episodes_and_min_transitions():
+    with pytest.raises(ValueError, match="exactly one"):
+        RolloutSpec(num_episodes=4, max_steps=100, seed=0, min_transitions=10)
+
+
+def test_rollout_spec_rejects_neither_num_episodes_nor_min_transitions():
+    with pytest.raises(ValueError, match="exactly one"):
+        RolloutSpec(max_steps=100, seed=0)
+
+
+def test_rollout_spec_accepts_min_transitions_mode():
+    spec = RolloutSpec(max_steps=5, seed=0, min_transitions=10)
+    assert spec.min_transitions == 10
+    assert spec.num_episodes is None

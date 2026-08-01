@@ -12,7 +12,7 @@ Gymnasium pair.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import numpy as np
@@ -20,11 +20,22 @@ import numpy as np
 
 @dataclass(frozen=True)
 class RolloutSpec:
-    """What to generate. Deliberately backend-agnostic."""
+    """What to generate. Deliberately backend-agnostic.
 
-    num_episodes: int
+    Exactly one of `num_episodes` or `min_transitions` sizes the rollout;
+    see `__post_init__`.
+    """
+
+    num_episodes: int | None = field(default=None, kw_only=True)
     max_steps: int
     seed: int
+    min_transitions: int | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if (self.num_episodes is None) == (self.min_transitions is None):
+            raise ValueError(
+                "exactly one of num_episodes or min_transitions must be set"
+            )
 
 
 @dataclass(frozen=True)
