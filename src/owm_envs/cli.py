@@ -40,8 +40,13 @@ def list_envs() -> None:
     )
 
 
-def _parse_split_flags(values: list[str], steps: int) -> dict[str, SplitSpec]:
-    """`NAME:EPISODES:SEED[:POLICY]` flags -> split specs, all at `steps` max steps."""
+def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str, SplitSpec]:
+    """`NAME:EPISODES:SEED[:POLICY]` flags -> split specs, all at `steps` max steps.
+
+    A `:POLICY` suffix's PolicyConfig inherits `--observe` rather than the
+    PolicyConfig default, so a per-split policy still respects the run-level
+    observe flag.
+    """
     splits: dict[str, SplitSpec] = {}
     for raw in values:
         parts = raw.split(":")
@@ -64,7 +69,7 @@ def _parse_split_flags(values: list[str], steps: int) -> dict[str, SplitSpec]:
         split_policy = None
         if len(parts) == 4:
             try:
-                split_policy = PolicyConfig(type=parts[3])
+                split_policy = PolicyConfig(type=parts[3], observe=observe)
             except Exception as exc:  # pydantic rejects unknown policy types
                 raise typer.BadParameter(
                     f"--split '{raw}': invalid policy '{parts[3]}': {exc}"
@@ -148,7 +153,9 @@ def generate(
         resolved_steps = steps if steps is not None else 2000
         try:
             gen = GenerationConfig(
-                splits=_parse_split_flags(split or ["train:64:0", "val:8:1"], resolved_steps),
+                splits=_parse_split_flags(
+                    split or ["train:64:0", "val:8:1"], resolved_steps, observe
+                ),
                 num_envs=num_envs if num_envs is not None else 8,
                 fps=fps,
                 driver=driver if driver is not None else "auto",
