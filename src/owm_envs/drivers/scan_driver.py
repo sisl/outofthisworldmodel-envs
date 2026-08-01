@@ -23,6 +23,9 @@ from ..envs.iss.sensing import apply_sensor_noise
 from .types import RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
+# fold_in constant deriving each lane's noise-measurement key from its main
+# lane key without consuming a draw from the main chain (see per_env_step).
+_NOISE_STREAM = 0x5EED
 
 
 def supports_fused_rollout(backend: object) -> bool:
@@ -83,15 +86,16 @@ class ScanDriver:
             return extras_fn(key)
 
         def per_env_step(carry, _):
-            state, step_index, extras, key = carry
+            state, step_index, extras, key, noise_key = carry
 
             # Measured pre-step state, drawn BEFORE the action so the
             # recorded observation and the policy's (optional) input are the
-            # SAME draw. Static `if noise.enabled` (a Python bool, not a
-            # traced value) keeps the noise-off draw sequence exactly today's
-            # `jax.random.split(key, 4)` below -- no extra split is consumed.
+            # SAME draw. Noise draws come from `noise_key`, a fold_in side
+            # stream (see `generate`) kept separate from `key` so that the
+            # act/reset/extras draws below are identical whether or not
+            # noise is enabled -- `jax.random.split(key, 4)` never changes.
             if noise.enabled:
-                key, meas_key, term_key = jax.random.split(key, 3)
+                noise_key, meas_key = jax.random.split(noise_key)
                 measured = apply_sensor_noise(state, meas_key, noise)
             else:
                 measured = state
@@ -103,11 +107,13 @@ class ScanDriver:
             next_state, events = dynamics.step(state, action)
             reward = iss_reward(next_state, action, events, cfg)
 
-            # `measured_next` is its own draw (`term_key`, split above)
-            # because the terminal observation on the `done` iteration is
-            # `next_state`, which needs measuring too.
+            # `measured_next` is its own draw (`next_meas_key`) because the
+            # terminal observation on the `done` iteration is `next_state`,
+            # which needs measuring too -- and every non-terminal iteration
+            # also measures its `next_state` for the following step's input.
             if noise.enabled:
-                measured_next = apply_sensor_noise(next_state, term_key, noise)
+                noise_key, next_meas_key = jax.random.split(noise_key)
+                measured_next = apply_sensor_noise(next_state, next_meas_key, noise)
             else:
                 measured_next = next_state
 
@@ -133,7 +139,7 @@ class ScanDriver:
             new_extras = jnp.where(done, fresh_extras, extras)
             new_index = jnp.where(done, 0, next_index)
 
-            return (new_state, new_index, new_extras, key), emitted
+            return (new_state, new_index, new_extras, key, noise_key), emitted
 
         # Horizon long enough that num_envs lanes yield at least num_episodes
         # episodes even if every episode runs the full max_steps.
@@ -155,14 +161,24 @@ class ScanDriver:
         init_extras = jax.vmap(sample_extras)(jax.random.split(extras_key, self.num_envs))
         init_indices = jnp.zeros((self.num_envs,), dtype=jnp.int32)
         lane_keys = jax.random.split(scan_key, self.num_envs)
+        # Noise draws come from their own per-lane stream, derived via
+        # fold_in rather than split, so deriving it consumes nothing from
+        # `lane_keys` -- the act/reset/extras draws are unaffected by
+        # whether noise is enabled.
+        noise_lane_keys = jax.vmap(lambda k: jax.random.fold_in(k, _NOISE_STREAM))(lane_keys)
 
-        def run_lane(state, index, extras, lane_key):
+        def run_lane(state, index, extras, lane_key, noise_lane_key):
             _, emitted = jax.lax.scan(
-                per_env_step, (state, index, extras, lane_key), None, length=horizon
+                per_env_step,
+                (state, index, extras, lane_key, noise_lane_key),
+                None,
+                length=horizon,
             )
             return emitted
 
-        emitted = jax.jit(jax.vmap(run_lane))(init_states, init_indices, init_extras, lane_keys)
+        emitted = jax.jit(jax.vmap(run_lane))(
+            init_states, init_indices, init_extras, lane_keys, noise_lane_keys
+        )
         return self._segment(emitted, spec, records_policy_ids)
 
     @staticmethod

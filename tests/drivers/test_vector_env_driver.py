@@ -472,7 +472,7 @@ def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
         )
 
 
-def test_vector_driver_state_policy_matches_scan_trajectories_statistically():
+def test_vector_driver_state_policy_actions_match_clean_run():
     # observe="state" with noise on: actions must be computed from the true
     # state, so a noisy run's actions match a clean run's actions per episode.
     cfg_noisy = ISSConfig(max_steps=12, sensor_noise=PRESETS["cooperative"])

@@ -36,3 +36,17 @@ def test_scan_driver_noise_off_is_bit_identical_to_before():
     spec = RolloutSpec(num_episodes=2, max_steps=12, seed=3)
     a, b = drv.generate(spec), drv.generate(spec)
     np.testing.assert_array_equal(a.observations, b.observations)
+
+
+def test_state_policy_trajectories_shared_for_stochastic_policies_across_autoreset():
+    # random policy consumes act_key; 4 episodes over 2 lanes forces autoreset.
+    clean_cfg = ISSConfig(max_steps=10)
+    noisy_cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["cooperative"])
+    spec = RolloutSpec(num_episodes=4, max_steps=10, seed=0)
+    clean = ScanDriver(cfg=clean_cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2).generate(spec)
+    noisy = ScanDriver(
+        cfg=noisy_cfg, policy_cfg=PolicyConfig(type="random", observe="state"), num_envs=2
+    ).generate(spec)
+    np.testing.assert_array_equal(clean.actions, noisy.actions)
+    np.testing.assert_array_equal(clean.lengths, noisy.lengths)
+    assert not np.array_equal(clean.observations, noisy.observations)

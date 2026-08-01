@@ -130,6 +130,10 @@ class ISSEnv(gym.Env):
         state = np.asarray(self._state, dtype=np.float32)
         if not self.cfg.sensor_noise.enabled:
             return state
+        # Drawing a fresh 31-bit seed per call means identical noise vectors
+        # recur roughly every ~50k observations (birthday bound). Acceptable
+        # here because bulk dataset generation uses the batched vector/scan
+        # paths, not this single-env step loop.
         noise_seed = int(self.np_random.integers(0, 2**31 - 1))
         measured = apply_sensor_noise(
             jnp.asarray(state), jax.random.PRNGKey(noise_seed), self.cfg.sensor_noise
