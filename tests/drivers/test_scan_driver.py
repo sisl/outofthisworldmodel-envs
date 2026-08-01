@@ -85,6 +85,11 @@ def test_rejects_a_non_positive_episode_count():
         make_driver().generate(RolloutSpec(num_episodes=0, max_steps=10, seed=0))
 
 
+def test_min_transitions_mode_is_not_yet_implemented():
+    with pytest.raises(NotImplementedError, match="min_transitions"):
+        make_driver().generate(RolloutSpec(max_steps=10, seed=0, min_transitions=5))
+
+
 @pytest.mark.parametrize("num_envs", [0, -1])
 def test_rejects_a_non_positive_lane_count(num_envs):
     with pytest.raises(ValueError, match=str(num_envs)):

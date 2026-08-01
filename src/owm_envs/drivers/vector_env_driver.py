@@ -83,7 +83,11 @@ class VectorEnvDriver:
         )
 
     def generate(self, spec: RolloutSpec) -> TrajectoryBatch:
-        if spec.num_episodes < 1:
+        if spec.min_transitions is not None:
+            raise NotImplementedError(
+                "min_transitions mode lands with this feature's driver tasks"
+            )
+        if spec.num_episodes is not None and spec.num_episodes < 1:
             raise ValueError(f"num_episodes must be >= 1, got {spec.num_episodes}")
         if spec.max_steps < 1:
             raise ValueError(f"max_steps must be >= 1, got {spec.max_steps}")

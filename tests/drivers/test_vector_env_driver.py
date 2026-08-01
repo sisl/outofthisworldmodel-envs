@@ -165,6 +165,11 @@ def test_non_mixture_policy_leaves_policy_ids_none():
     assert batch.policy_ids is None
 
 
+def test_min_transitions_mode_is_not_yet_implemented():
+    with pytest.raises(NotImplementedError, match="min_transitions"):
+        make_driver().generate(RolloutSpec(max_steps=10, seed=0, min_transitions=5))
+
+
 def test_actions_stay_within_the_control_limits():
     cfg = free_flight_cfg()
     batch = make_driver().generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
