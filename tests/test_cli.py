@@ -6,7 +6,7 @@ import typer
 from typer.testing import CliRunner
 
 from owm_envs.cli import app, _parse_split_flags
-from owm_envs.datasets.stats import SplitSpec
+from owm_envs.datasets.stats import GenerationConfig, SplitSpec
 from owm_envs.envs.iss.policies import PolicyConfig
 
 runner = CliRunner()
@@ -22,7 +22,7 @@ def test_generate_writes_a_run_directory(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot"],
     )
     assert result.exit_code == 0, result.stdout
@@ -35,11 +35,11 @@ def test_generated_run_records_the_policy_actually_used(tmp_path):
     out = tmp_path / "run"
     runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "orbit", "--num-envs", "2", "--driver", "vector", "--no-lerobot"],
     )
     card = json.loads((out / "dataset_card.json").read_text())
-    assert card["policy_type"] == "orbit"
+    assert card["splits"]["train"]["policy_type"] == "orbit"
 
     from owm_envs.envs.iss.policies import PolicyConfig
 
@@ -51,7 +51,7 @@ def test_both_drivers_are_selectable(tmp_path):
         out = tmp_path / driver
         result = runner.invoke(
             app,
-            ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+            ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
              "--policy", "dock", "--num-envs", "2", "--driver", driver, "--no-lerobot"],
         )
         assert result.exit_code == 0, result.stdout
@@ -62,7 +62,7 @@ def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
     out = tmp_path / "auto"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "auto", "--no-lerobot"],
     )
     assert result.exit_code == 0, result.stdout
@@ -79,7 +79,7 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "2",
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -91,7 +91,7 @@ def test_summary_reports_the_episode_count_requested(tmp_path):
     out = tmp_path / "run"
     runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "3", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:3:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot"],
     )
     summary = json.loads((out / "summary.json").read_text())
@@ -104,7 +104,7 @@ def test_fps_defaults_to_the_simulation_rate(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot"],
     )
     assert result.exit_code == 0, result.stdout
@@ -121,7 +121,7 @@ def test_fps_default_tracks_a_non_default_dt(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "2",
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -133,7 +133,7 @@ def test_explicit_fps_is_honoured_but_warns_when_it_contradicts_dt(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot",
          "--fps", "24"],
     )
@@ -148,7 +148,7 @@ def test_explicit_fps_matching_the_simulation_rate_is_silent(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "vector", "--no-lerobot",
          "--fps", "20"],
     )
@@ -168,7 +168,7 @@ def test_explicit_fps_warns_when_the_rate_is_not_whole(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "2",
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot", "--fps", "33"],
     )
@@ -188,7 +188,7 @@ def test_fps_default_is_refused_when_the_rate_is_not_whole(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--episodes", "1",
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:1:0",
          "--steps", "4", "--policy", "dock", "--num-envs", "1", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -211,7 +211,7 @@ def test_failed_dataset_write_leaves_no_completed_run_marker(tmp_path, monkeypat
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "2", "--steps", "8",
+        ["generate", "--out", str(out), "--split", "train:2:0", "--steps", "8",
          "--policy", "dock", "--num-envs", "2", "--driver", "vector"],
     )
     # The run must have got as far as the dataset write and failed there,
@@ -227,11 +227,11 @@ def test_non_positive_num_envs_is_rejected(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "1", "--steps", "4",
+        ["generate", "--out", str(out), "--split", "train:1:0", "--steps", "4",
          "--policy", "dock", "--num-envs", "0", "--driver", "scan", "--no-lerobot"],
     )
     assert result.exit_code != 0
-    assert "num-envs" in result.output.lower()
+    assert "num_envs" in result.output.lower()
     # Failed before doing any rollout work or writing partial output.
     assert not out.exists()
 
@@ -239,7 +239,7 @@ def test_non_positive_num_envs_is_rejected(tmp_path):
 def test_unknown_policy_is_rejected(tmp_path):
     result = runner.invoke(
         app,
-        ["generate", "--out", str(tmp_path / "run"), "--episodes", "1", "--steps", "4",
+        ["generate", "--out", str(tmp_path / "run"), "--split", "train:1:0", "--steps", "4",
          "--policy", "teleport", "--no-lerobot"],
     )
     assert result.exit_code != 0
@@ -262,7 +262,7 @@ def test_generate_gives_a_legible_error_when_lerobot_is_missing(tmp_path, monkey
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "1", "--steps", "4",
+        ["generate", "--out", str(out), "--split", "train:1:0", "--steps", "4",
          "--policy", "dock", "--num-envs", "1", "--driver", "vector"],
     )
     assert result.exit_code != 0
@@ -285,7 +285,7 @@ def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--episodes", "1", "--steps", "4",
+        ["generate", "--out", str(out), "--split", "train:1:0", "--steps", "4",
          "--policy", "dock", "--num-envs", "1", "--driver", "vector", "--render"],
     )
     assert isinstance(result.exception, RuntimeError)
@@ -301,7 +301,7 @@ def test_render_without_lerobot_is_rejected(tmp_path):
     # any render cost, rather than silently doing (or skipping) the work.
     result = runner.invoke(
         app,
-        ["generate", "--out", str(tmp_path / "run"), "--episodes", "1", "--steps", "4",
+        ["generate", "--out", str(tmp_path / "run"), "--split", "train:1:0", "--steps", "4",
          "--policy", "dock", "--num-envs", "1", "--driver", "vector",
          "--render", "--no-lerobot"],
     )
@@ -335,3 +335,88 @@ def test_parse_split_flags_rejects_malformed_entries(bad):
 def test_parse_split_flags_rejects_duplicate_names():
     with pytest.raises(typer.BadParameter, match="duplicate"):
         _parse_split_flags(["train:4:0", "train:2:1"], steps=150)
+
+
+def test_one_invocation_writes_every_split(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8",
+        "--split", "train:3:0", "--split", "val:2:1",
+        "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["counts"]["train"]["episodes"] == 3
+    assert summary["counts"]["val"]["episodes"] == 2
+
+
+def test_stats_survive_a_val_split_in_the_same_run(tmp_path):
+    out_single = tmp_path / "single"
+    out_multi = tmp_path / "multi"
+    for args in (
+        ["generate", "--out", str(out_single), "--steps", "8",
+         "--split", "train:3:0", "--no-lerobot"],
+        ["generate", "--out", str(out_multi), "--steps", "8",
+         "--split", "train:3:0", "--split", "val:2:1", "--no-lerobot"],
+    ):
+        assert runner.invoke(app, args).exit_code == 0
+    # Same train seed -> byte-identical train-only stats regardless of the
+    # extra val split. This is the clobbering bug this PR exists to fix.
+    assert (out_single / "normalization_stats.json").read_text() == \
+           (out_multi / "normalization_stats.json").read_text()
+
+
+def test_split_without_train_is_rejected(tmp_path):
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"), "--steps", "8",
+        "--split", "val:2:1", "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert "train" in result.output
+
+
+def test_gen_config_file_drives_the_run(tmp_path):
+    gen = GenerationConfig(splits={
+        "train": SplitSpec(num_episodes=2, max_steps=8, seed=0),
+        "val": SplitSpec(num_episodes=1, max_steps=8, seed=1),
+    }, num_envs=2)
+    gen_path = tmp_path / "gen.yaml"
+    gen.to_yaml(gen_path)
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--gen-config", str(gen_path), "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert GenerationConfig.from_yaml(out / "generation_config.yaml") == gen
+
+
+def test_gen_config_conflicts_with_generation_flags(tmp_path):
+    gen_path = tmp_path / "gen.yaml"
+    GenerationConfig().to_yaml(gen_path)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"),
+        "--gen-config", str(gen_path), "--split", "train:2:0", "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert "exclusive" in result.output
+
+
+def test_provenance_lands_in_the_dataset_card(tmp_path):
+    out = tmp_path / "run"
+    runner.invoke(app, ["generate", "--out", str(out), "--steps", "8",
+                        "--split", "train:2:0", "--no-lerobot"])
+    card = json.loads((out / "dataset_card.json").read_text())
+    assert len(card["provenance"]["git_commit"]) == 40
+
+
+def test_per_split_policy_is_rolled_and_recorded(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--policy", "union",
+        "--split", "train:2:0", "--split", "val:1:1:dock",
+        "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    card = json.loads((out / "dataset_card.json").read_text())
+    assert card["splits"]["train"]["policy_type"] == "union"   # run-level default
+    assert card["splits"]["val"]["policy_type"] == "dock"      # per-split override
