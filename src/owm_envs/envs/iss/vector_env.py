@@ -23,6 +23,7 @@ from gymnasium.vector.utils import batch_space
 from .config import ISSConfig
 from .dynamics import ISSDynamics
 from .env import _action_space, _observation_space, _render_fps
+from .goal import dock_goal_error
 from .reward import iss_reward
 from .sensing import NOISE_STREAM, apply_sensor_noise
 
@@ -67,6 +68,11 @@ class ISSVectorEnv(VectorEnv):
                 jax.vmap(lambda s, k: apply_sensor_noise(s, k, self.cfg.sensor_noise))
             )
             if self.cfg.sensor_noise.enabled
+            else None
+        )
+        self._batched_dock_goal_error = (
+            jax.jit(jax.vmap(lambda measured: dock_goal_error(measured, self.cfg)))
+            if self.cfg.observation.goal_error
             else None
         )
 
@@ -170,10 +176,18 @@ class ISSVectorEnv(VectorEnv):
 
     def _obs(self) -> np.ndarray:
         if self._batched_noise is None:
-            return np.asarray(self._states, dtype=np.float32)
-        self._noise_key, subkey = jax.random.split(self._noise_key)
-        noise_keys = jax.random.split(subkey, self.num_envs)
-        measured = self._batched_noise(self._states, noise_keys)
+            measured = self._states
+        else:
+            self._noise_key, subkey = jax.random.split(self._noise_key)
+            noise_keys = jax.random.split(subkey, self.num_envs)
+            measured = self._batched_noise(self._states, noise_keys)
+        if self._batched_dock_goal_error is not None:
+            # Computed from `measured`, not `self._states`: the goal block
+            # must reflect the same (possibly noisy) observation the caller
+            # receives, never a second noise draw or privileged truth.
+            measured = jnp.concatenate(
+                [measured, self._batched_dock_goal_error(measured)], axis=-1
+            )
         return np.asarray(measured, dtype=np.float32)
 
     def _true_states(self) -> np.ndarray:

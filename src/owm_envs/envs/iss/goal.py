@@ -26,6 +26,13 @@ from .policies import PolicyConfig
 
 GOAL_ERROR_DIM = 12
 
+GOAL_ERROR_LABELS: tuple[str, ...] = (
+    "goal_pos_err_x_m", "goal_pos_err_y_m", "goal_pos_err_z_m",
+    "goal_vel_err_x_m_s", "goal_vel_err_y_m_s", "goal_vel_err_z_m_s",
+    "goal_att_err_axis_angle_x", "goal_att_err_axis_angle_y", "goal_att_err_axis_angle_z",
+    "goal_rate_err_x_rad_s", "goal_rate_err_y_rad_s", "goal_rate_err_z_rad_s",
+)
+
 
 def goal_error(measured, target_pos, target_vel, target_quat, target_rate):
     q_err = quat_multiply(quat_conjugate(quat_normalize(measured[6:10])),
