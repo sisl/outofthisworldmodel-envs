@@ -438,3 +438,23 @@ def test_negative_seed_split_flag_is_rejected_cleanly(tmp_path):
         "--split", "train:2:-1", "--no-lerobot",
     ])
     assert result.exit_code != 0
+
+
+def test_missing_gen_config_file_is_rejected_cleanly(tmp_path):
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"),
+        "--gen-config", str(tmp_path / "nope.yaml"), "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert "gen-config" in result.output
+
+
+def test_malformed_gen_config_yaml_is_rejected_cleanly(tmp_path):
+    bad = tmp_path / "gen.yaml"
+    bad.write_text("splits: [unclosed\n")
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"),
+        "--gen-config", str(bad), "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert "gen-config" in result.output

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 from pydantic import ValidationError
 
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
@@ -132,6 +133,10 @@ def generate(
             gen = GenerationConfig.from_yaml(gen_config)
         except ValidationError as exc:
             raise typer.BadParameter(str(exc)) from exc
+        except (OSError, yaml.YAMLError) as exc:
+            raise typer.BadParameter(
+                f"cannot read --gen-config {gen_config}: {exc}"
+            ) from exc
     else:
         resolved_steps = steps if steps is not None else 2000
         try:
