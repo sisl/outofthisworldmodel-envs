@@ -24,6 +24,7 @@ from .config import ISSConfig
 from .dynamics import ISSDynamics
 from .env import _action_space, _observation_space, _render_fps
 from .reward import iss_reward
+from .sensing import apply_sensor_noise
 
 
 class ISSVectorEnv(VectorEnv):
@@ -56,6 +57,13 @@ class ISSVectorEnv(VectorEnv):
         self._batched_reset = jax.jit(jax.vmap(self.dynamics.reset))
         self._batched_reward = jax.jit(
             jax.vmap(lambda s, a, e: iss_reward(s, a, e, self.cfg))
+        )
+        self._batched_noise = (
+            jax.jit(
+                jax.vmap(lambda s, k: apply_sensor_noise(s, k, self.cfg.sensor_noise))
+            )
+            if self.cfg.sensor_noise.enabled
+            else None
         )
 
     def reset(
@@ -150,14 +158,23 @@ class ISSVectorEnv(VectorEnv):
             rewards,
             terminations,
             truncations,
-            {"success": docked, "collision": collision},
+            {"success": docked, "collision": collision, "state": self._true_states()},
         )
 
     def _obs(self) -> np.ndarray:
+        if self._batched_noise is None:
+            return np.asarray(self._states, dtype=np.float32)
+        self._key, subkey = jax.random.split(self._key)
+        noise_keys = jax.random.split(subkey, self.num_envs)
+        measured = self._batched_noise(self._states, noise_keys)
+        return np.asarray(measured, dtype=np.float32)
+
+    def _true_states(self) -> np.ndarray:
         return np.asarray(self._states, dtype=np.float32)
 
     def _empty_info(self) -> dict[str, np.ndarray]:
         return {
             "success": np.zeros(self.num_envs, dtype=bool),
             "collision": np.zeros(self.num_envs, dtype=bool),
+            "state": self._true_states(),
         }

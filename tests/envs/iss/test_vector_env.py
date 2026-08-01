@@ -4,6 +4,7 @@ import pytest
 
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
+from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT = dict(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
@@ -244,3 +245,19 @@ def test_unseeded_resets_differ_across_instances():
     a, _ = ISSVectorEnv(num_envs=4).reset()
     b, _ = ISSVectorEnv(num_envs=4).reset()
     assert not np.allclose(a, b)
+
+
+def test_noisy_vector_env_observations_differ_from_true_states():
+    cfg = ISSConfig(sensor_noise=PRESETS["cooperative"])
+    env = ISSVectorEnv(num_envs=3, cfg=cfg)
+    obs, info = env.reset(seed=5)
+    assert info["state"].shape == (3, 13)
+    assert not np.array_equal(obs, info["state"])
+    obs2, _, _, _, info2 = env.step(np.zeros((3, 6), dtype=np.float32))
+    assert not np.array_equal(obs2, info2["state"])
+
+
+def test_noiseless_vector_env_info_state_equals_observation():
+    env = ISSVectorEnv(num_envs=2)
+    obs, info = env.reset(seed=5)
+    np.testing.assert_array_equal(obs, info["state"])

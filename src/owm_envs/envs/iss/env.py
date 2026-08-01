@@ -18,6 +18,7 @@ from gymnasium import spaces
 from .config import ISSConfig
 from .dynamics import ISSDynamics
 from .reward import iss_reward
+from .sensing import apply_sensor_noise
 
 
 def _observation_space(cfg: ISSConfig) -> spaces.Box:
@@ -87,7 +88,11 @@ class ISSEnv(gym.Env):
         jax_seed = int(self.np_random.integers(0, 2**31 - 1))
         self._state = self._jit_reset(jax.random.PRNGKey(jax_seed))
         self._step_index = 0
-        return self._obs(), {"success": False, "collision": False}
+        return self._obs(), {
+            "success": False,
+            "collision": False,
+            "state": self._true_state(),
+        }
 
     def step(
         self, action: np.ndarray
@@ -118,10 +123,20 @@ class ISSEnv(gym.Env):
             reward,
             terminated,
             truncated,
-            {"success": docked, "collision": collision},
+            {"success": docked, "collision": collision, "state": self._true_state()},
         )
 
     def _obs(self) -> np.ndarray:
+        state = np.asarray(self._state, dtype=np.float32)
+        if not self.cfg.sensor_noise.enabled:
+            return state
+        noise_seed = int(self.np_random.integers(0, 2**31 - 1))
+        measured = apply_sensor_noise(
+            jnp.asarray(state), jax.random.PRNGKey(noise_seed), self.cfg.sensor_noise
+        )
+        return np.asarray(measured, dtype=np.float32)
+
+    def _true_state(self) -> np.ndarray:
         return np.asarray(self._state, dtype=np.float32)
 
     def render(self) -> np.ndarray | None:
