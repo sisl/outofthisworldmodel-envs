@@ -103,7 +103,8 @@ def generate(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "
                    "Overrides the --config file's sensor_noise."),
     observe: str = typer.Option(
-        "state", help="What scripted policies consume: state | measurement."),
+        "measurement", help="What scripted policies consume: state | measurement "
+                            "(default: measurement, the noisy value the dataset records)."),
     lerobot: bool = typer.Option(True, "--lerobot/--no-lerobot", help="Write a LeRobot dataset."),
     render: bool = typer.Option(
         False,

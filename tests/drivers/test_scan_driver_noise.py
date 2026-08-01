@@ -10,11 +10,11 @@ from owm_envs.envs.iss.sensing import PRESETS
 def test_scan_driver_records_noisy_observations_but_true_dynamics():
     cfg = ISSConfig(max_steps=12, sensor_noise=PRESETS["cooperative"])
     clean = ScanDriver(cfg=ISSConfig(max_steps=12), policy_cfg=PolicyConfig(type="dock"), num_envs=2)
-    noisy = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)
+    noisy = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock", observe="state"), num_envs=2)
     spec = RolloutSpec(num_episodes=2, max_steps=12, seed=0)
     b_clean, b_noisy = clean.generate(spec), noisy.generate(spec)
-    # observe="state" (default): the flown trajectory is identical, only the
-    # recorded observations are corrupted.
+    # observe="state" (explicit): the flown trajectory is identical, only
+    # the recorded observations are corrupted.
     np.testing.assert_array_equal(b_clean.actions, b_noisy.actions)
     assert not np.array_equal(b_clean.observations, b_noisy.observations)
     err = np.abs(b_noisy.observations[:, :, 0:3] - b_clean.observations[:, :, 0:3])
@@ -50,3 +50,16 @@ def test_state_policy_trajectories_shared_for_stochastic_policies_across_autores
     np.testing.assert_array_equal(clean.actions, noisy.actions)
     np.testing.assert_array_equal(clean.lengths, noisy.lengths)
     assert not np.array_equal(clean.observations, noisy.observations)
+
+
+def test_default_observe_is_measurement_and_reacts_to_noise():
+    # The default loop is realistic: the policy consumes the same noisy
+    # measurement the dataset records, so recorded action-outcome pairs
+    # carry the uncertainty of acting on an observed rather than true state.
+    assert PolicyConfig().observe == "measurement"
+    cfg_noisy = ISSConfig(max_steps=10, sensor_noise=PRESETS["noncooperative"])
+    cfg_clean = ISSConfig(max_steps=10)
+    spec = RolloutSpec(num_episodes=2, max_steps=10, seed=0)
+    noisy = ScanDriver(cfg=cfg_noisy, policy_cfg=PolicyConfig(type="dock"), num_envs=2).generate(spec)
+    clean = ScanDriver(cfg=cfg_clean, policy_cfg=PolicyConfig(type="dock"), num_envs=2).generate(spec)
+    assert not np.array_equal(noisy.actions, clean.actions)

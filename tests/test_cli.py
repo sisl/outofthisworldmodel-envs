@@ -322,8 +322,8 @@ def test_parse_split_flags_builds_specs():
 
 def test_parse_split_flags_accepts_a_per_split_policy():
     splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150, observe="state")
-    assert splits["train"].policy == PolicyConfig(type="union")
-    assert splits["val"].policy == PolicyConfig(type="dock")
+    assert splits["train"].policy == PolicyConfig(type="union", observe="state")
+    assert splits["val"].policy == PolicyConfig(type="dock", observe="state")
 
 
 @pytest.mark.parametrize("bad", ["train", "train:4", "train:4:0:bogus",
