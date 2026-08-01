@@ -334,6 +334,22 @@ def test_parse_split_flags_builds_specs():
     }
 
 
+def test_parse_split_flags_accepts_a_transition_target():
+    splits = _parse_split_flags(["train:100000t:0", "val:20000t:1"], steps=150, observe="state")
+    assert splits == {
+        "train": SplitSpec(min_transitions=100000, max_steps=150, seed=0),
+        "val": SplitSpec(min_transitions=20000, max_steps=150, seed=1),
+    }
+
+
+def test_parse_split_flags_accepts_a_transition_target_with_a_policy():
+    splits = _parse_split_flags(["train:100000t:0:union"], steps=150, observe="state")
+    assert splits["train"] == SplitSpec(
+        min_transitions=100000, max_steps=150, seed=0,
+        policy=PolicyConfig(type="union", observe="state"),
+    )
+
+
 def test_parse_split_flags_accepts_a_per_split_policy():
     splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150, observe="state")
     assert splits["train"].policy == PolicyConfig(type="union", observe="state")
@@ -342,7 +358,9 @@ def test_parse_split_flags_accepts_a_per_split_policy():
 
 @pytest.mark.parametrize("bad", ["train", "train:4", "train:4:0:bogus",
                                  "train:4:0:dock:extra", ":4:0",
-                                 "train:x:0", "train:4:y", "train:0:0"])
+                                 "train:x:0", "train:4:y", "train:0:0",
+                                 "train:t:0", "train:0t:0", "train:12tt:0",
+                                 "train:t12:0", "train:-5t:0"])
 def test_parse_split_flags_rejects_malformed_entries(bad):
     with pytest.raises(typer.BadParameter):
         _parse_split_flags([bad], steps=150, observe="state")
@@ -525,6 +543,19 @@ def test_goal_error_flag_overrides_the_env_config(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is True
+
+
+def test_transition_targeted_split_hits_the_target_and_is_recorded(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8",
+        "--split", "train:30t:0", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["counts"]["train"]["transitions"] >= 30
+    card = json.loads((out / "dataset_card.json").read_text())
+    assert card["splits"]["train"]["min_transitions"] == 30
 
 
 def test_goal_error_flag_defaults_to_config(tmp_path):

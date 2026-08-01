@@ -1,6 +1,6 @@
 """Command-line interface for dataset generation.
 
-    owm-envs generate --out logs/run1 --split train:512:0 --policy union
+    owm-envs generate --out logs/run1 --split train:100000t:0 --split val:20000t:1
     owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
     owm-envs list
 
@@ -41,7 +41,11 @@ def list_envs() -> None:
 
 
 def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str, SplitSpec]:
-    """`NAME:EPISODES:SEED[:POLICY]` flags -> split specs, all at `steps` max steps.
+    """`NAME:COUNT[t]:SEED[:POLICY]` flags -> split specs, all at `steps` max steps.
+
+    COUNT is an episode count (`64`), or, with a trailing `t`, a minimum
+    transition target (`100000t`) -- the split runs whole episodes until it
+    has accumulated at least that many (state, action, next-state) pairs.
 
     A `:POLICY` suffix's PolicyConfig inherits `--observe` rather than the
     PolicyConfig default, so a per-split policy still respects the run-level
@@ -52,18 +56,21 @@ def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str,
         parts = raw.split(":")
         if len(parts) not in (3, 4) or not parts[0]:
             raise typer.BadParameter(
-                f"--split expects NAME:EPISODES:SEED[:POLICY] "
-                f"(e.g. train:64:0 or val:8:1:dock), got '{raw}'"
+                f"--split expects NAME:COUNT[t]:SEED[:POLICY] "
+                f"(e.g. train:64:0, train:100000t:0 or val:8:1:dock), got '{raw}'"
             )
-        name, episodes_text, seed_text = parts[0], parts[1], parts[2]
+        name, count_text, seed_text = parts[0], parts[1], parts[2]
+        transitions_mode = count_text.endswith("t")
+        count_value_text = count_text[:-1] if transitions_mode else count_text
         try:
-            episodes, seed = int(episodes_text), int(seed_text)
+            count, seed = int(count_value_text), int(seed_text)
         except ValueError as exc:
             raise typer.BadParameter(
-                f"--split '{raw}': EPISODES and SEED must be integers"
+                f"--split '{raw}': COUNT and SEED must be integers "
+                "(COUNT may have a trailing 't' for a transition target)"
             ) from exc
-        if episodes < 1:
-            raise typer.BadParameter(f"--split '{raw}': EPISODES must be >= 1")
+        if count < 1:
+            raise typer.BadParameter(f"--split '{raw}': COUNT must be >= 1")
         if name in splits:
             raise typer.BadParameter(f"--split '{raw}': duplicate split name '{name}'")
         split_policy = None
@@ -75,7 +82,11 @@ def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str,
                     f"--split '{raw}': invalid policy '{parts[3]}': {exc}"
                 ) from exc
         splits[name] = SplitSpec(
-            num_episodes=episodes, max_steps=steps, seed=seed, policy=split_policy
+            num_episodes=None if transitions_mode else count,
+            min_transitions=count if transitions_mode else None,
+            max_steps=steps,
+            seed=seed,
+            policy=split_policy,
         )
     return splits
 
@@ -88,8 +99,9 @@ def generate(
                                "run-level default; a split's :POLICY suffix overrides it."),
     split: Optional[list[str]] = typer.Option(
         None, "--split",
-        help="Repeatable NAME:EPISODES:SEED[:POLICY] (default: train:64:0 val:8:1); "
-             "POLICY overrides --policy for that split.",
+        help="Repeatable NAME:COUNT[t]:SEED[:POLICY] (default: train:64:0 val:8:1); "
+             "COUNT is an episode count, or a minimum transition target with a "
+             "trailing 't' (e.g. 100000t); POLICY overrides --policy for that split.",
     ),
     steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 2000)."),
     num_envs: Optional[int] = typer.Option(None, help="Parallel lanes (default 8)."),
@@ -194,10 +206,21 @@ def generate(
         split_policy = spec.policy or policy_cfg
         chosen = _resolve_driver(gen.driver, cfg, split_policy, gen.num_envs)
         batch = chosen.driver.generate(
-            RolloutSpec(num_episodes=spec.num_episodes, max_steps=spec.max_steps, seed=spec.seed)
+            RolloutSpec(
+                num_episodes=spec.num_episodes,
+                max_steps=spec.max_steps,
+                seed=spec.seed,
+                min_transitions=spec.min_transitions,
+            )
+        )
+        target = (
+            f">={spec.min_transitions} transitions"
+            if spec.min_transitions is not None
+            else f"{spec.num_episodes} episodes"
         )
         typer.echo(f"[generate] {name}: driver={chosen.name} policy={split_policy.type} "
-                   f"{batch.num_episodes} episodes, {batch.total_transitions} transitions")
+                   f"target={target}, got {batch.num_episodes} episodes, "
+                   f"{batch.total_transitions} transitions")
         batches[name] = batch
 
     # Built now so a batch that cannot produce statistics fails here, before
