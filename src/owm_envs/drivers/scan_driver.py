@@ -19,6 +19,7 @@ from ..envs.iss.config import ISSConfig
 from ..envs.iss.dynamics import ISSDynamics
 from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
 from ..envs.iss.reward import iss_reward
+from ..envs.iss.sensing import apply_sensor_noise
 from .types import RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
@@ -68,6 +69,8 @@ class ScanDriver:
         extras_width = EXTRAS_DIM[self.policy_cfg.type]
         records_policy_ids = self.policy_cfg.type == "union"
         dynamics, cfg = self.dynamics, self.cfg
+        noise = cfg.sensor_noise
+        observe_measurement = self.policy_cfg.observe == "measurement"
 
         force = cfg.control.limit_force_n
         torque = cfg.control.limit_torque_nm
@@ -81,23 +84,46 @@ class ScanDriver:
 
         def per_env_step(carry, _):
             state, step_index, extras, key = carry
+
+            # Measured pre-step state, drawn BEFORE the action so the
+            # recorded observation and the policy's (optional) input are the
+            # SAME draw. Static `if noise.enabled` (a Python bool, not a
+            # traced value) keeps the noise-off draw sequence exactly today's
+            # `jax.random.split(key, 4)` below -- no extra split is consumed.
+            if noise.enabled:
+                key, meas_key, term_key = jax.random.split(key, 3)
+                measured = apply_sensor_noise(state, meas_key, noise)
+            else:
+                measured = state
+
             key, act_key, reset_key, extras_key = jax.random.split(key, 4)
 
-            action = jnp.clip(policy_fn(state, act_key, extras), ctrl_low, ctrl_high)
+            policy_input = measured if observe_measurement else state
+            action = jnp.clip(policy_fn(policy_input, act_key, extras), ctrl_low, ctrl_high)
             next_state, events = dynamics.step(state, action)
             reward = iss_reward(next_state, action, events, cfg)
+
+            # `measured_next` is its own draw (`term_key`, split above)
+            # because the terminal observation on the `done` iteration is
+            # `next_state`, which needs measuring too.
+            if noise.enabled:
+                measured_next = apply_sensor_noise(next_state, term_key, noise)
+            else:
+                measured_next = next_state
 
             next_index = step_index + 1
             terminated = jnp.logical_or(events.collision, events.docked)
             truncated = jnp.logical_and(~terminated, next_index >= max_steps)
             done = jnp.logical_or(terminated, truncated)
 
-            # Emit the PRE-step state (`state`) alongside `next_state`: the
-            # segmenter needs `next_state` too, because on the iteration where
-            # `done` fires the terminal observation is `next_state`, not
-            # anything the following iteration emits (that iteration already
-            # holds the post-autoreset state for the new episode).
-            emitted = (state, next_state, action, reward, terminated, truncated, done, extras)
+            # Emit the MEASURED pre-step observation (`measured`) alongside
+            # `measured_next`: the segmenter needs the terminal measurement
+            # too, because on the iteration where `done` fires the terminal
+            # observation is `measured_next`, not anything the following
+            # iteration emits (that iteration already holds the
+            # post-autoreset state for the new episode). Both collapse to
+            # `state`/`next_state` when noise is disabled.
+            emitted = (measured, measured_next, action, reward, terminated, truncated, done, extras)
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
             # iteration, with newly sampled extras.

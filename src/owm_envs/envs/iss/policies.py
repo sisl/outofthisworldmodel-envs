@@ -56,6 +56,9 @@ class PolicyConfig(ConfigModel):
     # are rejected here, at config-load time, rather than inside make_policy
     # at rollout time.
     type: Literal["random", "orbit", "dock", "union"] = "random"
+    # What the scripted policies consume during data generation: the true
+    # state, or the same noisy measurement the dataset records.
+    observe: Literal["state", "measurement"] = "state"
     orbit: OrbitParams = Field(default_factory=OrbitParams)
     dock: DockParams = Field(default_factory=DockParams)
     # Positional order: [random, orbit, dock]. Normalised at build time.
