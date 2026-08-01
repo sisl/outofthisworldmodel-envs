@@ -332,6 +332,17 @@ def test_metadata_requires_a_train_batch():
                            gen_cfg=gen, batches={"val": val}, fps=20)
 
 
+def test_metadata_requires_a_batch_for_every_configured_split():
+    train = batch_with_constant_observations(1.0)
+    gen = GenerationConfig(splits={
+        "train": SplitSpec(num_episodes=train.num_episodes, seed=0),
+        "val": SplitSpec(num_episodes=2, seed=1),
+    })
+    with pytest.raises(ValueError, match="no generated batch"):
+        build_run_metadata(cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+                           gen_cfg=gen, batches={"train": train}, fps=20)
+
+
 def test_card_records_per_split_seed_and_provenance():
     train = batch_with_constant_observations(1.0)
     batches = {"train": train}

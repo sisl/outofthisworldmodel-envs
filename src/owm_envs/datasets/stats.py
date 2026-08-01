@@ -268,6 +268,13 @@ def build_run_metadata(
     missing = set(batches) - set(gen_cfg.splits)
     if missing:
         raise ValueError(f"batches {sorted(missing)} have no matching entry in gen_cfg.splits")
+    unbatched = set(gen_cfg.splits) - set(batches)
+    if unbatched:
+        # Otherwise the as-run generation_config.yaml would claim splits
+        # that were never generated.
+        raise ValueError(
+            f"configured splits {sorted(unbatched)} have no generated batch"
+        )
     stats = compute_norm_stats(batches["train"])
 
     counts = {}
