@@ -17,6 +17,7 @@ import numpy as np
 
 from ..envs.iss.config import ISSConfig
 from ..envs.iss.dynamics import ISSDynamics
+from ..envs.iss.goal import make_augment
 from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
 from ..envs.iss.reward import iss_reward
 from ..envs.iss.sensing import NOISE_STREAM, apply_sensor_noise
@@ -66,6 +67,7 @@ class ScanDriver:
         max_steps = min(spec.max_steps, self.cfg.max_steps)
 
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
+        augment = make_augment(self.cfg, self.policy_cfg)
         extras_width = EXTRAS_DIM[self.policy_cfg.type]
         records_policy_ids = self.policy_cfg.type == "union"
         dynamics, cfg = self.dynamics, self.cfg
@@ -129,7 +131,16 @@ class ScanDriver:
             # iteration emits (that iteration already holds the
             # post-autoreset state for the new episode). Both collapse to
             # `state`/`next_state` when noise is disabled.
-            emitted = (measured, measured_next, action, reward, terminated, truncated, done, extras)
+            #
+            # Both are augmented with the CURRENT `extras` (the episode's
+            # active sub-policy) -- on the `done` iteration `measured_next`
+            # is this episode's terminal observation, not the fresh episode's,
+            # so it must use `extras` from before the autoreset swap below.
+            if augment is not None:
+                obs_out, obs_next_out = augment(measured, extras), augment(measured_next, extras)
+            else:
+                obs_out, obs_next_out = measured, measured_next
+            emitted = (obs_out, obs_next_out, action, reward, terminated, truncated, done, extras)
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
             # iteration, with newly sampled extras.
