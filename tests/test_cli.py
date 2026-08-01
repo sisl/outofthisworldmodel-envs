@@ -1,9 +1,13 @@
 import builtins
 import json
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
-from owm_envs.cli import app
+from owm_envs.cli import app, _parse_split_flags
+from owm_envs.datasets.stats import SplitSpec
+from owm_envs.envs.iss.policies import PolicyConfig
 
 runner = CliRunner()
 
@@ -304,3 +308,30 @@ def test_render_without_lerobot_is_rejected(tmp_path):
     assert result.exit_code != 0
     assert "no effect with --no-lerobot" in result.output
     assert not (tmp_path / "run").exists()
+
+
+def test_parse_split_flags_builds_specs():
+    splits = _parse_split_flags(["train:4:0", "val:2:1"], steps=150)
+    assert splits == {
+        "train": SplitSpec(num_episodes=4, max_steps=150, seed=0),
+        "val": SplitSpec(num_episodes=2, max_steps=150, seed=1),
+    }
+
+
+def test_parse_split_flags_accepts_a_per_split_policy():
+    splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150)
+    assert splits["train"].policy == PolicyConfig(type="union")
+    assert splits["val"].policy == PolicyConfig(type="dock")
+
+
+@pytest.mark.parametrize("bad", ["train", "train:4", "train:4:0:bogus",
+                                 "train:4:0:dock:extra", ":4:0",
+                                 "train:x:0", "train:4:y", "train:0:0"])
+def test_parse_split_flags_rejects_malformed_entries(bad):
+    with pytest.raises(typer.BadParameter):
+        _parse_split_flags([bad], steps=150)
+
+
+def test_parse_split_flags_rejects_duplicate_names():
+    with pytest.raises(typer.BadParameter, match="duplicate"):
+        _parse_split_flags(["train:4:0", "train:2:1"], steps=150)

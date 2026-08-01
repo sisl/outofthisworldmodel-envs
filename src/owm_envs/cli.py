@@ -15,7 +15,7 @@ from typing import Optional
 
 import typer
 
-from .datasets.stats import build_run_metadata
+from .datasets.stats import SplitSpec, build_run_metadata
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig
 from .envs.iss.policies import PolicyConfig
@@ -34,6 +34,41 @@ def list_envs() -> None:
         f"  iss  (ISS-Docking-v0)  obs={env.observation_space.shape}  "
         f"act={env.action_space.shape}"
     )
+
+
+def _parse_split_flags(values: list[str], steps: int) -> dict[str, SplitSpec]:
+    """`NAME:EPISODES:SEED[:POLICY]` flags -> split specs, all at `steps` max steps."""
+    splits: dict[str, SplitSpec] = {}
+    for raw in values:
+        parts = raw.split(":")
+        if len(parts) not in (3, 4) or not parts[0]:
+            raise typer.BadParameter(
+                f"--split expects NAME:EPISODES:SEED[:POLICY] "
+                f"(e.g. train:64:0 or val:8:1:dock), got '{raw}'"
+            )
+        name, episodes_text, seed_text = parts[0], parts[1], parts[2]
+        try:
+            episodes, seed = int(episodes_text), int(seed_text)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--split '{raw}': EPISODES and SEED must be integers"
+            ) from exc
+        if episodes < 1:
+            raise typer.BadParameter(f"--split '{raw}': EPISODES must be >= 1")
+        if name in splits:
+            raise typer.BadParameter(f"--split '{raw}': duplicate split name '{name}'")
+        split_policy = None
+        if len(parts) == 4:
+            try:
+                split_policy = PolicyConfig(type=parts[3])
+            except Exception as exc:  # pydantic rejects unknown policy types
+                raise typer.BadParameter(
+                    f"--split '{raw}': invalid policy '{parts[3]}': {exc}"
+                ) from exc
+        splits[name] = SplitSpec(
+            num_episodes=episodes, max_steps=steps, seed=seed, policy=split_policy
+        )
+    return splits
 
 
 @app.command()
