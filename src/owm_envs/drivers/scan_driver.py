@@ -106,8 +106,11 @@ class ScanDriver:
 
             # `measured_next` is its own draw (`next_meas_key`) because the
             # terminal observation on the `done` iteration is `next_state`,
-            # which needs measuring too -- and every non-terminal iteration
-            # also measures its `next_state` for the following step's input.
+            # which needs measuring too. On non-terminal iterations this
+            # draw is discarded (the next iteration measures the same state
+            # afresh as its pre-step `measured`) -- redundant work, accepted
+            # to keep the carry simple; the draw sequence stays per-state
+            # deterministic either way.
             if noise.enabled:
                 noise_key, next_meas_key = jax.random.split(noise_key)
                 measured_next = apply_sensor_noise(next_state, next_meas_key, noise)
