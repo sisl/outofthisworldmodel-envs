@@ -11,6 +11,7 @@ from owm_envs.datasets.stats import (
     GenerationConfig,
     SplitSpec,
     build_run_metadata,
+    code_provenance,
     compute_norm_stats,
 )
 from owm_envs.drivers.types import TrajectoryBatch
@@ -314,3 +315,23 @@ def test_split_spec_policy_round_trips_through_yaml(tmp_path):
     assert loaded == gen
     assert loaded.splits["val"].policy.type == "dock"
     assert loaded.splits["train"].policy.union_weights == (0.3, 0.35, 0.35)
+
+
+def test_code_provenance_reports_version_and_git_state():
+    prov = code_provenance()
+    assert set(prov) == {"owm_envs_version", "git_commit", "git_dirty"}
+    # This test runs from the git checkout, so the commit must resolve.
+    assert isinstance(prov["git_commit"], str) and len(prov["git_commit"]) == 40
+    assert isinstance(prov["git_dirty"], bool)
+
+
+def test_code_provenance_degrades_when_git_is_unavailable(monkeypatch):
+    import owm_envs.datasets.stats as stats_mod
+
+    def no_git(*args, **kwargs):
+        raise FileNotFoundError("git not on PATH")
+
+    monkeypatch.setattr(stats_mod.subprocess, "run", no_git)
+    prov = code_provenance()
+    assert prov["git_commit"] is None
+    assert prov["git_dirty"] is None

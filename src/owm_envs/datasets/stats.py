@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Literal
 
@@ -51,6 +53,39 @@ def _place(final: Path, text: str) -> None:
     staged = _staging_path(final)
     staged.write_text(text)
     os.replace(staged, final)
+
+
+def code_provenance() -> dict:
+    """Version and git state of the code that produced a run.
+
+    Best-effort by design: an installed wheel has no git checkout, and git
+    may be absent entirely, so missing pieces are None rather than errors --
+    provenance must never be the reason a data run fails.
+    """
+    try:
+        version: str | None = importlib_metadata.version("owm-envs")
+    except importlib_metadata.PackageNotFoundError:
+        version = None
+
+    package_dir = str(Path(__file__).resolve().parent)
+
+    def _git(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", package_dir, *args],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain") if commit is not None else None
+    return {
+        "owm_envs_version": version,
+        "git_commit": commit,
+        "git_dirty": None if status is None else bool(status),
+    }
 
 
 class SplitSpec(ConfigModel):
