@@ -19,6 +19,7 @@ import yaml
 from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
+from .sensing import SensorNoiseConfig
 
 # Directory holding geometry shipped with this package. A relative
 # collision_boxes_path is resolved against the caller's cwd first (so a
@@ -137,6 +138,7 @@ class ISSConfig(ConfigModel):
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)
     dock: DockConfig = Field(default_factory=DockConfig)
+    sensor_noise: SensorNoiseConfig = Field(default_factory=SensorNoiseConfig)
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     # Overrides the reward's position-error target. When None (default),
