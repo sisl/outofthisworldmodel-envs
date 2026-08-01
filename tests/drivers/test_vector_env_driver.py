@@ -9,6 +9,7 @@ from owm_envs.drivers.vector_env_driver import VectorEnvDriver
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
+from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)
@@ -44,8 +45,8 @@ class _ConstantPolicySource:
         del seed
         return None
 
-    def act(self, observation, episode_state, step):
-        del observation, episode_state, step
+    def act(self, observation, episode_state, step, info):
+        del observation, episode_state, step, info
         return self._action.copy()
 
     def policy_id(self, episode_state):
@@ -427,8 +428,8 @@ class _CountingPolicySource:
         del seed
         return None
 
-    def act(self, observation, episode_state, step):
-        del episode_state, step
+    def act(self, observation, episode_state, step, info):
+        del episode_state, step, info
         # `env.step_calls` at call time is exactly the index this call's
         # action will target when step() next runs -- pending_history will
         # be appended at that same index.
@@ -469,3 +470,34 @@ def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
             f"that lane's autoreset step -- the action is discarded and "
             f"the call used the wrong episode's state"
         )
+
+
+def test_vector_driver_state_policy_matches_scan_trajectories_statistically():
+    # observe="state" with noise on: actions must be computed from the true
+    # state, so a noisy run's actions match a clean run's actions per episode.
+    cfg_noisy = ISSConfig(max_steps=12, sensor_noise=PRESETS["cooperative"])
+    cfg_clean = ISSConfig(max_steps=12)
+
+    def batch(cfg):
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock", observe="state")),
+        )
+        return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
+
+    a, b = batch(cfg_clean), batch(cfg_noisy)
+    np.testing.assert_array_equal(a.actions, b.actions)
+    assert not np.array_equal(a.observations, b.observations)
+
+
+def test_vector_driver_measurement_policy_consumes_the_observation():
+    cfg = ISSConfig(max_steps=12, sensor_noise=PRESETS["noncooperative"])
+
+    def batch(observe):
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock", observe=observe)),
+        )
+        return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
+
+    assert not np.array_equal(batch("state").actions, batch("measurement").actions)

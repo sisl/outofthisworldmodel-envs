@@ -91,7 +91,7 @@ class VectorEnvDriver:
 
         rng = np.random.default_rng(spec.seed)
 
-        obs, _ = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+        obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
 
         # Per-lane episode accumulators. Each episode stores N + 1
         # observations (the seed state plus each post-step state, including
@@ -139,8 +139,11 @@ class VectorEnvDriver:
                     # of the wrong episode.
                     actions[lane] = zero_action
                     continue
+                lane_info = {key: value[lane] for key, value in info.items()}
                 actions[lane] = np.asarray(
-                    self.policy_source.act(obs[lane], lane_episode_state[lane], lane_step[lane]),
+                    self.policy_source.act(
+                        obs[lane], lane_episode_state[lane], lane_step[lane], lane_info
+                    ),
                     dtype=np.float32,
                 )
             # The env clips internally but doesn't hand the clipped action
@@ -148,7 +151,7 @@ class VectorEnvDriver:
             # actually applied, not the policy source's raw output.
             actions = np.clip(actions, action_low, action_high)
 
-            next_obs, rewards, terminations, truncations, _ = env.step(actions)
+            next_obs, rewards, terminations, truncations, next_info = env.step(actions)
 
             for lane in range(num_envs):
                 if lane_frozen[lane]:
@@ -207,6 +210,7 @@ class VectorEnvDriver:
                         lane_frozen[lane] = True
 
             obs = next_obs
+            info = next_info
 
             # Once every lane is either frozen or was just finalized by the
             # env itself, none of them holds live, unrecorded state -- safe
@@ -219,7 +223,7 @@ class VectorEnvDriver:
                 and any(lane_frozen)
                 and all(lane_frozen[lane] or lane_awaiting_reset[lane] for lane in range(num_envs))
             ):
-                obs, _ = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+                obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
                 lane_obs = [[o.copy()] for o in obs]
                 lane_act = [[] for _ in range(num_envs)]
                 lane_rew = [[] for _ in range(num_envs)]
