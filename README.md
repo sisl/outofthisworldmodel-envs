@@ -11,6 +11,10 @@ Training data environments for the Out of this World Model (OWM) world model
 `sensor_noise` with a named preset; omit it to leave the config's own setting
 in place.
 
+`--goal-error/--no-goal-error` overrides the `--config` file's
+`observation.goal_error`, appending the dock-goal error block to
+observations; omit it to leave the config's own setting in place.
+
 ## Asset acknowledgements
 
 The 3D assets under `src/owm_envs/render/resources/` are third-party works,

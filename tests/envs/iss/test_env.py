@@ -15,6 +15,10 @@ def test_passes_the_gymnasium_env_checker():
     check_env(ISSEnv(), skip_render_check=True)
 
 
+def test_env_checker_accepts_goal_error_observations():
+    check_env(ISSEnv(ISSConfig(observation={"goal_error": True})), skip_render_check=True)
+
+
 def test_registered_id_constructs():
     env = gym.make("ISS-Docking-v0")
     assert env is not None

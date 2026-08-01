@@ -515,3 +515,22 @@ def test_unknown_noise_preset_is_rejected(tmp_path):
         "--split", "train:2:0", "--noise", "bogus", "--no-lerobot",
     ])
     assert result.exit_code != 0
+
+
+def test_goal_error_flag_overrides_the_env_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--goal-error", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is True
+
+
+def test_goal_error_flag_defaults_to_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is False

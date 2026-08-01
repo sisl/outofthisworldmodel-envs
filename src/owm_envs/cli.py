@@ -102,6 +102,11 @@ def generate(
     noise: Optional[str] = typer.Option(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "
                    "Overrides the --config file's sensor_noise."),
+    goal_error: Optional[bool] = typer.Option(
+        None, "--goal-error/--no-goal-error",
+        help="Append the dock-goal error block to observations. "
+             "Overrides the --config file's observation.goal_error; "
+             "default is whatever the config says."),
     observe: str = typer.Option(
         "measurement", help="What scripted policies consume: state | measurement "
                             "(default: measurement, the noisy value the dataset records)."),
@@ -174,6 +179,8 @@ def generate(
                 f"unknown --noise preset '{noise}'; use one of: {', '.join(PRESETS)}"
             )
         cfg = cfg.model_copy(update={"sensor_noise": PRESETS[noise]})
+    if goal_error is not None:
+        cfg = cfg.model_copy(update={"observation": ObservationConfig(goal_error=goal_error)})
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
         policy_cfg = PolicyConfig(type=policy, observe=observe)
