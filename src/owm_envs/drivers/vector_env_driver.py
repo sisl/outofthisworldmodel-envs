@@ -48,6 +48,18 @@ import numpy as np
 from .types import PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
 
 
+def _lane_info(info: dict, lane: int) -> dict:
+    """One lane's view of a Gymnasium vector info dict.
+
+    Vector infos may legally contain recursively batched sub-dicts, so
+    nested dicts recurse; every other value is indexed per lane.
+    """
+    return {
+        key: _lane_info(value, lane) if isinstance(value, dict) else value[lane]
+        for key, value in info.items()
+    }
+
+
 class VectorEnvDriver:
     """See module docstring.
 
@@ -139,7 +151,7 @@ class VectorEnvDriver:
                     # of the wrong episode.
                     actions[lane] = zero_action
                     continue
-                lane_info = {key: value[lane] for key, value in info.items()}
+                lane_info = _lane_info(info, lane)
                 actions[lane] = np.asarray(
                     self.policy_source.act(
                         obs[lane], lane_episode_state[lane], lane_step[lane], lane_info

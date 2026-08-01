@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from owm_envs.drivers.types import RolloutSpec
-from owm_envs.drivers.vector_env_driver import VectorEnvDriver
+from owm_envs.drivers.vector_env_driver import VectorEnvDriver, _lane_info
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
@@ -30,6 +30,16 @@ def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None):
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
         policy_source=ISSPolicySource(cfg, policy_cfg),
     )
+
+
+def test_lane_info_extracts_nested_vector_infos():
+    info = {
+        "state": np.arange(6).reshape(2, 3),
+        "metrics": {"distance": np.array([1.5, 2.5])},
+    }
+    lane = _lane_info(info, 1)
+    np.testing.assert_array_equal(lane["state"], np.array([3, 4, 5]))
+    assert lane["metrics"] == {"distance": 2.5}
 
 
 class _ConstantPolicySource:
