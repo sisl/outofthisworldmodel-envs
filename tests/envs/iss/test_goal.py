@@ -1,0 +1,78 @@
+import jax.numpy as jnp
+import numpy as np
+
+from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.goal import GOAL_ERROR_DIM, dock_goal_error, goal_error, make_augment
+from owm_envs.envs.iss.policies import PolicyConfig
+
+
+def _state(pos, vel=(0.0, 0.0, 0.0), quat=(1.0, 0.0, 0.0, 0.0), rate=(0.0, 0.0, 0.0)):
+    return jnp.asarray(np.concatenate([np.asarray(p, np.float32) for p in (pos, vel, quat, rate)]))
+
+
+def test_goal_error_is_zero_at_the_goal():
+    cfg = ISSConfig()
+    at_dock = _state(cfg.dock.position, quat=cfg.dock.quaternion)
+    err = dock_goal_error(at_dock, cfg)
+    np.testing.assert_allclose(np.asarray(err), np.zeros(GOAL_ERROR_DIM), atol=1e-5)
+
+
+def test_goal_error_components_and_ordering():
+    cfg = ISSConfig()
+    s = _state(np.asarray(cfg.dock.position) + np.array([1.0, -2.0, 3.0]),
+               vel=(0.5, 0.0, 0.0), quat=cfg.dock.quaternion, rate=(0.0, 0.1, 0.0))
+    err = np.asarray(dock_goal_error(s, cfg))
+    np.testing.assert_allclose(err[0:3], [1.0, -2.0, 3.0], atol=1e-5)   # pos_err = measured - target
+    np.testing.assert_allclose(err[3:6], [0.5, 0.0, 0.0], atol=1e-5)    # vel_err (target vel = 0)
+    np.testing.assert_allclose(err[6:9], np.zeros(3), atol=1e-5)        # att aligned
+    np.testing.assert_allclose(err[9:12], [0.0, 0.1, 0.0], atol=1e-5)   # rate_err (target = 0)
+
+
+def test_attitude_error_matches_controller_convention():
+    # 90 deg about body x between measured and target -> axis-angle ~ (pi/2, 0, 0)
+    cfg = ISSConfig()
+    q_target = jnp.asarray(cfg.dock.quaternion)
+    s = _state(cfg.dock.position, quat=(1.0, 0.0, 0.0, 0.0))
+    err = np.asarray(dock_goal_error(s, cfg))
+    assert np.abs(np.linalg.norm(err[6:9]) - np.pi / 2) < 1e-4  # dock quat is a 90 deg rotation
+
+
+def test_random_policy_augment_appends_zeros():
+    cfg = ISSConfig(observation={"goal_error": True})
+    augment = make_augment(cfg, PolicyConfig(type="random"))
+    s = _state((50.0, 0.0, 0.0))
+    out = np.asarray(augment(s, jnp.zeros((0,), jnp.float32)))
+    assert out.shape == (25,)
+    np.testing.assert_array_equal(out[:13], np.asarray(s))
+    np.testing.assert_array_equal(out[13:], np.zeros(12))
+
+
+def test_union_augment_switches_on_the_episode_policy():
+    cfg = ISSConfig(observation={"goal_error": True})
+    augment = make_augment(cfg, PolicyConfig(type="union"))
+    s = _state((50.0, 0.0, 0.0))
+    extras_random = jnp.asarray([0.0, 1.0, 0.0, 0.0, 100.0, 0.1], jnp.float32)
+    extras_dock = jnp.asarray([2.0, 1.0, 0.0, 0.0, 100.0, 0.1], jnp.float32)
+    out_random = np.asarray(augment(s, extras_random))
+    out_dock = np.asarray(augment(s, extras_dock))
+    np.testing.assert_array_equal(out_random[13:], np.zeros(12))
+    np.testing.assert_allclose(out_dock[13:], np.asarray(dock_goal_error(s, cfg)), atol=1e-6)
+
+
+def test_orbit_augment_error_is_zero_on_the_commanded_circle():
+    cfg = ISSConfig(observation={"goal_error": True})
+    augment = make_augment(cfg, PolicyConfig(type="orbit"))
+    radius, omega = 100.0, 0.1
+    axis = jnp.asarray([0.0, 0.0, 1.0], jnp.float32)
+    # On the circle at +x, moving tangentially (+y at omega*r), nose to center (-x).
+    from owm_envs.core.quaternion import quat_from_body_z_to
+    q = quat_from_body_z_to(jnp.asarray([-1.0, 0.0, 0.0], jnp.float32))
+    s = _state((radius, 0.0, 0.0), vel=(0.0, omega * radius, 0.0),
+               quat=np.asarray(q), rate=(0.0, 0.0, 0.0))
+    extras = jnp.concatenate([axis, jnp.asarray([radius, omega], jnp.float32)])
+    out = np.asarray(augment(s, extras))
+    np.testing.assert_allclose(out[13:], np.zeros(12), atol=1e-4)
+
+
+def test_make_augment_returns_none_when_disabled():
+    assert make_augment(ISSConfig(), PolicyConfig(type="dock")) is None

@@ -87,6 +87,19 @@ def quat_derivative_from_omega_body(q_bw: jnp.ndarray, omega_body: jnp.ndarray) 
 BODY_Z = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
 
 
+def axis_angle_from_quat(q: jnp.ndarray) -> jnp.ndarray:
+    """Rotation vector (axis * angle, rad) of a quaternion, hemisphere-corrected.
+
+    Safe at zero rotation: the axis degenerates but the magnitude -> 0, so
+    the returned vector -> 0 rather than NaN.
+    """
+    q = jnp.where(q[0] < 0.0, -q, q)
+    q = quat_normalize(q)
+    sin_half = jnp.maximum(jnp.linalg.norm(q[1:4]), 1e-8)
+    angle = 2.0 * jnp.arctan2(sin_half, q[0])
+    return (q[1:4] / sin_half) * angle
+
+
 def quat_from_body_z_to(target_dir: jnp.ndarray) -> jnp.ndarray:
     """Shortest-arc quaternion rotating body +z onto `target_dir` (assumed unit).
 

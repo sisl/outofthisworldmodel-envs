@@ -16,6 +16,7 @@ from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
 from ...core.quaternion import (
+    axis_angle_from_quat,
     quat_conjugate,
     quat_from_body_z_to,
     quat_multiply,
@@ -86,14 +87,6 @@ def _safe_norm(v: jnp.ndarray, eps: float = 1e-8) -> jnp.ndarray:
     return jnp.maximum(jnp.linalg.norm(v), eps)
 
 
-def _axis_angle_from_quat(q: jnp.ndarray) -> jnp.ndarray:
-    q = jnp.where(q[0] < 0.0, -q, q)
-    q = quat_normalize(q)
-    sin_half = _safe_norm(q[1:4])
-    angle = 2.0 * jnp.arctan2(sin_half, q[0])
-    return (q[1:4] / sin_half) * angle
-
-
 def _attitude_torque(
     q_bw: jnp.ndarray,
     q_target: jnp.ndarray,
@@ -104,7 +97,7 @@ def _attitude_torque(
     kd_attitude: float,
 ) -> jnp.ndarray:
     q_err = quat_multiply(quat_conjugate(q_bw), q_target)
-    att_err_body = _axis_angle_from_quat(q_err)
+    att_err_body = axis_angle_from_quat(q_err)
     return (
         inertia_diag
         * (kp_attitude * att_err_body - kd_attitude * omega_b)
