@@ -165,9 +165,32 @@ def test_non_mixture_policy_leaves_policy_ids_none():
     assert batch.policy_ids is None
 
 
-def test_min_transitions_mode_is_not_yet_implemented():
-    with pytest.raises(NotImplementedError, match="min_transitions"):
-        make_driver().generate(RolloutSpec(max_steps=10, seed=0, min_transitions=5))
+def test_vector_transitions_target_is_met_with_whole_episodes():
+    cfg = ISSConfig(max_steps=10)
+    driver = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+        policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+    )
+    batch = driver.generate(RolloutSpec(max_steps=10, seed=0, min_transitions=50))
+    assert batch.total_transitions >= 50
+    # first-crossing: dropping the last episode must dip below the target
+    assert batch.total_transitions - (int(batch.lengths[-1]) - 1) < 50
+
+
+def test_vector_transitions_mode_is_deterministic():
+    cfg = ISSConfig(max_steps=10)
+
+    def batch():
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+        )
+        return driver.generate(RolloutSpec(max_steps=10, seed=0, min_transitions=50))
+
+    a, b = batch(), batch()
+    np.testing.assert_array_equal(a.observations, b.observations)
+    np.testing.assert_array_equal(a.actions, b.actions)
+    np.testing.assert_array_equal(a.lengths, b.lengths)
 
 
 def test_actions_stay_within_the_control_limits():
