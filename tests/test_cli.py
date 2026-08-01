@@ -7,7 +7,9 @@ from typer.testing import CliRunner
 
 from owm_envs.cli import app, _parse_split_flags
 from owm_envs.datasets.stats import GenerationConfig, SplitSpec
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.iss.sensing import PRESETS
 
 runner = CliRunner()
 
@@ -458,3 +460,33 @@ def test_malformed_gen_config_yaml_is_rejected_cleanly(tmp_path):
     ])
     assert result.exit_code != 0
     assert "gen-config" in result.output
+
+
+def test_noise_preset_flag_overrides_the_env_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--noise", "cooperative", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = ISSConfig.from_yaml(out / "env_config.yaml")
+    assert recorded.sensor_noise == PRESETS["cooperative"]
+
+
+def test_observe_flag_is_recorded_in_the_policy_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--policy", "dock", "--observe", "measurement", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = PolicyConfig.from_yaml(out / "policy_config.yaml")
+    assert recorded.observe == "measurement"
+
+
+def test_unknown_noise_preset_is_rejected(tmp_path):
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"), "--steps", "8",
+        "--split", "train:2:0", "--noise", "bogus", "--no-lerobot",
+    ])
+    assert result.exit_code != 0

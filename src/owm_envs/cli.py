@@ -1,6 +1,7 @@
 """Command-line interface for dataset generation.
 
     owm-envs generate --out logs/run1 --split train:512:0 --policy union
+    owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
     owm-envs list
 
 `--driver auto` selects the fused JAX path when the backend supports it and
@@ -21,6 +22,7 @@ from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig
 from .envs.iss.policies import PolicyConfig
+from .envs.iss.sensing import PRESETS
 
 app = typer.Typer(add_completion=False, help="Generate world-model training datasets.")
 
@@ -92,6 +94,11 @@ def generate(
     gen_config: Optional[Path] = typer.Option(
         None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps."),
     config: Optional[Path] = typer.Option(None, help="ISSConfig YAML to load."),
+    noise: Optional[str] = typer.Option(
+        None, help="Sensor-noise preset: off | cooperative | noncooperative. "
+                   "Overrides the --config file's sensor_noise."),
+    observe: str = typer.Option(
+        "state", help="What scripted policies consume: state | measurement."),
     lerobot: bool = typer.Option(True, "--lerobot/--no-lerobot", help="Write a LeRobot dataset."),
     render: bool = typer.Option(
         False,
@@ -153,9 +160,15 @@ def generate(
         raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
 
     cfg = ISSConfig.from_yaml(config) if config is not None else ISSConfig()
+    if noise is not None:
+        if noise not in PRESETS:
+            raise typer.BadParameter(
+                f"unknown --noise preset '{noise}'; use one of: {', '.join(PRESETS)}"
+            )
+        cfg = cfg.model_copy(update={"sensor_noise": PRESETS[noise]})
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
-        policy_cfg = PolicyConfig(type=policy)
+        policy_cfg = PolicyConfig(type=policy, observe=observe)
     except Exception as exc:  # pydantic rejects unknown policy types
         raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
 
