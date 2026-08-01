@@ -193,6 +193,7 @@ class RunMetadata:
     counts: dict
     cfg: ISSConfig
     policy_cfg: PolicyConfig
+    gen_cfg: GenerationConfig
 
     def write(self, run_dir: str | Path) -> None:
         """Flush stats, card, summary, and the as-run configs into `run_dir`.
@@ -227,6 +228,7 @@ class RunMetadata:
         for model, name in (
             (self.cfg, "env_config.yaml"),
             (self.policy_cfg, "policy_config.yaml"),
+            (self.gen_cfg, "generation_config.yaml"),
         ):
             staged = _staging_path(run_dir / name)
             model.to_yaml(staged)
@@ -249,13 +251,17 @@ def build_run_metadata(
     *,
     cfg: ISSConfig,
     policy_cfg: PolicyConfig,
+    gen_cfg: GenerationConfig,
     batches: dict[str, TrajectoryBatch],
     fps: int,
-    seed: int,
 ) -> RunMetadata:
     """Compute the run metadata. Touches no files -- see RunMetadata.write."""
-    reference = batches.get("train") or next(iter(batches.values()))
-    stats = compute_norm_stats(reference)
+    if "train" not in batches:
+        raise ValueError("batches must include 'train': normalization stats are train-only")
+    missing = set(batches) - set(gen_cfg.splits)
+    if missing:
+        raise ValueError(f"batches {sorted(missing)} have no matching entry in gen_cfg.splits")
+    stats = compute_norm_stats(batches["train"])
 
     counts = {}
     for name, batch in batches.items():
@@ -271,19 +277,28 @@ def build_run_metadata(
             "hours": round(seconds / 3600.0, 5),
         }
 
+    def _split_policy(name: str) -> PolicyConfig:
+        return gen_cfg.splits[name].policy or policy_cfg
+
     card = {
         "env": "iss",
         "fps": fps,
-        "seed": seed,
         "dt": cfg.dt,
         "splits": {
-            name: {"episodes": b.num_episodes, "transitions": b.total_transitions}
+            name: {
+                "episodes": b.num_episodes,
+                "transitions": b.total_transitions,
+                "seed": gen_cfg.splits[name].seed,
+                "max_steps": gen_cfg.splits[name].max_steps,
+                "policy_type": _split_policy(name).type,
+                "union_weights": list(_split_policy(name).union_weights),
+            }
             for name, b in batches.items()
         },
-        "policy_type": policy_cfg.type,
-        "union_weights": list(policy_cfg.union_weights),
+        "provenance": code_provenance(),
     }
 
     return RunMetadata(
-        stats=stats, card=card, counts=counts, cfg=cfg, policy_cfg=policy_cfg
+        stats=stats, card=card, counts=counts,
+        cfg=cfg, policy_cfg=policy_cfg, gen_cfg=gen_cfg,
     )

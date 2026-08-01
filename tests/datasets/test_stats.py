@@ -96,8 +96,9 @@ def test_building_metadata_touches_no_files(tmp_path):
     # later would still leave a directory that looks like a finished one.
     run_dir = tmp_path / "run"
     build_run_metadata(
-        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
-        fps=20, seed=0,
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+        batches={"train": batch_with_padding()}, fps=20,
     )
     assert not run_dir.exists()
     assert list(tmp_path.iterdir()) == []
@@ -118,13 +119,15 @@ def test_summary_marker_lands_last(tmp_path):
 
     with mock.patch.object(os, "replace", watched_replace):
         build_run_metadata(
-            cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
-            fps=20, seed=0,
+            cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+            gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+            batches={"train": batch_with_padding()}, fps=20,
         ).write(tmp_path)
 
     assert seen_when_summary_appeared["files"] == [
         "dataset_card.json",
         "env_config.yaml",
+        "generation_config.yaml",
         "normalization_stats.json",
         "policy_config.yaml",
         SUMMARY_FILENAME,
@@ -135,8 +138,9 @@ def test_a_failure_mid_flush_leaves_no_summary_marker(tmp_path):
     # If the flush dies partway, the directory holds some metadata -- but not
     # the marker, so nothing reads it as a finished run.
     metadata = build_run_metadata(
-        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
-        fps=20, seed=0,
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+        batches={"train": batch_with_padding()}, fps=20,
     )
     with mock.patch.object(
         PolicyConfig, "to_yaml", side_effect=OSError("disk full")
@@ -152,14 +156,16 @@ def test_rewriting_a_run_drops_the_old_marker_first(tmp_path):
     # a failed rewrite, or it advertises a directory that is now half old
     # metadata and half new as a complete, consistent run.
     build_run_metadata(
-        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
-        fps=20, seed=0,
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+        batches={"train": batch_with_padding()}, fps=20,
     ).write(tmp_path)
     assert (tmp_path / SUMMARY_FILENAME).exists()
 
     rewrite = build_run_metadata(
         cfg=ISSConfig(), policy_cfg=PolicyConfig(type="orbit"),
-        batches={"train": batch_with_padding()}, fps=50, seed=1,
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=1)}),
+        batches={"train": batch_with_padding()}, fps=50,
     )
     with mock.patch.object(
         PolicyConfig, "to_yaml", side_effect=OSError("disk full")
@@ -174,8 +180,9 @@ def test_rewriting_a_run_drops_the_old_marker_first(tmp_path):
 
 def test_no_staging_files_survive_a_successful_write(tmp_path):
     build_run_metadata(
-        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
-        fps=20, seed=0,
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+        batches={"train": batch_with_padding()}, fps=20,
     ).write(tmp_path)
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
 
@@ -184,9 +191,9 @@ def test_run_metadata_write_emits_every_expected_file(tmp_path):
     build_run_metadata(
         cfg=ISSConfig(),
         policy_cfg=PolicyConfig(type="union"),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
         batches={"train": batch_with_padding()},
         fps=24,
-        seed=0,
     ).write(tmp_path)
     for name in (
         "normalization_stats.json",
@@ -194,6 +201,7 @@ def test_run_metadata_write_emits_every_expected_file(tmp_path):
         "summary.json",
         "env_config.yaml",
         "policy_config.yaml",
+        "generation_config.yaml",
     ):
         assert (tmp_path / name).exists(), f"missing {name}"
 
@@ -203,7 +211,9 @@ def test_as_run_configs_round_trip(tmp_path):
     cfg = ISSConfig(physics=PhysicsConfig(start_radius_m=250.0))
     policy_cfg = PolicyConfig(type="orbit")
     build_run_metadata(
-        cfg=cfg, policy_cfg=policy_cfg, batches={"train": batch_with_padding()}, fps=24, seed=0
+        cfg=cfg, policy_cfg=policy_cfg,
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+        batches={"train": batch_with_padding()}, fps=24,
     ).write(tmp_path)
     assert ISSConfig.from_yaml(tmp_path / "env_config.yaml") == cfg
     assert PolicyConfig.from_yaml(tmp_path / "policy_config.yaml") == policy_cfg
@@ -211,8 +221,9 @@ def test_as_run_configs_round_trip(tmp_path):
 
 def test_summary_counts_real_transitions_not_padded_ones(tmp_path):
     build_run_metadata(
-        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch_with_padding()},
-        fps=24, seed=0,
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=2, seed=0)}),
+        batches={"train": batch_with_padding()}, fps=24,
     ).write(tmp_path)
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert summary["counts"]["train"]["episodes"] == 2
@@ -261,12 +272,105 @@ def test_one_real_action_is_enough(tmp_path):
     assert all(np.isfinite(stats["action"]["std"]))
 
     build_run_metadata(
-        cfg=ISSConfig(), policy_cfg=PolicyConfig(), batches={"train": batch},
-        fps=20, seed=0,
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+        gen_cfg=GenerationConfig(splits={"train": SplitSpec(num_episodes=1, seed=0)}),
+        batches={"train": batch}, fps=20,
     ).write(tmp_path)
     # json.loads rejects the bare NaN token only with parse_constant raising.
     text = (tmp_path / "normalization_stats.json").read_text()
     assert "NaN" not in text
+
+
+def batch_with_constant_observations(value):
+    """One episode whose every observation and real action equals `value`.
+
+    Lets a test that mixes a train and a val batch assert which one a result
+    actually came from, rather than merely that some result exists.
+    """
+    obs = np.full((1, 2, 13), value, dtype=np.float32)
+    act = np.zeros((1, 2, 6), dtype=np.float32)
+    act[0, 0, :] = value
+    return TrajectoryBatch(
+        observations=obs,
+        actions=act,
+        rewards=np.zeros((1, 2), dtype=np.float32),
+        lengths=np.array([2], dtype=np.int32),
+        terminated=np.array([True]),
+        truncated=np.array([False]),
+        policy_ids=None,
+    )
+
+
+def gen_cfg_for(batches):
+    return GenerationConfig(
+        splits={
+            name: SplitSpec(num_episodes=b.num_episodes, max_steps=100, seed=i)
+            for i, (name, b) in enumerate(batches.items())
+        }
+    )
+
+
+def test_stats_come_from_the_train_batch_only():
+    train = batch_with_constant_observations(2.0)
+    val = batch_with_constant_observations(100.0)
+    batches = {"train": train, "val": val}
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), gen_cfg=gen_cfg_for(batches),
+        batches=batches, fps=20,
+    )
+    assert metadata.stats == compute_norm_stats(train)
+
+
+def test_metadata_requires_a_train_batch():
+    val = batch_with_constant_observations(1.0)
+    gen = GenerationConfig(splits={
+        "train": SplitSpec(num_episodes=val.num_episodes, seed=0),
+        "val": SplitSpec(num_episodes=val.num_episodes, seed=1),
+    })
+    with pytest.raises(ValueError, match="train"):
+        build_run_metadata(cfg=ISSConfig(), policy_cfg=PolicyConfig(),
+                           gen_cfg=gen, batches={"val": val}, fps=20)
+
+
+def test_card_records_per_split_seed_and_provenance():
+    train = batch_with_constant_observations(1.0)
+    batches = {"train": train}
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), gen_cfg=gen_cfg_for(batches),
+        batches=batches, fps=20,
+    )
+    assert metadata.card["splits"]["train"]["seed"] == 0
+    assert metadata.card["splits"]["train"]["max_steps"] == 100
+    assert "seed" not in metadata.card
+    assert "policy_type" not in metadata.card
+    assert set(metadata.card["provenance"]) == {"owm_envs_version", "git_commit", "git_dirty"}
+
+
+def test_card_resolves_the_per_split_policy():
+    train = batch_with_constant_observations(1.0)
+    val = batch_with_constant_observations(1.0)
+    gen = GenerationConfig(splits={
+        "train": SplitSpec(num_episodes=train.num_episodes, seed=0),
+        "val": SplitSpec(num_episodes=val.num_episodes, seed=1,
+                         policy=PolicyConfig(type="dock")),
+    })
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(type="union"), gen_cfg=gen,
+        batches={"train": train, "val": val}, fps=20,
+    )
+    assert metadata.card["splits"]["train"]["policy_type"] == "union"
+    assert metadata.card["splits"]["val"]["policy_type"] == "dock"
+
+
+def test_write_records_the_generation_config(tmp_path):
+    train = batch_with_constant_observations(1.0)
+    batches = {"train": train}
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), gen_cfg=gen_cfg_for(batches),
+        batches=batches, fps=20,
+    )
+    metadata.write(tmp_path)
+    assert GenerationConfig.from_yaml(tmp_path / "generation_config.yaml") == metadata.gen_cfg
 
 
 def test_generation_config_round_trips(tmp_path):
