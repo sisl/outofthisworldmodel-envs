@@ -18,7 +18,7 @@ from gymnasium import spaces
 from .config import ISSConfig
 from .dynamics import ISSDynamics
 from .reward import iss_reward
-from .sensing import apply_sensor_noise
+from .sensing import NOISE_STREAM, apply_sensor_noise
 
 
 def _observation_space(cfg: ISSConfig) -> spaces.Box:
@@ -74,6 +74,11 @@ class ISSEnv(gym.Env):
         self._state: jnp.ndarray | None = None
         self._step_index = 0
         self._renderer: Any | None = None
+        # Side stream for sensor-noise draws, derived by fold_in from the
+        # dynamics key at reset -- never consumed from np_random, which also
+        # seeds reset(), so later unseeded resets don't depend on how many
+        # noisy observations the previous episode drew.
+        self._noise_key: jax.Array | None = None
 
         # jit once at construction; both are pure functions of (state, action).
         self._jit_step = jax.jit(self.dynamics.step)
@@ -86,7 +91,10 @@ class ISSEnv(gym.Env):
         # Gymnasium seeds self.np_random; derive a JAX key from it so that a given
         # Gymnasium seed reproduces exactly one initial state.
         jax_seed = int(self.np_random.integers(0, 2**31 - 1))
-        self._state = self._jit_reset(jax.random.PRNGKey(jax_seed))
+        dynamics_key = jax.random.PRNGKey(jax_seed)
+        if self.cfg.sensor_noise.enabled:
+            self._noise_key = jax.random.fold_in(dynamics_key, NOISE_STREAM)
+        self._state = self._jit_reset(dynamics_key)
         self._step_index = 0
         return self._obs(), {
             "success": False,
@@ -130,14 +138,10 @@ class ISSEnv(gym.Env):
         state = np.asarray(self._state, dtype=np.float32)
         if not self.cfg.sensor_noise.enabled:
             return state
-        # Drawing a fresh 31-bit seed per call means identical noise vectors
-        # recur roughly every ~50k observations (birthday bound). Acceptable
-        # here because bulk dataset generation uses the batched vector/scan
-        # paths, not this single-env step loop.
-        noise_seed = int(self.np_random.integers(0, 2**31 - 1))
-        measured = apply_sensor_noise(
-            jnp.asarray(state), jax.random.PRNGKey(noise_seed), self.cfg.sensor_noise
-        )
+        # Noise draws come from `_noise_key`, a fold_in side stream set up in
+        # reset() -- split here, never touching np_random or the dynamics key.
+        self._noise_key, subkey = jax.random.split(self._noise_key)
+        measured = apply_sensor_noise(jnp.asarray(state), subkey, self.cfg.sensor_noise)
         return np.asarray(measured, dtype=np.float32)
 
     def _true_state(self) -> np.ndarray:

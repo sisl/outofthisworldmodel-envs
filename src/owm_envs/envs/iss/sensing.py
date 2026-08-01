@@ -17,6 +17,11 @@ from ...core.models import ConfigModel
 from ...core.quaternion import quat_multiply, quat_normalize
 
 
+# fold_in constant deriving a measurement-noise key stream from a dynamics
+# key without consuming a draw from that key's own chain.
+NOISE_STREAM = 0x5EED
+
+
 class SensorNoiseConfig(ConfigModel):
     """Per-axis Gaussian measurement noise. Disabled by default.
 

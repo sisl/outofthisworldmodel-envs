@@ -170,3 +170,17 @@ def test_noisy_env_reset_is_reproducible_per_seed():
     a, _ = ISSEnv(cfg).reset(seed=11)
     b, _ = ISSEnv(cfg).reset(seed=11)
     np.testing.assert_array_equal(a, b)
+
+
+def test_noise_does_not_perturb_true_dynamics_across_resets():
+    clean = ISSEnv(ISSConfig())
+    noisy = ISSEnv(ISSConfig(sensor_noise=PRESETS["cooperative"]))
+    for env in (clean, noisy):
+        env.reset(seed=9)
+        for _ in range(5):
+            env.step(np.zeros(6, dtype=np.float32))
+    # Second, UNSEEDED reset: true state must not depend on how many
+    # noisy observations were drawn in the previous episode.
+    _, info_clean = clean.reset()
+    _, info_noisy = noisy.reset()
+    np.testing.assert_array_equal(info_clean["state"], info_noisy["state"])

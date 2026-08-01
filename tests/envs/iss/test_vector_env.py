@@ -261,3 +261,25 @@ def test_noiseless_vector_env_info_state_equals_observation():
     env = ISSVectorEnv(num_envs=2)
     obs, info = env.reset(seed=5)
     np.testing.assert_array_equal(obs, info["state"])
+
+
+def test_true_state_survives_autoreset_with_noise():
+    # Sensor noise must not perturb the dynamics key stream: the true state
+    # produced by an autoreset must be identical whether or not noise is
+    # enabled, since the noise draws in _obs() must come from a side stream
+    # that never consumes from self._key.
+    clean_cfg = ISSConfig(max_steps=3)
+    noisy_cfg = ISSConfig(max_steps=3, sensor_noise=PRESETS["cooperative"])
+
+    def state_after_autoreset(cfg):
+        env = ISSVectorEnv(num_envs=2, cfg=cfg)
+        env.reset(seed=0)
+        zero = np.zeros((2, 6), dtype=np.float32)
+        info = None
+        for _ in range(4):  # 3 steps truncate; the 4th is the autoreset step
+            _, _, _, _, info = env.step(zero)
+        return info["state"]
+
+    np.testing.assert_array_equal(
+        state_after_autoreset(clean_cfg), state_after_autoreset(noisy_cfg)
+    )

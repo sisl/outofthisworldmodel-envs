@@ -24,7 +24,7 @@ from .config import ISSConfig
 from .dynamics import ISSDynamics
 from .env import _action_space, _observation_space, _render_fps
 from .reward import iss_reward
-from .sensing import apply_sensor_noise
+from .sensing import NOISE_STREAM, apply_sensor_noise
 
 
 class ISSVectorEnv(VectorEnv):
@@ -52,6 +52,10 @@ class ISSVectorEnv(VectorEnv):
         self._step_index = np.zeros(self.num_envs, dtype=np.int64)
         self._needs_reset = np.zeros(self.num_envs, dtype=bool)
         self._key: jax.Array | None = None
+        # Side stream for sensor-noise draws, derived from self._key via
+        # fold_in at each reset -- never split/consumed, so noise draws in
+        # _obs() cannot perturb the dynamics key that drives resets/autoresets.
+        self._noise_key: jax.Array | None = None
 
         self._batched_step = jax.jit(jax.vmap(self.dynamics.step))
         self._batched_reset = jax.jit(jax.vmap(self.dynamics.reset))
@@ -81,6 +85,8 @@ class ISSVectorEnv(VectorEnv):
                 # contract, instead of always replaying the same trajectory.
                 self._key = jax.random.PRNGKey(secrets.randbits(32))
 
+            self._noise_key = jax.random.fold_in(self._key, NOISE_STREAM)
+
             self._key, subkey = jax.random.split(self._key)
             reset_keys = jax.random.split(subkey, self.num_envs)
         else:
@@ -99,6 +105,7 @@ class ISSVectorEnv(VectorEnv):
             for s in seeds:
                 key = jax.random.fold_in(key, s)
             self._key = key
+            self._noise_key = jax.random.fold_in(self._key, NOISE_STREAM)
 
         self._states = self._batched_reset(reset_keys)
         self._step_index[:] = 0
@@ -164,7 +171,7 @@ class ISSVectorEnv(VectorEnv):
     def _obs(self) -> np.ndarray:
         if self._batched_noise is None:
             return np.asarray(self._states, dtype=np.float32)
-        self._key, subkey = jax.random.split(self._key)
+        self._noise_key, subkey = jax.random.split(self._noise_key)
         noise_keys = jax.random.split(subkey, self.num_envs)
         measured = self._batched_noise(self._states, noise_keys)
         return np.asarray(measured, dtype=np.float32)

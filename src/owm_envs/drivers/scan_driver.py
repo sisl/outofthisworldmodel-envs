@@ -19,13 +19,10 @@ from ..envs.iss.config import ISSConfig
 from ..envs.iss.dynamics import ISSDynamics
 from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
 from ..envs.iss.reward import iss_reward
-from ..envs.iss.sensing import apply_sensor_noise
+from ..envs.iss.sensing import NOISE_STREAM, apply_sensor_noise
 from .types import RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
-# fold_in constant deriving each lane's noise-measurement key from its main
-# lane key without consuming a draw from the main chain (see per_env_step).
-_NOISE_STREAM = 0x5EED
 
 
 def supports_fused_rollout(backend: object) -> bool:
@@ -165,7 +162,7 @@ class ScanDriver:
         # fold_in rather than split, so deriving it consumes nothing from
         # `lane_keys` -- the act/reset/extras draws are unaffected by
         # whether noise is enabled.
-        noise_lane_keys = jax.vmap(lambda k: jax.random.fold_in(k, _NOISE_STREAM))(lane_keys)
+        noise_lane_keys = jax.vmap(lambda k: jax.random.fold_in(k, NOISE_STREAM))(lane_keys)
 
         def run_lane(state, index, extras, lane_key, noise_lane_key):
             _, emitted = jax.lax.scan(

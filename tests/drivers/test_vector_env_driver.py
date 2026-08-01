@@ -501,3 +501,21 @@ def test_vector_driver_measurement_policy_consumes_the_observation():
         return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
 
     assert not np.array_equal(batch("state").actions, batch("measurement").actions)
+
+
+def test_vector_state_policy_survives_autoreset_with_noise():
+    # 4 episodes over 2 lanes forces autoreset; random policy consumes act keys.
+    clean_cfg = ISSConfig(max_steps=10)
+    noisy_cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["cooperative"])
+
+    def batch(cfg):
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="random", observe="state")),
+        )
+        return driver.generate(RolloutSpec(num_episodes=4, max_steps=10, seed=0))
+
+    clean, noisy = batch(clean_cfg), batch(noisy_cfg)
+    np.testing.assert_array_equal(clean.actions, noisy.actions)
+    np.testing.assert_array_equal(clean.lengths, noisy.lengths)
+    assert not np.array_equal(clean.observations, noisy.observations)
