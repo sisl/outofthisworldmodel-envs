@@ -158,6 +158,16 @@ class PolicySource(Protocol):
     ) -> np.ndarray:
         """Return an action as a numpy array, given a numpy observation."""
 
+    def augment_observation(self, observation: np.ndarray, episode_state: Any) -> np.ndarray:
+        """Return the observation to RECORD, given the raw one the driver just
+        received. This only affects what gets stored into the episode buffer
+        -- `act()` above always receives the raw observation, unaugmented.
+        Identity (`return observation`) for sources with nothing to append;
+        `ISSPolicySource` is the only implementor that does otherwise (see
+        `envs.iss.goal.make_augment`), appending a policy-aware goal-error
+        block built from `episode_state`.
+        """
+
     def policy_id(self, episode_state: Any) -> int:
         """Sub-policy index for mixture policies; 0 when not a mixture."""
 

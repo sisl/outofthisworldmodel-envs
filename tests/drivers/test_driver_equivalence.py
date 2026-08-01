@@ -36,7 +36,7 @@ import pytest
 from owm_envs.drivers.scan_driver import ScanDriver
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, ObservationConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
@@ -103,6 +103,30 @@ def test_both_drivers_agree_on_free_flight_trajectories():
     np.testing.assert_allclose(a.observations, b.observations, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(a.actions, b.actions, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(a.rewards, b.rewards, rtol=1e-3, atol=1e-2)
+
+
+def test_scan_and_vector_agree_on_goal_blocks_for_dock():
+    # Goal-error augmentation lives in two places -- ScanDriver applies
+    # make_augment in-scan, VectorEnvDriver applies it via
+    # ISSPolicySource.augment_observation -- the same two-implementations-of-
+    # one-rule drift risk the module docstring describes, now for the
+    # appended goal block. One episode per lane keeps this in the bitwise
+    # regime documented above. `observe` is pinned explicitly (not left to
+    # the default) and identically on both sides, so a future default change
+    # can't silently make this test compare two different policy inputs.
+    cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
+    env_cfg = cfg.model_copy(update={"observation": ObservationConfig()})
+    policy_cfg = PolicyConfig(type="dock", observe="state")
+    spec = RolloutSpec(num_episodes=2, max_steps=10, seed=0)
+
+    scan = ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=2).generate(spec)
+    vector = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=env_cfg),
+        policy_source=ISSPolicySource(cfg, policy_cfg),
+    ).generate(spec)
+
+    np.testing.assert_allclose(scan.observations, vector.observations, atol=1e-5)
+    np.testing.assert_array_equal(scan.lengths, vector.lengths)
 
 
 def test_both_drivers_agree_when_episodes_terminate_on_collision():

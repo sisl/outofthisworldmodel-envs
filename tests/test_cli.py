@@ -60,6 +60,20 @@ def test_both_drivers_are_selectable(tmp_path):
         assert (out / "summary.json").exists()
 
 
+def test_resolve_driver_vector_path_does_not_double_augment():
+    # ISSPolicySource applies the goal-error block itself on the vector path
+    # (see policy_source.py); if _resolve_driver handed the ORIGINAL cfg to
+    # ISSVectorEnv too, the env would already emit 25-dim observations and
+    # the policy source would append a second block on top -- 37-dim, not 25.
+    from owm_envs.cli import _resolve_driver
+    from owm_envs.drivers.types import RolloutSpec
+
+    cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
+    chosen = _resolve_driver("vector", cfg, PolicyConfig(type="dock"), num_envs=2)
+    batch = chosen.driver.generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
+    assert batch.observations.shape[-1] == 25
+
+
 def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
     out = tmp_path / "auto"
     result = runner.invoke(
