@@ -115,7 +115,7 @@ def test_scan_and_vector_agree_on_goal_blocks_for_dock():
     # the default) and identically on both sides, so a future default change
     # can't silently make this test compare two different policy inputs.
     cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
-    env_cfg = cfg.model_copy(update={"observation": ObservationConfig()})
+    env_cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"goal_error": False})})
     policy_cfg = PolicyConfig(type="dock", observe="state")
     spec = RolloutSpec(num_episodes=2, max_steps=10, seed=0)
 
@@ -127,6 +127,35 @@ def test_scan_and_vector_agree_on_goal_blocks_for_dock():
 
     np.testing.assert_allclose(scan.observations, vector.observations, atol=1e-5)
     np.testing.assert_array_equal(scan.lengths, vector.lengths)
+
+
+def test_scan_and_vector_agree_structurally_on_goal_blocks_for_union():
+    # The union policy selects between orbit, dock, and random based on policy_id
+    # derived from the PRNG, which the two drivers initialize differently. Beyond
+    # one episode per lane, this test checks structural agreement: observation
+    # shape, episode lengths, and termination flags match even if PRNG sequences
+    # diverge. This mirrors test_both_drivers_agree_structurally_with_many_episodes_per_lane
+    # but with goal-error augmentation enabled.
+    cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
+    env_cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"goal_error": False})})
+    policy_cfg = PolicyConfig(type="union", observe="state")
+    spec = RolloutSpec(num_episodes=4, max_steps=10, seed=0)
+
+    scan = ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=2).generate(spec)
+    vector = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=env_cfg),
+        policy_source=ISSPolicySource(cfg, policy_cfg),
+    ).generate(spec)
+
+    # Structural agreement: same shape and lengths, both honor the episode convention.
+    assert scan.observations.shape == vector.observations.shape
+    np.testing.assert_array_equal(scan.lengths, vector.lengths)
+    np.testing.assert_array_equal(scan.terminated, vector.terminated)
+    np.testing.assert_array_equal(scan.truncated, vector.truncated)
+    scan.validate()
+    vector.validate()
+    _assert_terminal_convention(scan)
+    _assert_terminal_convention(vector)
 
 
 def test_both_drivers_agree_when_episodes_terminate_on_collision():

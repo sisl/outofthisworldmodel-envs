@@ -303,7 +303,7 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
         # augment_observation) from the ORIGINAL cfg; the env it drives must
         # therefore stay at the raw 13-dim observation, or the block would be
         # appended twice -- once by the env, once by the policy source.
-        env_cfg = cfg.model_copy(update={"observation": ObservationConfig()})
+        env_cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"goal_error": False})})
         return _Chosen(
             "vector",
             VectorEnvDriver(

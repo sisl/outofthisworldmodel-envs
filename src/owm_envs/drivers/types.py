@@ -37,7 +37,7 @@ class TrajectoryBatch:
                occupies a T-wide row regardless of its own length, with the
                unused tail zero-filled, so shorter episodes carry padding
                and only `lengths[e]` entries of row `e` are real.
-      obs_dim  observation vector width (13 for the ISS environment)
+      obs_dim  observation vector width (13 for the ISS environment, 25 with the goal-error block)
       act_dim  action vector width (6 for the ISS environment)
 
     Padded rather than ragged so that two drivers' outputs can be compared

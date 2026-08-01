@@ -2,9 +2,12 @@
 
 One pure implementation used by the Gymnasium envs (dock-pose goal) and by
 both rollout drivers (per-policy goal via make_augment), so every consumer
-appends byte-identical blocks for the same inputs. Errors are measured
-minus target, computed from the SAME (possibly noisy) observation the
-dataset records -- a navigation system's output, not privileged truth.
+appends byte-identical blocks for the same inputs. Position, velocity and rate
+errors are measured minus target; the attitude block is the body-frame rotation
+FROM the measured attitude TO the target (the controllers' error convention),
+i.e. goal-minus-current in the rotational sense. All are computed from the SAME
+(possibly noisy) observation the dataset records -- a navigation system's output,
+not privileged truth.
 """
 
 from __future__ import annotations

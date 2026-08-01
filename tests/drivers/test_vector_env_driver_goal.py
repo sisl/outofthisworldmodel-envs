@@ -14,7 +14,7 @@ def _vector_driver(cfg: ISSConfig, policy_cfg: PolicyConfig, num_envs: int = 2) 
     # ISSPolicySource owns the goal-error augmentation on this path, so the
     # env it drives must stay at the raw 13-dim observation -- otherwise the
     # block would be appended twice (see cli._resolve_driver's build_vector).
-    env_cfg = cfg.model_copy(update={"observation": ObservationConfig()})
+    env_cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"goal_error": False})})
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=env_cfg),
         policy_source=ISSPolicySource(cfg, policy_cfg),

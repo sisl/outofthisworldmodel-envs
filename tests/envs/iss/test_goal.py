@@ -37,6 +37,19 @@ def test_attitude_error_matches_controller_convention():
     assert np.abs(np.linalg.norm(err[6:9]) - np.pi / 2) < 1e-4  # dock quat is a 90 deg rotation
 
 
+def test_attitude_error_sign_is_rotation_from_measured_to_target():
+    # measured = identity, target = +30 deg about body x -> the error is the
+    # rotation FROM measured TO target: axis-angle ~ (+0.5236, 0, 0).
+    half = np.deg2rad(30.0) / 2.0
+    target_quat = jnp.asarray([np.cos(half), np.sin(half), 0.0, 0.0], jnp.float32)
+    measured = _state((0.0, 0.0, 0.0))  # identity quaternion
+    err = np.asarray(goal_error(
+        measured, jnp.zeros(3, jnp.float32), jnp.zeros(3, jnp.float32),
+        target_quat, jnp.zeros(3, jnp.float32),
+    ))
+    np.testing.assert_allclose(err[6:9], [np.deg2rad(30.0), 0.0, 0.0], atol=1e-5)
+
+
 def test_random_policy_augment_appends_zeros():
     cfg = ISSConfig(observation={"goal_error": True})
     augment = make_augment(cfg, PolicyConfig(type="random"))
