@@ -38,6 +38,7 @@ from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.iss.policy_source import ISSPolicySource
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 START_RADIUS_M = ISSConfig().physics.start_radius_m
@@ -252,3 +253,54 @@ def test_both_drivers_produce_batches_that_validate():
     spec = RolloutSpec(num_episodes=2, max_steps=15, seed=1)
     vec.generate(spec).validate()
     scan.generate(spec).validate()
+
+
+def _assert_batches_equal(a, b):
+    np.testing.assert_array_equal(a.observations, b.observations)
+    np.testing.assert_array_equal(a.actions, b.actions)
+    np.testing.assert_array_equal(a.lengths, b.lengths)
+
+
+# Multi-split runs call generate() repeatedly (the CLI builds a driver per
+# split, but reuse must also be safe): generate() must be a pure function of
+# the RolloutSpec, or split contents would depend on generation order. These
+# tests prove this property: calling generate() with one spec interleaved
+# between calls with another must not perturb either spec's result, and a
+# fresh driver instance must reproduce the same result too.
+
+
+def test_scan_driver_generate_is_pure_per_spec():
+    cfg = ISSConfig(max_steps=20)
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(), num_envs=2)
+    spec_a = RolloutSpec(num_episodes=2, max_steps=20, seed=0)
+    spec_b = RolloutSpec(num_episodes=2, max_steps=20, seed=1)
+
+    first_b = driver.generate(spec_b)
+    driver.generate(spec_a)  # interleave a different spec
+    second_b = driver.generate(spec_b)  # must not be affected by it
+    fresh_b = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(), num_envs=2).generate(spec_b)
+
+    _assert_batches_equal(first_b, second_b)
+    _assert_batches_equal(first_b, fresh_b)
+
+
+def test_vector_env_driver_generate_is_pure_per_spec():
+    cfg = ISSConfig(max_steps=20)
+
+    def build_driver():
+        return VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig()),
+        )
+
+    driver = build_driver()
+    spec_a = RolloutSpec(num_episodes=2, max_steps=20, seed=0)
+    spec_b = RolloutSpec(num_episodes=2, max_steps=20, seed=1)
+
+    first_b = driver.generate(spec_b)
+    driver.generate(spec_a)  # interleave a different spec
+    second_b = driver.generate(spec_b)  # must not be affected by it
+    fresh_b = build_driver().generate(spec_b)
+
+    _assert_batches_equal(first_b, second_b)
+    _assert_batches_equal(first_b, fresh_b)

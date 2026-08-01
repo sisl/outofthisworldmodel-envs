@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
@@ -53,10 +56,46 @@ def _place(final: Path, text: str) -> None:
     os.replace(staged, final)
 
 
+def code_provenance() -> dict:
+    """Version and git state of the code that produced a run.
+
+    Best-effort by design: an installed wheel has no git checkout, and git
+    may be absent entirely, so missing pieces are None rather than errors --
+    provenance must never be the reason a data run fails.
+    """
+    try:
+        version: str | None = importlib_metadata.version("owm-envs")
+    except importlib_metadata.PackageNotFoundError:
+        version = None
+
+    package_dir = str(Path(__file__).resolve().parent)
+
+    def _git(*args: str) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", package_dir, *args],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result.stdout.strip() if result.returncode == 0 else None
+
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain") if commit is not None else None
+    return {
+        "owm_envs_version": version,
+        "git_commit": commit,
+        "git_dirty": None if status is None else bool(status),
+    }
+
+
 class SplitSpec(ConfigModel):
-    num_episodes: int = 64
-    max_steps: int = 2000
-    seed: int = 0
+    num_episodes: int = Field(default=64, ge=1)
+    max_steps: int = Field(default=2000, ge=1)
+    seed: int = Field(default=0, ge=0)
+    # None inherits the run-level policy. Set it to give this split its own
+    # -- e.g. a dock-only val split against a union-policy train split.
+    policy: PolicyConfig | None = None
 
 
 class GenerationConfig(ConfigModel):
@@ -72,6 +111,27 @@ class GenerationConfig(ConfigModel):
     # would silently disagree with dt for any dt but one.
     fps: int | None = None
     driver: Literal["auto", "scan", "vector"] = "auto"
+
+    @field_validator("splits")
+    @classmethod
+    def _validate_splits(cls, v: dict[str, SplitSpec]) -> dict[str, SplitSpec]:
+        for name in v:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or ".." in name:
+                raise ValueError(
+                    f"split name {name!r} must be a plain slug "
+                    "(letters, digits, '_', '-', '.'; no path separators)"
+                )
+        # Normalization statistics are computed from the train split alone
+        # (the downstream trainer's contract), so a run without one has no
+        # valid stats at all -- reject at config load, not at metadata time.
+        if "train" not in v:
+            raise ValueError("splits must include a 'train' split")
+        seeds = [spec.seed for spec in v.values()]
+        if len(set(seeds)) != len(seeds):
+            # Two splits sharing a seed produce identical trajectories --
+            # silent train/val leakage rather than an error downstream.
+            raise ValueError(f"split seeds must be unique, got {seeds}")
+        return v
 
 
 def _real_rows(arr: np.ndarray, lengths: np.ndarray) -> np.ndarray:
@@ -140,6 +200,7 @@ class RunMetadata:
     counts: dict
     cfg: ISSConfig
     policy_cfg: PolicyConfig
+    gen_cfg: GenerationConfig
 
     def write(self, run_dir: str | Path) -> None:
         """Flush stats, card, summary, and the as-run configs into `run_dir`.
@@ -174,6 +235,7 @@ class RunMetadata:
         for model, name in (
             (self.cfg, "env_config.yaml"),
             (self.policy_cfg, "policy_config.yaml"),
+            (self.gen_cfg, "generation_config.yaml"),
         ):
             staged = _staging_path(run_dir / name)
             model.to_yaml(staged)
@@ -196,13 +258,24 @@ def build_run_metadata(
     *,
     cfg: ISSConfig,
     policy_cfg: PolicyConfig,
+    gen_cfg: GenerationConfig,
     batches: dict[str, TrajectoryBatch],
     fps: int,
-    seed: int,
 ) -> RunMetadata:
     """Compute the run metadata. Touches no files -- see RunMetadata.write."""
-    reference = batches.get("train") or next(iter(batches.values()))
-    stats = compute_norm_stats(reference)
+    if "train" not in batches:
+        raise ValueError("batches must include 'train': normalization stats are train-only")
+    missing = set(batches) - set(gen_cfg.splits)
+    if missing:
+        raise ValueError(f"batches {sorted(missing)} have no matching entry in gen_cfg.splits")
+    unbatched = set(gen_cfg.splits) - set(batches)
+    if unbatched:
+        # Otherwise the as-run generation_config.yaml would claim splits
+        # that were never generated.
+        raise ValueError(
+            f"configured splits {sorted(unbatched)} have no generated batch"
+        )
+    stats = compute_norm_stats(batches["train"])
 
     counts = {}
     for name, batch in batches.items():
@@ -218,19 +291,28 @@ def build_run_metadata(
             "hours": round(seconds / 3600.0, 5),
         }
 
+    def _split_policy(name: str) -> PolicyConfig:
+        return gen_cfg.splits[name].policy or policy_cfg
+
     card = {
         "env": "iss",
         "fps": fps,
-        "seed": seed,
         "dt": cfg.dt,
         "splits": {
-            name: {"episodes": b.num_episodes, "transitions": b.total_transitions}
+            name: {
+                "episodes": b.num_episodes,
+                "transitions": b.total_transitions,
+                "seed": gen_cfg.splits[name].seed,
+                "max_steps": gen_cfg.splits[name].max_steps,
+                "policy_type": _split_policy(name).type,
+                "union_weights": list(_split_policy(name).union_weights),
+            }
             for name, b in batches.items()
         },
-        "policy_type": policy_cfg.type,
-        "union_weights": list(policy_cfg.union_weights),
+        "provenance": code_provenance(),
     }
 
     return RunMetadata(
-        stats=stats, card=card, counts=counts, cfg=cfg, policy_cfg=policy_cfg
+        stats=stats, card=card, counts=counts,
+        cfg=cfg, policy_cfg=policy_cfg, gen_cfg=gen_cfg,
     )

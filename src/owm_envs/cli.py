@@ -1,6 +1,6 @@
 """Command-line interface for dataset generation.
 
-    owm-envs generate --out logs/run1 --episodes 512 --policy union
+    owm-envs generate --out logs/run1 --split train:512:0 --policy union
     owm-envs list
 
 `--driver auto` selects the fused JAX path when the backend supports it and
@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
+from pydantic import ValidationError
 
-from .datasets.stats import build_run_metadata
+from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig
 from .envs.iss.policies import PolicyConfig
@@ -36,23 +38,60 @@ def list_envs() -> None:
     )
 
 
+def _parse_split_flags(values: list[str], steps: int) -> dict[str, SplitSpec]:
+    """`NAME:EPISODES:SEED[:POLICY]` flags -> split specs, all at `steps` max steps."""
+    splits: dict[str, SplitSpec] = {}
+    for raw in values:
+        parts = raw.split(":")
+        if len(parts) not in (3, 4) or not parts[0]:
+            raise typer.BadParameter(
+                f"--split expects NAME:EPISODES:SEED[:POLICY] "
+                f"(e.g. train:64:0 or val:8:1:dock), got '{raw}'"
+            )
+        name, episodes_text, seed_text = parts[0], parts[1], parts[2]
+        try:
+            episodes, seed = int(episodes_text), int(seed_text)
+        except ValueError as exc:
+            raise typer.BadParameter(
+                f"--split '{raw}': EPISODES and SEED must be integers"
+            ) from exc
+        if episodes < 1:
+            raise typer.BadParameter(f"--split '{raw}': EPISODES must be >= 1")
+        if name in splits:
+            raise typer.BadParameter(f"--split '{raw}': duplicate split name '{name}'")
+        split_policy = None
+        if len(parts) == 4:
+            try:
+                split_policy = PolicyConfig(type=parts[3])
+            except Exception as exc:  # pydantic rejects unknown policy types
+                raise typer.BadParameter(
+                    f"--split '{raw}': invalid policy '{parts[3]}': {exc}"
+                ) from exc
+        splits[name] = SplitSpec(
+            num_episodes=episodes, max_steps=steps, seed=seed, policy=split_policy
+        )
+    return splits
+
+
 @app.command()
 def generate(
     out: Path = typer.Option(..., help="Run directory to write."),
     env: str = typer.Option("iss", help="Environment name."),
-    episodes: int = typer.Option(64, help="Episodes to generate."),
-    steps: int = typer.Option(2000, help="Max steps per episode."),
-    policy: str = typer.Option("random", help="random | orbit | dock | union"),
-    seed: int = typer.Option(0, help="Base seed."),
-    driver: str = typer.Option("auto", help="auto | scan | vector"),
-    num_envs: int = typer.Option(8, help="Parallel lanes."),
-    fps: Optional[int] = typer.Option(
-        None,
-        help="Frames per second recorded in the dataset. Defaults to the "
-        "simulation rate, 1/dt, from the environment config.",
+    policy: str = typer.Option("random", help="random | orbit | dock | union -- "
+                               "run-level default; a split's :POLICY suffix overrides it."),
+    split: Optional[list[str]] = typer.Option(
+        None, "--split",
+        help="Repeatable NAME:EPISODES:SEED[:POLICY] (default: train:64:0 val:8:1); "
+             "POLICY overrides --policy for that split.",
     ),
+    steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 2000)."),
+    num_envs: Optional[int] = typer.Option(None, help="Parallel lanes (default 8)."),
+    driver: Optional[str] = typer.Option(None, help="auto | scan | vector (default auto)."),
+    fps: Optional[int] = typer.Option(None, help="Frames per second recorded in the dataset. "
+                                      "Defaults to the simulation rate, 1/dt."),
+    gen_config: Optional[Path] = typer.Option(
+        None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps."),
     config: Optional[Path] = typer.Option(None, help="ISSConfig YAML to load."),
-    split: str = typer.Option("train", help="Split name for the output."),
     lerobot: bool = typer.Option(True, "--lerobot/--no-lerobot", help="Write a LeRobot dataset."),
     render: bool = typer.Option(
         False,
@@ -61,7 +100,7 @@ def generate(
     ),
     render_view: str = typer.Option("DRAGON_FPV", help="Camera view to render, when --render is set."),
 ) -> None:
-    """Roll out trajectories and write a dataset run directory."""
+    """Roll out trajectories for every split and write a dataset run directory."""
     if env != "iss":
         raise typer.BadParameter(f"unknown environment '{env}'; only 'iss' exists")
     if render and not lerobot:
@@ -70,12 +109,6 @@ def generate(
             "rendered frames, so rendering would be pure wasted cost. Drop --render, or "
             "drop --no-lerobot so the frames are written."
         )
-
-    if num_envs < 1:
-        # Unguarded, this reaches the scan driver's horizon calculation
-        # (division by num_envs -> ZeroDivisionError) or leaves the vector
-        # driver spinning forever, since no lane ever produces an episode.
-        raise typer.BadParameter(f"--num-envs must be >= 1, got {num_envs}")
 
     if lerobot:
         # lerobot is declared only in the optional 'datasets' extra, so a
@@ -91,46 +124,78 @@ def generate(
                 "(pip install 'owm-envs[datasets]') or pass --no-lerobot"
             ) from exc
 
+    if gen_config is not None:
+        if any(v is not None for v in (split, steps, num_envs, driver, fps)):
+            raise typer.BadParameter(
+                "--gen-config is exclusive with --split/--steps/--num-envs/--driver/--fps"
+            )
+        try:
+            gen = GenerationConfig.from_yaml(gen_config)
+        except ValidationError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        except (OSError, yaml.YAMLError) as exc:
+            raise typer.BadParameter(
+                f"cannot read --gen-config {gen_config}: {exc}"
+            ) from exc
+    else:
+        resolved_steps = steps if steps is not None else 2000
+        try:
+            gen = GenerationConfig(
+                splits=_parse_split_flags(split or ["train:64:0", "val:8:1"], resolved_steps),
+                num_envs=num_envs if num_envs is not None else 8,
+                fps=fps,
+                driver=driver if driver is not None else "auto",
+            )
+        except ValidationError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+
+    if gen.num_envs < 1:
+        raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
+
     cfg = ISSConfig.from_yaml(config) if config is not None else ISSConfig()
-    fps = _resolve_fps(fps, cfg.dt)
+    resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
         policy_cfg = PolicyConfig(type=policy)
     except Exception as exc:  # pydantic rejects unknown policy types
         raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
 
-    chosen = _resolve_driver(driver, cfg, policy_cfg, num_envs)
-    typer.echo(f"[generate] driver={chosen.name} policy={policy} episodes={episodes}")
-
-    spec = RolloutSpec(num_episodes=episodes, max_steps=steps, seed=seed)
-    batch = chosen.driver.generate(spec)
-    typer.echo(
-        f"[generate] {batch.num_episodes} episodes, {batch.total_transitions} transitions"
-    )
+    # Drivers bake their policy in at construction, so a split with its own
+    # policy needs its own driver instance.
+    batches = {}
+    for name, spec in gen.splits.items():
+        split_policy = spec.policy or policy_cfg
+        chosen = _resolve_driver(gen.driver, cfg, split_policy, gen.num_envs)
+        batch = chosen.driver.generate(
+            RolloutSpec(num_episodes=spec.num_episodes, max_steps=spec.max_steps, seed=spec.seed)
+        )
+        typer.echo(f"[generate] {name}: driver={chosen.name} policy={split_policy.type} "
+                   f"{batch.num_episodes} episodes, {batch.total_transitions} transitions")
+        batches[name] = batch
 
     # Built now so a batch that cannot produce statistics fails here, before
     # any dataset is written, but flushed last: these files are what marks the
     # run complete, so a failure downstream must not leave them behind.
     metadata = build_run_metadata(
-        cfg=cfg, policy_cfg=policy_cfg, batches={split: batch}, fps=fps, seed=seed
+        cfg=cfg, policy_cfg=policy_cfg, gen_cfg=gen, batches=batches, fps=resolved_fps
     )
 
-    frames = None
-    if render:
-        from .datasets.video import render_batch_frames
-        from .render.iss_scene import RenderConfig
+    for name, batch in batches.items():
+        frames = None
+        if render:
+            from .datasets.video import render_batch_frames
+            from .render.iss_scene import RenderConfig
 
-        render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
-        total = int(batch.lengths.sum())
-        typer.echo(
-            f"[render] {total} frames at ~0.1 s/frame -> roughly {total * 0.1 / 60:.1f} min"
-        )
-        frames = render_batch_frames(batch, render_cfg, view=render_view)
+            render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
+            total = int(batch.lengths.sum())
+            typer.echo(f"[render] {name}: {total} frames at ~0.1 s/frame "
+                       f"-> roughly {total * 0.1 / 60:.1f} min")
+            frames = render_batch_frames(batch, render_cfg, view=render_view)
+        if lerobot:
+            from .datasets.lerobot_writer import write_lerobot_split
 
-    if lerobot:
-        from .datasets.lerobot_writer import write_lerobot_split
-
-        write_lerobot_split(out / split, f"{env}/{split}", batch, fps=fps, frames=frames)
-        typer.echo(f"[generate] wrote LeRobot split to {out / split}")
+            write_lerobot_split(out / name, f"{env}/{name}", batch,
+                                fps=resolved_fps, frames=frames)
+            typer.echo(f"[generate] wrote LeRobot split to {out / name}")
 
     metadata.write(out)
     typer.echo(f"[done] {out}")
