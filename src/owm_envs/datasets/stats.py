@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
@@ -57,6 +57,9 @@ class SplitSpec(ConfigModel):
     num_episodes: int = 64
     max_steps: int = 2000
     seed: int = 0
+    # None inherits the run-level policy. Set it to give this split its own
+    # -- e.g. a dock-only val split against a union-policy train split.
+    policy: PolicyConfig | None = None
 
 
 class GenerationConfig(ConfigModel):
@@ -72,6 +75,21 @@ class GenerationConfig(ConfigModel):
     # would silently disagree with dt for any dt but one.
     fps: int | None = None
     driver: Literal["auto", "scan", "vector"] = "auto"
+
+    @field_validator("splits")
+    @classmethod
+    def _validate_splits(cls, v: dict[str, SplitSpec]) -> dict[str, SplitSpec]:
+        # Normalization statistics are computed from the train split alone
+        # (the downstream trainer's contract), so a run without one has no
+        # valid stats at all -- reject at config load, not at metadata time.
+        if "train" not in v:
+            raise ValueError("splits must include a 'train' split")
+        seeds = [spec.seed for spec in v.values()]
+        if len(set(seeds)) != len(seeds):
+            # Two splits sharing a seed produce identical trajectories --
+            # silent train/val leakage rather than an error downstream.
+            raise ValueError(f"split seeds must be unique, got {seeds}")
+        return v
 
 
 def _real_rows(arr: np.ndarray, lengths: np.ndarray) -> np.ndarray:

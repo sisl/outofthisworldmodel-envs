@@ -286,3 +286,31 @@ def test_generation_config_rejects_an_unknown_driver():
 
     with pytest.raises(ValidationError):
         GenerationConfig(splits={}, num_envs=4, fps=24, driver="teleport")
+
+
+def test_generation_config_requires_a_train_split():
+    with pytest.raises(ValueError, match="train"):
+        GenerationConfig(splits={"val": SplitSpec(num_episodes=2, seed=1)})
+
+
+def test_generation_config_rejects_duplicate_split_seeds():
+    with pytest.raises(ValueError, match="unique"):
+        GenerationConfig(
+            splits={
+                "train": SplitSpec(num_episodes=4, seed=3),
+                "val": SplitSpec(num_episodes=2, seed=3),
+            }
+        )
+
+
+def test_split_spec_policy_round_trips_through_yaml(tmp_path):
+    gen = GenerationConfig(splits={
+        "train": SplitSpec(num_episodes=4, seed=0, policy=PolicyConfig(type="union")),
+        "val": SplitSpec(num_episodes=2, seed=1, policy=PolicyConfig(type="dock")),
+    })
+    path = tmp_path / "gen.yaml"
+    gen.to_yaml(path)
+    loaded = GenerationConfig.from_yaml(path)
+    assert loaded == gen
+    assert loaded.splits["val"].policy.type == "dock"
+    assert loaded.splits["train"].policy.union_weights == (0.3, 0.35, 0.35)
