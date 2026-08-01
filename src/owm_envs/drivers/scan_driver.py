@@ -25,6 +25,13 @@ from .types import RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
 
+# Salts the transitions-mode chunk seed so it does not collide with the
+# episodes-mode stream at the same spec.seed. numpy's SeedSequence absorbs
+# trailing zeros, so `default_rng([seed, 0])` -- chunk 0's seed with no salt
+# -- draws byte-identically to `default_rng(seed)`, meaning a transitions-mode
+# run would silently reproduce episodes-mode's dataset at a shared seed.
+_TRANSITIONS_STREAM = 0x7C5
+
 
 def supports_fused_rollout(backend: object) -> bool:
     """Whether a backend can be traced into a fused scan.
@@ -107,7 +114,7 @@ class ScanDriver:
                     f"{total_transitions} of {spec.min_transitions} transitions "
                     f"produced after {chunk_index} chunks"
                 )
-            base_rng = np.random.default_rng([spec.seed, chunk_index])
+            base_rng = np.random.default_rng([spec.seed, _TRANSITIONS_STREAM, chunk_index])
             for episode in self._run_chunk(base_rng, self.num_envs, max_steps):
                 collected.append(episode)
                 total_transitions += len(episode["obs"]) - 1
