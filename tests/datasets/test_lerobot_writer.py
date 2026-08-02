@@ -185,6 +185,47 @@ def test_terminal_frame_carries_zero_pad_action(tmp_path):
         assert action_is_pad == bool(row["is_last"])
 
 
+def batch_with_epoch_offsets():
+    batch = batch_with_metadata()
+    return TrajectoryBatch(
+        observations=batch.observations,
+        actions=batch.actions,
+        rewards=batch.rewards,
+        lengths=batch.lengths,
+        terminated=batch.terminated,
+        truncated=batch.truncated,
+        policy_ids=batch.policy_ids,
+        epoch_offsets=np.array([12.5, -3.0], dtype=np.float32),
+    )
+
+
+def test_epoch_offset_feature_absent_when_batch_has_no_epoch_offsets(tmp_path):
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    write_lerobot_split(tmp_path / "train", "iss/train", small_batch(), fps=24)
+    ds = LeRobotDataset("iss/train", root=tmp_path / "train")
+    assert "epoch_offset_s" not in ds.features
+
+
+def test_roundtrips_epoch_offset_s(tmp_path):
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    batch = batch_with_epoch_offsets()
+    write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=24)
+    ds = LeRobotDataset("iss/train", root=tmp_path / "train")
+    assert ds.features["epoch_offset_s"]["dtype"] == "float32"
+
+    frame = 0
+    for episode in range(batch.num_episodes):
+        length = int(batch.lengths[episode])
+        for t in range(length):
+            row = ds[frame]
+            assert float(row["epoch_offset_s"].reshape(())) == pytest.approx(
+                float(batch.epoch_offsets[episode])
+            )
+            frame += 1
+
+
 def test_observation_and_action_schema_unchanged(tmp_path):
     """observation_vector and action are the two features a trajectory
     consumer reads; the outcome-metadata features must not rename or reshape

@@ -56,9 +56,9 @@ def test_episodes_mode_early_stops_segmentation_at_the_requested_count(monkeypat
     captured: list[int] = []
     original = ScanDriver._segment_episodes
 
-    def spy(emitted, wanted, records_policy_ids):
+    def spy(emitted, wanted, records_policy_ids, records_epoch_offsets=False):
         captured.append(wanted)
-        return original(emitted, wanted, records_policy_ids)
+        return original(emitted, wanted, records_policy_ids, records_epoch_offsets)
 
     monkeypatch.setattr(ScanDriver, "_segment_episodes", staticmethod(spy))
 
@@ -76,9 +76,9 @@ def test_transitions_mode_passes_the_full_chunk_bound_to_segmentation(monkeypatc
     captured: list[int] = []
     original = ScanDriver._segment_episodes
 
-    def spy(emitted, wanted, records_policy_ids):
+    def spy(emitted, wanted, records_policy_ids, records_epoch_offsets=False):
         captured.append(wanted)
-        return original(emitted, wanted, records_policy_ids)
+        return original(emitted, wanted, records_policy_ids, records_epoch_offsets)
 
     monkeypatch.setattr(ScanDriver, "_segment_episodes", staticmethod(spy))
 

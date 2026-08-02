@@ -34,7 +34,7 @@ from ...core.quaternion import (
     rotate_body_to_world,
 )
 from .config import ISSConfig, load_collision_boxes
-from .orbit import RTN_FROM_WORLD, ReferenceOrbit
+from .orbit import RTN_FROM_WORLD, OrbitConfig, ReferenceOrbit
 
 STATE_LABELS: tuple[str, ...] = (
     "rel_x_m", "rel_y_m", "rel_z_m",
@@ -49,6 +49,30 @@ class Events(NamedTuple):
 
     collision: jnp.ndarray
     docked: jnp.ndarray
+
+
+def _sample_vector_in_ball(key: jax.Array, max_norm: jnp.ndarray) -> jnp.ndarray:
+    """Random 3-vector, uniform by volume within a ball of radius `max_norm`
+    (the zero vector when `max_norm` is 0). Cube-root the radial fraction so
+    the distribution is uniform over the ball's volume rather than biased
+    toward the origin, as a naive `direction * max_norm * uniform(0,1)` would
+    be."""
+    key_dir, key_frac = jax.random.split(key)
+    raw = jax.random.normal(key_dir, (3,), dtype=jnp.float32)
+    direction = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
+    frac = jnp.cbrt(jax.random.uniform(key_frac, (), dtype=jnp.float32))
+    return direction * (max_norm * frac)
+
+
+def _sample_small_rotation(key: jax.Array, max_angle_rad: jnp.ndarray) -> jnp.ndarray:
+    """Random unit quaternion: a rotation by an angle uniform in
+    `[0, max_angle_rad]` about a uniformly random axis (the identity
+    quaternion when `max_angle_rad` is 0)."""
+    key_axis, key_angle = jax.random.split(key)
+    raw = jax.random.normal(key_axis, (3,), dtype=jnp.float32)
+    axis = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
+    angle = jax.random.uniform(key_angle, (), dtype=jnp.float32, minval=0.0, maxval=max_angle_rad)
+    return jnp.concatenate([jnp.cos(angle / 2.0)[None], jnp.sin(angle / 2.0) * axis], axis=0)
 
 
 class ISSDynamics:
@@ -104,6 +128,38 @@ class ISSDynamics:
             self._world_from_rtn = None
             self._r_world_gg = None
             self._inertia_matrix = None
+
+        # Initial-state sampling (reset()): active only when orbit dynamics
+        # are enabled AND at least one sampling knob departs from its
+        # OrbitConfig default. Comparing against a fresh default instance
+        # (rather than hardcoding the default values here) keeps this in
+        # sync with OrbitConfig automatically. This bool is fixed at
+        # construction and gates a plain Python `if` in `reset`, so the
+        # disabled/all-defaults path draws from `key` in exactly the order
+        # it always has -- bit-identical to before this feature existed.
+        _default_orbit = OrbitConfig()
+        self._sample_start_state = cfg.orbit.enabled and (
+            cfg.orbit.start_radius_range_m != _default_orbit.start_radius_range_m
+            or cfg.orbit.start_speed_max_m_s != _default_orbit.start_speed_max_m_s
+            or cfg.orbit.start_attitude_error_max_deg
+            != _default_orbit.start_attitude_error_max_deg
+            or cfg.orbit.start_rate_max_rad_s != _default_orbit.start_rate_max_rad_s
+        )
+        if self._sample_start_state:
+            lo, hi = cfg.orbit.start_radius_range_m
+            self._start_radius_lo = jnp.asarray(lo, dtype=jnp.float32)
+            self._start_radius_hi = jnp.asarray(hi, dtype=jnp.float32)
+            self._start_speed_max = jnp.asarray(cfg.orbit.start_speed_max_m_s, dtype=jnp.float32)
+            self._start_attitude_error_max_rad = jnp.asarray(
+                jnp.deg2rad(cfg.orbit.start_attitude_error_max_deg), dtype=jnp.float32
+            )
+            self._start_rate_max = jnp.asarray(cfg.orbit.start_rate_max_rad_s, dtype=jnp.float32)
+        else:
+            self._start_radius_lo = None
+            self._start_radius_hi = None
+            self._start_speed_max = None
+            self._start_attitude_error_max_rad = None
+            self._start_rate_max = None
 
     def _eom(self, x: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
         pos_w = x[0:3]
@@ -244,12 +300,49 @@ class ISSDynamics:
         return s_next, events
 
     def reset(self, key: jax.Array) -> jnp.ndarray:
-        """Uniform random point on the start sphere, at rest, nose pointed at the ISS."""
-        raw = jax.random.normal(key, (3,), dtype=jnp.float32)
+        """Start state for a fresh episode.
+
+        Default path (`cfg.orbit` disabled, or enabled with every start-
+        state sampling knob at its OrbitConfig default): a uniform random
+        point on the start sphere, at rest, nose pointed at the ISS -- the
+        single `jax.random.normal(key, (3,))` draw this always was, so a
+        config that doesn't opt into sampling reproduces today's reset
+        bit-for-bit (see `self._sample_start_state` in `__init__`).
+
+        Sampling path (`self._sample_start_state`): radius drawn from
+        `cfg.orbit.start_radius_range_m`, velocity uniform-in-volume within
+        a ball of radius `start_speed_max_m_s`, attitude the nose-to-ISS
+        quaternion composed with a random rotation whose angle is uniform
+        in `[0, start_attitude_error_max_deg]` about a random axis, and
+        body rates uniform-in-volume within a ball of radius
+        `start_rate_max_rad_s` -- all from independent subkeys of `key`.
+        """
+        if not self._sample_start_state:
+            raw = jax.random.normal(key, (3,), dtype=jnp.float32)
+            direction = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
+            pos = direction * self._start_radius
+            nose_to_iss = -direction
+            q_bw = quat_from_body_z_to(nose_to_iss)
+            return jnp.concatenate(
+                [pos, jnp.zeros((3,), jnp.float32), q_bw, jnp.zeros((3,), jnp.float32)], axis=0
+            )
+
+        key_dir, key_radius, key_vel, key_att, key_rate = jax.random.split(key, 5)
+
+        raw = jax.random.normal(key_dir, (3,), dtype=jnp.float32)
         direction = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
-        pos = direction * self._start_radius
-        nose_to_iss = -direction
-        q_bw = quat_from_body_z_to(nose_to_iss)
-        return jnp.concatenate(
-            [pos, jnp.zeros((3,), jnp.float32), q_bw, jnp.zeros((3,), jnp.float32)], axis=0
+        radius = jax.random.uniform(
+            key_radius, (), dtype=jnp.float32,
+            minval=self._start_radius_lo, maxval=self._start_radius_hi,
         )
+        pos = direction * radius
+        vel = _sample_vector_in_ball(key_vel, self._start_speed_max)
+
+        nose_to_iss = -direction
+        q_nominal = quat_from_body_z_to(nose_to_iss)
+        q_error = _sample_small_rotation(key_att, self._start_attitude_error_max_rad)
+        q_bw = quat_normalize(quat_multiply(q_nominal, q_error))
+
+        omega = _sample_vector_in_ball(key_rate, self._start_rate_max)
+
+        return jnp.concatenate([pos, vel, q_bw, omega], axis=0)

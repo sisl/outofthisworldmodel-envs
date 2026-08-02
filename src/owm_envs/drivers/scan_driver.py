@@ -23,7 +23,7 @@ from ..envs.iss.goal import make_augment
 from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
 from ..envs.iss.reward import iss_reward
 from ..envs.iss.sensing import NOISE_STREAM, apply_sensor_noise
-from .types import TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
+from .types import EPOCH_STREAM, TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
 
@@ -68,6 +68,7 @@ class ScanDriver:
         # the same request answered differently depending on --driver.
         max_steps = min(spec.max_steps, self.cfg.max_steps)
         records_policy_ids = self.policy_cfg.type == "union"
+        records_epoch_offsets = self.cfg.orbit.enabled
 
         # Horizon long enough that num_envs lanes yield at least
         # `needed_episodes` episodes even if every episode runs the full
@@ -80,18 +81,20 @@ class ScanDriver:
         # function object, and a fresh closure per chunk would never hit it.
         needed_episodes = spec.num_episodes if spec.min_transitions is None else self.num_envs
         horizon = int(np.ceil(needed_episodes / self.num_envs)) * max_steps
-        runner, sample_extras = self._build_runner(max_steps, horizon)
+        runner, sample_extras, sample_epoch_offset = self._build_runner(max_steps, horizon)
 
         if spec.min_transitions is not None:
             return self._generate_transitions(
-                spec, runner, sample_extras, horizon, records_policy_ids
+                spec, runner, sample_extras, sample_epoch_offset, horizon,
+                records_policy_ids, records_epoch_offsets,
             )
 
         # Single chunk sized to guarantee at least spec.num_episodes complete
         # episodes; seeding mirrors VectorEnvDriver exactly (see _run_chunk).
         base_rng = np.random.default_rng(spec.seed)
         episodes = self._run_chunk(
-            base_rng, runner, sample_extras, spec.num_episodes, records_policy_ids
+            base_rng, runner, sample_extras, sample_epoch_offset,
+            spec.num_episodes, records_policy_ids, records_epoch_offsets,
         )
         if len(episodes) < spec.num_episodes:
             raise RuntimeError(
@@ -105,6 +108,7 @@ class ScanDriver:
             obs_dim=obs_dim,
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
+            records_epoch_offsets=records_epoch_offsets,
         )
 
     def _generate_transitions(
@@ -112,8 +116,10 @@ class ScanDriver:
         spec: RolloutSpec,
         runner,
         sample_extras,
+        sample_epoch_offset,
         horizon: int,
         records_policy_ids: bool,
+        records_epoch_offsets: bool,
     ) -> TrajectoryBatch:
         """min_transitions mode: run chunks of `self.num_envs` episodes each
         (every lane completes >= 1 episode per chunk by construction) until
@@ -146,7 +152,8 @@ class ScanDriver:
                 )
             base_rng = np.random.default_rng([spec.seed, TRANSITIONS_STREAM, chunk_index])
             for episode in self._run_chunk(
-                base_rng, runner, sample_extras, wanted, records_policy_ids
+                base_rng, runner, sample_extras, sample_epoch_offset,
+                wanted, records_policy_ids, records_epoch_offsets,
             ):
                 collected.append(episode)
                 total_transitions += len(episode["obs"]) - 1
@@ -163,6 +170,7 @@ class ScanDriver:
             obs_dim=obs_dim,
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
+            records_epoch_offsets=records_epoch_offsets,
         )
 
     def _build_runner(self, max_steps: int, horizon: int):
@@ -175,17 +183,19 @@ class ScanDriver:
         chunk -- JAX's jit cache is keyed on the function object, so a fresh
         closure per chunk would recompile an identical program every time.
 
-        Returns `(runner, sample_extras)`: `runner` maps per-lane initial
-        state/index/extras/keys to the emitted per-lane scan output, and
-        `sample_extras` (needed by `_run_chunk` to build each chunk's initial
-        extras) is exposed separately because it is also called outside the
-        scan.
+        Returns `(runner, sample_extras, sample_epoch_offset)`: `runner` maps
+        per-lane initial state/index/extras/keys/epoch-offset to the emitted
+        per-lane scan output, and `sample_extras`/`sample_epoch_offset`
+        (needed by `_run_chunk` to build each chunk's initial extras/epoch
+        offset) are exposed separately because they are also called outside
+        the scan.
         """
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
         augment = make_augment(self.cfg, self.policy_cfg)
         extras_width = EXTRAS_DIM[self.policy_cfg.type]
         dynamics, cfg = self.dynamics, self.cfg
         noise = cfg.sensor_noise
+        epoch_enabled = cfg.orbit.enabled
         observe_measurement = self.policy_cfg.observe == "measurement"
 
         force = cfg.control.limit_force_n
@@ -198,8 +208,14 @@ class ScanDriver:
                 return jnp.zeros((extras_width,), dtype=jnp.float32)
             return extras_fn(key)
 
+        def sample_epoch_offset(key):
+            lo, hi = cfg.orbit.epoch_offset_range_s
+            return jax.random.uniform(
+                key, (), dtype=jnp.float32, minval=jnp.float32(lo), maxval=jnp.float32(hi)
+            )
+
         def per_env_step(carry, _):
-            state, step_index, extras, key, noise_key = carry
+            state, step_index, extras, key, noise_key, epoch_offset, epoch_key = carry
 
             # Measured pre-step state, drawn BEFORE the action so the
             # recorded observation and the policy's (optional) input are the
@@ -254,7 +270,13 @@ class ScanDriver:
                 obs_out, obs_next_out = augment(measured, extras), augment(measured_next, extras)
             else:
                 obs_out, obs_next_out = measured, measured_next
-            emitted = (obs_out, obs_next_out, action, reward, terminated, truncated, done, extras)
+            # `epoch_offset` is this episode's offset (pre-autoreset), the
+            # same "current episode's per-step constant, re-sampled on done"
+            # discipline as `extras`/policy_id above.
+            emitted = (
+                obs_out, obs_next_out, action, reward, terminated, truncated, done, extras,
+                epoch_offset,
+            )
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
             # iteration, with newly sampled extras.
@@ -264,33 +286,50 @@ class ScanDriver:
             new_extras = jnp.where(done, fresh_extras, extras)
             new_index = jnp.where(done, 0, next_index)
 
-            return (new_state, new_index, new_extras, key, noise_key), emitted
+            # Epoch-offset resampling lives entirely behind this static
+            # `if`: when orbit is disabled, `epoch_key` is never split and
+            # `epoch_offset` never changes, so no draw is added to any
+            # stream -- `key`/`noise_key`'s sequences above are untouched
+            # either way.
+            if epoch_enabled:
+                epoch_key, fresh_epoch_key = jax.random.split(epoch_key)
+                fresh_epoch_offset = sample_epoch_offset(fresh_epoch_key)
+                new_epoch_offset = jnp.where(done, fresh_epoch_offset, epoch_offset)
+            else:
+                new_epoch_offset = epoch_offset
 
-        def run_lane(state, index, extras, lane_key, noise_lane_key):
+            return (
+                new_state, new_index, new_extras, key, noise_key, new_epoch_offset, epoch_key,
+            ), emitted
+
+        def run_lane(state, index, extras, lane_key, noise_lane_key, epoch_offset, epoch_lane_key):
             _, emitted = jax.lax.scan(
                 per_env_step,
-                (state, index, extras, lane_key, noise_lane_key),
+                (state, index, extras, lane_key, noise_lane_key, epoch_offset, epoch_lane_key),
                 None,
                 length=horizon,
             )
             return emitted
 
         runner = jax.jit(jax.vmap(run_lane))
-        return runner, sample_extras
+        return runner, sample_extras, sample_epoch_offset
 
     def _run_chunk(
         self,
         base_rng: np.random.Generator,
         runner,
         sample_extras,
+        sample_epoch_offset,
         wanted: int,
         records_policy_ids: bool,
+        records_epoch_offsets: bool = False,
     ) -> list[dict]:
         """Run one fused scan over `self.num_envs` lanes and return up to
         `wanted` resulting episodes in completion order -- no packing.
 
-        `runner` and `sample_extras` come from `_build_runner`, built once
-        per `generate()` call and shared across every chunk.
+        `runner`, `sample_extras` and `sample_epoch_offset` come from
+        `_build_runner`, built once per `generate()` call and shared across
+        every chunk.
         """
         # Mirror VectorEnvDriver's seeding exactly (a numpy Generator draws the
         # integer env seed that becomes the JAX key's origin -- see
@@ -312,12 +351,29 @@ class ScanDriver:
         # `lane_keys` -- the act/reset/extras draws are unaffected by
         # whether noise is enabled.
         noise_lane_keys = jax.vmap(lambda k: jax.random.fold_in(k, NOISE_STREAM))(lane_keys)
+        # Same discipline for the epoch-offset side stream (see
+        # sensing.NOISE_STREAM / drivers.types.EPOCH_STREAM): deriving it is
+        # a pure fold_in, harmless to compute even when orbit is disabled.
+        epoch_lane_keys = jax.vmap(lambda k: jax.random.fold_in(k, EPOCH_STREAM))(lane_keys)
+        if records_epoch_offsets:
+            init_epoch_keys, epoch_scan_keys = jax.vmap(
+                lambda k: tuple(jax.random.split(k))
+            )(epoch_lane_keys)
+            init_epoch_offset = jax.vmap(sample_epoch_offset)(init_epoch_keys)
+        else:
+            epoch_scan_keys = epoch_lane_keys
+            init_epoch_offset = jnp.zeros((self.num_envs,), dtype=jnp.float32)
 
-        emitted = runner(init_states, init_indices, init_extras, lane_keys, noise_lane_keys)
-        return self._segment_episodes(emitted, wanted, records_policy_ids)
+        emitted = runner(
+            init_states, init_indices, init_extras, lane_keys, noise_lane_keys,
+            init_epoch_offset, epoch_scan_keys,
+        )
+        return self._segment_episodes(emitted, wanted, records_policy_ids, records_epoch_offsets)
 
     @staticmethod
-    def _segment_episodes(emitted, wanted: int, records_policy_ids: bool) -> list[dict]:
+    def _segment_episodes(
+        emitted, wanted: int, records_policy_ids: bool, records_epoch_offsets: bool = False
+    ) -> list[dict]:
         """Cut the flat per-lane scan output into per-episode dicts, in
         time-major completion order.
 
@@ -334,7 +390,7 @@ class ScanDriver:
         Each dict also carries "lane", the lane it was cut from. pack_episodes
         ignores unknown keys; tests use it to check lane coverage.
         """
-        states, next_states, actions, rewards, terminated, truncated, done, extras = (
+        states, next_states, actions, rewards, terminated, truncated, done, extras, epoch_offsets = (
             np.asarray(x) for x in emitted
         )
         act_dim = actions.shape[-1]
@@ -371,6 +427,9 @@ class ScanDriver:
                         "policy_id": int(extras[lane, start, _UNION_POLICY_IDX])
                         if records_policy_ids
                         else 0,
+                        "epoch_offset": float(epoch_offsets[lane, start])
+                        if records_epoch_offsets
+                        else 0.0,
                         "lane": lane,
                     }
                 )

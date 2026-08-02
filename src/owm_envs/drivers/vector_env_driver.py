@@ -45,7 +45,28 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .types import TRANSITIONS_STREAM, PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
+from .types import (
+    EPOCH_STREAM,
+    TRANSITIONS_STREAM,
+    PolicySource,
+    RolloutSpec,
+    TrajectoryBatch,
+    pack_episodes,
+)
+
+
+def _sample_epoch_offset(seed: int, orbit_cfg: Any) -> float:
+    """Per-episode epoch offset, uniform in `orbit_cfg.epoch_offset_range_s`.
+
+    Derived from `seed` -- the SAME integer handed to
+    `policy_source.new_episode` for that episode -- via a dedicated numpy
+    Generator salted by EPOCH_STREAM. This draws nothing from the driver's
+    own `rng`: orbit-disabled runs (which never call this) are completely
+    unaffected, and a run at a given spec.seed always reproduces the same
+    offsets.
+    """
+    lo, hi = orbit_cfg.epoch_offset_range_s
+    return float(np.random.default_rng([seed, EPOCH_STREAM]).uniform(lo, hi))
 
 
 def _lane_info(info: dict, lane: int) -> dict:
@@ -108,6 +129,13 @@ class VectorEnvDriver:
         num_envs = env.num_envs
         act_dim = env.single_action_space.shape[0]
         records_policy_ids = self.policy_source.records_policy_ids
+        # Duck-typed rather than importing an ISS-specific config type here:
+        # this driver stays backend-agnostic (see module docstring), so it
+        # only ever reads `env.cfg.orbit` if the backend happens to expose
+        # it -- a plain Gymnasium VectorEnv without a `.cfg` attribute (e.g.
+        # the fakes in this module's tests) never records epoch offsets.
+        orbit_cfg = getattr(getattr(env, "cfg", None), "orbit", None)
+        records_epoch_offsets = bool(getattr(orbit_cfg, "enabled", False))
 
         # Salted in transitions mode so its stream doesn't collide with the
         # episodes-mode stream at the same spec.seed (see TRANSITIONS_STREAM).
@@ -123,10 +151,17 @@ class VectorEnvDriver:
         # as the accumulator list order might suggest) purely so the initial
         # observations can be augmented against it -- it draws from `rng` no
         # differently than before, so this reorder changes no seed's result.
-        lane_episode_state = [
-            self.policy_source.new_episode(int(seed))
-            for seed in rng.integers(0, 2**31 - 1, size=num_envs)
-        ]
+        lane_seeds = rng.integers(0, 2**31 - 1, size=num_envs)
+        lane_episode_state = [self.policy_source.new_episode(int(s)) for s in lane_seeds]
+        # Sampled from the SAME seed as the episode state above, via an
+        # independent numpy Generator (see `_sample_epoch_offset`) -- this
+        # draws nothing further from `rng`, so orbit-disabled runs are
+        # unaffected and the mapping seed -> offset is reproducible.
+        lane_epoch_offset = (
+            [_sample_epoch_offset(int(s), orbit_cfg) for s in lane_seeds]
+            if records_epoch_offsets
+            else [0.0] * num_envs
+        )
 
         # Per-lane episode accumulators. Each episode stores N + 1
         # observations (the seed state plus each post-step state, including
@@ -250,14 +285,20 @@ class VectorEnvDriver:
                                 "policy_id": self.policy_source.policy_id(lane_episode_state[lane])
                                 if records_policy_ids
                                 else 0,
+                                # This lane's just-finished episode's offset
+                                # -- `lane_epoch_offset[lane]` isn't
+                                # reassigned to the NEXT episode's value
+                                # until immediately below.
+                                "epoch_offset": lane_epoch_offset[lane],
                             }
                         )
                         transitions_collected += len(lane_obs[lane]) - 1
                     lane_act[lane] = []
                     lane_rew[lane] = []
-                    lane_episode_state[lane] = self.policy_source.new_episode(
-                        int(rng.integers(0, 2**31 - 1))
-                    )
+                    new_seed = int(rng.integers(0, 2**31 - 1))
+                    lane_episode_state[lane] = self.policy_source.new_episode(new_seed)
+                    if records_epoch_offsets:
+                        lane_epoch_offset[lane] = _sample_epoch_offset(new_seed, orbit_cfg)
                     if env_done:
                         lane_obs[lane] = []
                         lane_awaiting_reset[lane] = True
@@ -300,4 +341,7 @@ class VectorEnvDriver:
         # above already stops recording at quota in both modes, so `finished`
         # never actually exceeds spec.num_episodes by the time we get here.
         episodes = finished if spec.num_episodes is None else finished[: spec.num_episodes]
-        return pack_episodes(episodes, obs_dim, act_dim, records_policy_ids)
+        return pack_episodes(
+            episodes, obs_dim, act_dim, records_policy_ids,
+            records_epoch_offsets=records_epoch_offsets,
+        )

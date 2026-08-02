@@ -5,7 +5,7 @@ import pytest
 from astrojax.attitude_dynamics import torque_gravity_gradient
 from astrojax.relative_motion import hcw_stm
 
-from owm_envs.core.quaternion import quat_conjugate, quat_to_rotmat
+from owm_envs.core.quaternion import quat_conjugate, quat_multiply, quat_to_rotmat
 from owm_envs.envs.iss.config import (
     DockConfig,
     ISSConfig,
@@ -472,6 +472,115 @@ def test_cw_free_drift_matches_analytic_hcw_solution_over_60s():
     expected_rtn = np.asarray(hcw_stm(n_steps * cfg.dt, n)) @ state0_rtn
 
     np.testing.assert_allclose(state_rtn, expected_rtn, rtol=1e-3, atol=1e-3)
+
+
+# --- Initial-state sampling (reset()) ---
+
+
+def test_reset_default_orbit_config_is_bit_identical_to_disabled():
+    # Orbit enabled but every sampling knob left at its OrbitConfig default
+    # must draw the exact same reset() output as orbit disabled entirely --
+    # `_sample_start_state` must be False in both cases.
+    cfg_off = ISSConfig(physics=PhysicsConfig(start_radius_m=100.0))
+    cfg_on_default = ISSConfig(
+        physics=PhysicsConfig(start_radius_m=100.0), orbit=OrbitConfig(enabled=True)
+    )
+    dyn_off = ISSDynamics(cfg_off)
+    dyn_on = ISSDynamics(cfg_on_default)
+    assert dyn_off._sample_start_state is False
+    assert dyn_on._sample_start_state is False
+
+    key = jax.random.PRNGKey(11)
+    np.testing.assert_array_equal(
+        np.asarray(dyn_off.reset(key)), np.asarray(dyn_on.reset(key))
+    )
+
+
+def test_reset_sampling_is_off_when_orbit_enabled_but_no_knob_set():
+    dyn = ISSDynamics(_orbit_cfg())
+    assert dyn._sample_start_state is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        dict(start_radius_range_m=(50.0, 200.0)),
+        dict(start_speed_max_m_s=1.0),
+        dict(start_attitude_error_max_deg=10.0),
+        dict(start_rate_max_rad_s=0.05),
+    ],
+)
+def test_reset_sampling_engages_when_any_single_knob_is_non_default(overrides):
+    dyn = ISSDynamics(_orbit_cfg(**overrides))
+    assert dyn._sample_start_state is True
+
+
+def test_reset_sampling_respects_radius_range():
+    cfg = _orbit_cfg(start_radius_range_m=(50.0, 60.0))
+    dyn = ISSDynamics(cfg)
+    for seed in range(20):
+        s = dyn.reset(jax.random.PRNGKey(seed))
+        radius = float(jnp.linalg.norm(s[0:3]))
+        assert 50.0 - 1e-3 <= radius <= 60.0 + 1e-3
+
+
+def test_reset_sampling_respects_speed_max():
+    cfg = _orbit_cfg(start_speed_max_m_s=2.0)
+    dyn = ISSDynamics(cfg)
+    for seed in range(20):
+        s = dyn.reset(jax.random.PRNGKey(seed))
+        speed = float(jnp.linalg.norm(s[3:6]))
+        assert speed <= 2.0 + 1e-4
+
+
+def test_reset_sampling_respects_rate_max():
+    cfg = _orbit_cfg(start_rate_max_rad_s=0.1)
+    dyn = ISSDynamics(cfg)
+    for seed in range(20):
+        s = dyn.reset(jax.random.PRNGKey(seed))
+        rate = float(jnp.linalg.norm(s[10:13]))
+        assert rate <= 0.1 + 1e-5
+
+
+def test_reset_sampling_respects_attitude_error_max():
+    from owm_envs.core.quaternion import axis_angle_from_quat, quat_conjugate
+
+    cfg = _orbit_cfg(start_attitude_error_max_deg=15.0)
+    dyn = ISSDynamics(cfg)
+    for seed in range(20):
+        s = dyn.reset(jax.random.PRNGKey(seed))
+        direction = np.asarray(s[0:3]) / np.linalg.norm(np.asarray(s[0:3]))
+        nose_to_iss = -direction
+        from owm_envs.core.quaternion import quat_from_body_z_to
+
+        q_nominal = quat_from_body_z_to(jnp.asarray(nose_to_iss, dtype=jnp.float32))
+        q_err = quat_multiply(quat_conjugate(q_nominal), s[6:10])
+        angle = float(jnp.linalg.norm(axis_angle_from_quat(q_err)))
+        assert angle <= np.deg2rad(15.0) + 1e-3
+
+
+def test_reset_sampling_at_a_narrow_radius_range_and_zero_other_knobs_stays_at_rest():
+    # A non-default radius range engages _sample_start_state, but every
+    # other knob is still 0 -- velocity and rates must come out exactly
+    # zero, and the radius must land inside the (narrow) configured range.
+    cfg = _orbit_cfg(start_radius_range_m=(80.0, 80.0))
+    dyn = ISSDynamics(cfg)
+    assert dyn._sample_start_state is True
+    s = dyn.reset(jax.random.PRNGKey(4))
+    assert np.isclose(float(jnp.linalg.norm(s[0:3])), 80.0, atol=1e-3)
+    np.testing.assert_allclose(np.asarray(s[3:6]), np.zeros(3), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(s[10:13]), np.zeros(3), atol=1e-6)
+
+
+def test_reset_sampling_is_deterministic_per_key():
+    cfg = _orbit_cfg(start_radius_range_m=(50.0, 200.0), start_speed_max_m_s=1.0,
+                      start_attitude_error_max_deg=10.0, start_rate_max_rad_s=0.05)
+    dyn = ISSDynamics(cfg)
+    a = dyn.reset(jax.random.PRNGKey(9))
+    b = dyn.reset(jax.random.PRNGKey(9))
+    c = dyn.reset(jax.random.PRNGKey(10))
+    np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    assert not np.allclose(np.asarray(a), np.asarray(c))
 
 
 def test_gravity_gradient_torque_matches_closed_form_for_random_attitudes():

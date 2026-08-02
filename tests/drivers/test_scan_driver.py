@@ -5,6 +5,7 @@ from owm_envs.drivers.scan_driver import ScanDriver, supports_fused_rollout
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
+from owm_envs.envs.iss.orbit import OrbitConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 
 FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)
@@ -107,8 +108,8 @@ def test_segmentation_spreads_truncated_episodes_across_every_lane(monkeypatch):
     captured: dict[str, list[dict]] = {}
     original = ScanDriver._segment_episodes
 
-    def spy(emitted, spec, records_policy_ids):
-        episodes = original(emitted, spec, records_policy_ids)
+    def spy(emitted, spec, records_policy_ids, records_epoch_offsets=False):
+        episodes = original(emitted, spec, records_policy_ids, records_epoch_offsets)
         captured["episodes"] = episodes
         return episodes
 
@@ -143,3 +144,53 @@ def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
         previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
         this_initial = batch.observations[i, 0]
         assert not np.allclose(this_initial, previous_terminal)
+
+
+# --- Epoch offsets ---
+
+
+def test_epoch_offsets_none_when_orbit_disabled():
+    batch = make_driver(num_envs=2).generate(RolloutSpec(num_episodes=4, max_steps=8, seed=0))
+    assert batch.epoch_offsets is None
+
+
+def test_epoch_offsets_recorded_when_orbit_enabled():
+    cfg = ISSConfig(
+        physics=PhysicsConfig(**FREE_FLIGHT_PHYSICS),
+        dock=DockConfig(**FREE_FLIGHT_DOCK),
+        orbit=OrbitConfig(enabled=True, epoch_offset_range_s=(10.0, 90.0)),
+    )
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)
+    batch = driver.generate(RolloutSpec(num_episodes=4, max_steps=8, seed=0))
+    assert batch.epoch_offsets is not None
+    assert batch.epoch_offsets.shape == (4,)
+    assert batch.epoch_offsets.dtype == np.float32
+    assert np.all(batch.epoch_offsets >= 10.0 - 1e-4)
+    assert np.all(batch.epoch_offsets <= 90.0 + 1e-4)
+
+
+def test_epoch_offsets_are_deterministic_in_the_seed():
+    cfg = ISSConfig(
+        physics=PhysicsConfig(**FREE_FLIGHT_PHYSICS),
+        dock=DockConfig(**FREE_FLIGHT_DOCK),
+        orbit=OrbitConfig(enabled=True, epoch_offset_range_s=(0.0, 100.0)),
+    )
+    make = lambda: ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)  # noqa: E731
+    spec = RolloutSpec(num_episodes=4, max_steps=8, seed=5)
+    a = make().generate(spec)
+    b = make().generate(spec)
+    np.testing.assert_array_equal(a.epoch_offsets, b.epoch_offsets)
+
+
+def test_epoch_offsets_zero_when_range_is_degenerate_but_orbit_enabled():
+    cfg = ISSConfig(
+        physics=PhysicsConfig(**FREE_FLIGHT_PHYSICS),
+        dock=DockConfig(**FREE_FLIGHT_DOCK),
+        orbit=OrbitConfig(enabled=True),  # epoch_offset_range_s default (0.0, 0.0)
+    )
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)
+    batch = driver.generate(RolloutSpec(num_episodes=4, max_steps=8, seed=0))
+    assert batch.epoch_offsets is not None
+    np.testing.assert_allclose(batch.epoch_offsets, 0.0)
+
+

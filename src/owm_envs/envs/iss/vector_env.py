@@ -53,6 +53,12 @@ class ISSVectorEnv(VectorEnv):
         self._step_index = np.zeros(self.num_envs, dtype=np.int64)
         self._needs_reset = np.zeros(self.num_envs, dtype=bool)
         self._key: jax.Array | None = None
+        # Broadcast per-episode start-time offset from cfg.orbit.epoch
+        # (seconds), set via reset(options={"epoch_offset_s": x}) when
+        # orbit is enabled -- the same value for every sub-env, since there
+        # is no per-lane reset API here. See ISSEnv._epoch_offset_s for why
+        # it's recorded but not yet consumed by the physics.
+        self._epoch_offset_s = np.zeros(self.num_envs, dtype=np.float32)
         # Side stream for sensor-noise draws, derived from self._key via
         # fold_in at each reset -- never split/consumed, so noise draws in
         # _obs() cannot perturb the dynamics key that drives resets/autoresets.
@@ -116,6 +122,9 @@ class ISSVectorEnv(VectorEnv):
         self._states = self._batched_reset(reset_keys)
         self._step_index[:] = 0
         self._needs_reset[:] = False
+        if self.cfg.orbit.enabled:
+            value = 0.0 if options is None else float(options.get("epoch_offset_s", 0.0))
+            self._epoch_offset_s = np.full(self.num_envs, value, dtype=np.float32)
         return self._obs(), self._empty_info()
 
     def step(
@@ -166,13 +175,10 @@ class ISSVectorEnv(VectorEnv):
         self._states = next_states
         self._needs_reset = terminations | truncations
 
-        return (
-            self._obs(),
-            rewards,
-            terminations,
-            truncations,
-            {"success": docked, "collision": collision, "state": self._true_states()},
-        )
+        info = {"success": docked, "collision": collision, "state": self._true_states()}
+        if self.cfg.orbit.enabled:
+            info["epoch_offset_s"] = self._epoch_offset_s.copy()
+        return (self._obs(), rewards, terminations, truncations, info)
 
     def _obs(self) -> np.ndarray:
         if self._batched_noise is None:
@@ -194,8 +200,11 @@ class ISSVectorEnv(VectorEnv):
         return np.asarray(self._states, dtype=np.float32)
 
     def _empty_info(self) -> dict[str, np.ndarray]:
-        return {
+        info = {
             "success": np.zeros(self.num_envs, dtype=bool),
             "collision": np.zeros(self.num_envs, dtype=bool),
             "state": self._true_states(),
         }
+        if self.cfg.orbit.enabled:
+            info["epoch_offset_s"] = self._epoch_offset_s.copy()
+        return info

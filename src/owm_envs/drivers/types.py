@@ -24,6 +24,14 @@ import numpy as np
 # run would silently reproduce episodes-mode's dataset at a shared seed.
 TRANSITIONS_STREAM = 0x7C5
 
+# Salts a per-episode epoch-offset draw so it never collides with -- or
+# consumes from -- a driver's other per-episode/per-step streams. Shared by
+# both drivers: ScanDriver folds it into a lane's JAX key (mirroring
+# sensing.NOISE_STREAM's side-stream discipline), VectorEnvDriver folds it
+# into the same integer seed it hands to `PolicySource.new_episode` via
+# `np.random.default_rng([seed, EPOCH_STREAM])`.
+EPOCH_STREAM = 0xE9
+
 
 @dataclass(frozen=True)
 class RolloutSpec:
@@ -101,6 +109,11 @@ class TrajectoryBatch:
     terminated: np.ndarray  # (E,) bool
     truncated: np.ndarray  # (E,) bool
     policy_ids: np.ndarray | None  # (E,) int32, or None when not a mixture
+    # (E,) float32 per-episode epoch offset (seconds past cfg.orbit.epoch),
+    # or None when cfg.orbit.enabled is False. Defaults to None so the many
+    # existing call sites that build a TrajectoryBatch directly (tests, the
+    # writer) don't have to name this field.
+    epoch_offsets: np.ndarray | None = None
 
     @property
     def num_episodes(self) -> int:
@@ -133,6 +146,10 @@ class TrajectoryBatch:
                 )
         if self.policy_ids is not None and self.policy_ids.shape[0] != n:
             raise ValueError(f"episode count mismatch: policy_ids has {self.policy_ids.shape[0]}, expected {n}")
+        if self.epoch_offsets is not None and self.epoch_offsets.shape[0] != n:
+            raise ValueError(
+                f"episode count mismatch: epoch_offsets has {self.epoch_offsets.shape[0]}, expected {n}"
+            )
 
         if self.actions.shape[1] != t or self.rewards.shape[1] != t:
             raise ValueError("time dimension mismatch between observations, actions and rewards")
@@ -199,6 +216,7 @@ def pack_episodes(
     obs_dim: int,
     act_dim: int,
     records_policy_ids: bool,
+    records_epoch_offsets: bool = False,
 ) -> TrajectoryBatch:
     """Pad a list of variable-length episodes into a TrajectoryBatch.
 
@@ -207,7 +225,8 @@ def pack_episodes(
     there is only one.
 
     Each episode dict carries `obs` (L, obs_dim), `act` (L, act_dim), `rew` (L,),
-    `terminated` bool, `truncated` bool, and `policy_id` int.
+    `terminated` bool, `truncated` bool, `policy_id` int, and `epoch_offset` float
+    (the last read only when `records_epoch_offsets` is True).
     """
     n = len(episodes)
     if n == 0:
@@ -221,6 +240,7 @@ def pack_episodes(
     terminated = np.zeros(n, dtype=bool)
     truncated = np.zeros(n, dtype=bool)
     policy_ids = np.zeros(n, dtype=np.int32) if records_policy_ids else None
+    epoch_offsets = np.zeros(n, dtype=np.float32) if records_epoch_offsets else None
 
     for i, episode in enumerate(episodes):
         length = int(episode["obs"].shape[0])
@@ -232,6 +252,8 @@ def pack_episodes(
         truncated[i] = episode["truncated"]
         if policy_ids is not None:
             policy_ids[i] = episode["policy_id"]
+        if epoch_offsets is not None:
+            epoch_offsets[i] = episode["epoch_offset"]
 
     batch = TrajectoryBatch(
         observations=observations,
@@ -241,6 +263,7 @@ def pack_episodes(
         terminated=terminated,
         truncated=truncated,
         policy_ids=policy_ids,
+        epoch_offsets=epoch_offsets,
     )
     batch.validate()
     return batch

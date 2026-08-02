@@ -4,6 +4,7 @@ import pytest
 
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
+from owm_envs.envs.iss.orbit import OrbitConfig
 from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
@@ -38,6 +39,30 @@ def test_reset_is_reproducible_with_the_same_seed():
     a, _ = ISSVectorEnv(num_envs=4).reset(seed=11)
     b, _ = ISSVectorEnv(num_envs=4).reset(seed=11)
     np.testing.assert_allclose(a, b)
+
+
+def test_epoch_offset_absent_from_info_when_orbit_disabled():
+    env = ISSVectorEnv(num_envs=2)
+    _, info = env.reset(seed=0, options={"epoch_offset_s": 42.0})
+    assert "epoch_offset_s" not in info
+
+
+def test_epoch_offset_stored_and_echoed_when_orbit_enabled():
+    cfg = ISSConfig(orbit=OrbitConfig(enabled=True))
+    env = ISSVectorEnv(num_envs=3, cfg=cfg)
+    _, info = env.reset(seed=0, options={"epoch_offset_s": 42.5})
+    np.testing.assert_allclose(info["epoch_offset_s"], [42.5, 42.5, 42.5])
+    obs, rewards, terminations, truncations, info = env.step(
+        np.zeros((3, 6), dtype=np.float32)
+    )
+    np.testing.assert_allclose(info["epoch_offset_s"], [42.5, 42.5, 42.5])
+
+
+def test_epoch_offset_defaults_to_zero_without_options():
+    cfg = ISSConfig(orbit=OrbitConfig(enabled=True))
+    env = ISSVectorEnv(num_envs=2, cfg=cfg)
+    _, info = env.reset(seed=0)
+    np.testing.assert_allclose(info["epoch_offset_s"], [0.0, 0.0])
 
 
 def test_step_returns_the_five_tuple_batched():

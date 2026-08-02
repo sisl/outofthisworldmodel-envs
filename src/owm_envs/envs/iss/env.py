@@ -78,6 +78,12 @@ class ISSEnv(gym.Env):
         self._state: jnp.ndarray | None = None
         self._step_index = 0
         self._renderer: Any | None = None
+        # Per-episode start-time offset from cfg.orbit.epoch (seconds), set
+        # via reset(options={"epoch_offset_s": x}) when orbit is enabled --
+        # 0.0 and never surfaced in info otherwise. Not yet consumed by the
+        # physics (mean_motion, which _eom uses, does not depend on epoch);
+        # it is recorded here for the renderer (a later feature) to read.
+        self._epoch_offset_s: float = 0.0
         # Side stream for sensor-noise draws, derived by fold_in from the
         # dynamics key at reset -- never consumed from np_random, which also
         # seeds reset(), so later unseeded resets don't depend on how many
@@ -105,11 +111,15 @@ class ISSEnv(gym.Env):
             self._noise_key = jax.random.fold_in(dynamics_key, NOISE_STREAM)
         self._state = self._jit_reset(dynamics_key)
         self._step_index = 0
-        return self._obs(), {
+        info = {
             "success": False,
             "collision": False,
             "state": self._true_state(),
         }
+        if self.cfg.orbit.enabled:
+            self._epoch_offset_s = float((options or {}).get("epoch_offset_s", 0.0))
+            info["epoch_offset_s"] = self._epoch_offset_s
+        return self._obs(), info
 
     def step(
         self, action: np.ndarray
@@ -135,13 +145,10 @@ class ISSEnv(gym.Env):
         terminated = collision or docked
         truncated = (not terminated) and self._step_index >= self.cfg.max_steps
 
-        return (
-            self._obs(),
-            reward,
-            terminated,
-            truncated,
-            {"success": docked, "collision": collision, "state": self._true_state()},
-        )
+        info = {"success": docked, "collision": collision, "state": self._true_state()}
+        if self.cfg.orbit.enabled:
+            info["epoch_offset_s"] = self._epoch_offset_s
+        return (self._obs(), reward, terminated, truncated, info)
 
     def _obs(self) -> np.ndarray:
         if not self.cfg.sensor_noise.enabled:

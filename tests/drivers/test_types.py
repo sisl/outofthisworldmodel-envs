@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from owm_envs.drivers.types import RolloutSpec, TrajectoryBatch
+from owm_envs.drivers.types import RolloutSpec, TrajectoryBatch, pack_episodes
 
 
 def make_batch(num_episodes=2, max_len=5, obs_dim=13, act_dim=6, lengths=None):
@@ -106,3 +106,65 @@ def test_rollout_spec_accepts_min_transitions_mode():
 def test_rollout_spec_rejects_a_non_positive_min_transitions():
     with pytest.raises(ValueError, match="min_transitions"):
         RolloutSpec(max_steps=5, seed=0, min_transitions=0)
+
+
+def test_epoch_offsets_defaults_to_none():
+    assert make_batch().epoch_offsets is None
+
+
+def test_validate_accepts_a_batch_with_epoch_offsets():
+    batch = make_batch(num_episodes=2)
+    with_offsets = TrajectoryBatch(
+        observations=batch.observations,
+        actions=batch.actions,
+        rewards=batch.rewards,
+        lengths=batch.lengths,
+        terminated=batch.terminated,
+        truncated=batch.truncated,
+        policy_ids=None,
+        epoch_offsets=np.array([1.5, 2.5], dtype=np.float32),
+    )
+    with_offsets.validate()
+
+
+def test_validate_rejects_mismatched_epoch_offsets_length():
+    batch = make_batch(num_episodes=2)
+    bad = TrajectoryBatch(
+        observations=batch.observations,
+        actions=batch.actions,
+        rewards=batch.rewards,
+        lengths=batch.lengths,
+        terminated=batch.terminated,
+        truncated=batch.truncated,
+        policy_ids=None,
+        epoch_offsets=np.array([1.5], dtype=np.float32),  # only 1, should be 2
+    )
+    with pytest.raises(ValueError, match="epoch_offsets"):
+        bad.validate()
+
+
+def _episode(length=3, epoch_offset=0.0):
+    return {
+        "obs": np.zeros((length, 13), dtype=np.float32),
+        "act": np.zeros((length, 6), dtype=np.float32),
+        "rew": np.zeros((length,), dtype=np.float32),
+        "terminated": False,
+        "truncated": True,
+        "policy_id": 0,
+        "epoch_offset": epoch_offset,
+    }
+
+
+def test_pack_episodes_leaves_epoch_offsets_none_by_default():
+    batch = pack_episodes([_episode(), _episode()], obs_dim=13, act_dim=6, records_policy_ids=False)
+    assert batch.epoch_offsets is None
+
+
+def test_pack_episodes_carries_epoch_offsets_when_recorded():
+    episodes = [_episode(epoch_offset=12.5), _episode(epoch_offset=-3.0)]
+    batch = pack_episodes(
+        episodes, obs_dim=13, act_dim=6, records_policy_ids=False, records_epoch_offsets=True
+    )
+    assert batch.epoch_offsets is not None
+    assert batch.epoch_offsets.dtype == np.float32
+    np.testing.assert_allclose(batch.epoch_offsets, [12.5, -3.0])

@@ -8,6 +8,7 @@ import owm_envs.envs  # noqa: F401  -- triggers registration
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
 from owm_envs.envs.iss.goal import dock_goal_error
+from owm_envs.envs.iss.orbit import OrbitConfig
 from owm_envs.envs.iss.sensing import PRESETS
 
 
@@ -56,6 +57,30 @@ def test_info_always_reports_success_and_collision():
     _, _, _, _, info = env.step(env.action_space.sample())
     assert isinstance(info["success"], bool)
     assert isinstance(info["collision"], bool)
+
+
+def test_epoch_offset_absent_from_info_when_orbit_disabled():
+    env = ISSEnv()
+    _, info = env.reset(seed=0, options={"epoch_offset_s": 42.0})
+    assert "epoch_offset_s" not in info
+    _, _, _, _, info = env.step(env.action_space.sample())
+    assert "epoch_offset_s" not in info
+
+
+def test_epoch_offset_stored_and_echoed_when_orbit_enabled():
+    cfg = ISSConfig(orbit=OrbitConfig(enabled=True))
+    env = ISSEnv(cfg)
+    _, info = env.reset(seed=0, options={"epoch_offset_s": 42.5})
+    assert info["epoch_offset_s"] == pytest.approx(42.5)
+    _, _, _, _, info = env.step(env.action_space.sample())
+    assert info["epoch_offset_s"] == pytest.approx(42.5)
+
+
+def test_epoch_offset_defaults_to_zero_without_options():
+    cfg = ISSConfig(orbit=OrbitConfig(enabled=True))
+    env = ISSEnv(cfg)
+    _, info = env.reset(seed=0)
+    assert info["epoch_offset_s"] == pytest.approx(0.0)
 
 
 def test_truncates_at_max_steps_without_terminating():

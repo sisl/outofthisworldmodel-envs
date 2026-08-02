@@ -74,6 +74,14 @@ def test_epoch_offset_range_validator_rejects_bad_ranges():
     OrbitConfig(epoch_offset_range_s=(0.0, 0.0))  # does not raise
 
 
+def test_start_radius_range_validator_rejects_bad_ranges():
+    with pytest.raises(ValidationError):
+        OrbitConfig(start_radius_range_m=(200.0, 100.0))
+    with pytest.raises(ValidationError):
+        OrbitConfig(start_radius_range_m=(-1.0, 100.0))
+    OrbitConfig(start_radius_range_m=(50.0, 50.0))  # does not raise
+
+
 def test_config_roundtrips_through_yaml(tmp_path):
     original = OrbitConfig(enabled=True, epoch_offset_range_s=(0.0, 90.0))
     path = tmp_path / "orbit.yaml"

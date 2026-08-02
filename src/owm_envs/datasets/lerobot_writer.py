@@ -16,7 +16,10 @@ act_dim) carry the trajectory itself. Five more features carry outcome
 metadata that would otherwise be lost once a TrajectoryBatch is discarded:
 `reward` (the per-frame reward; zero on an episode's final frame, whose
 action slot is a zero pad rather than a real action), `is_last`,
-`terminated`, `truncated`, and `policy_id`.
+`terminated`, `truncated`, and `policy_id`. A sixth, `epoch_offset_s`, is
+declared only when `batch.epoch_offsets` is not None (i.e. `cfg.orbit.enabled`
+produced the batch): the episode's sampled start-time offset from
+`cfg.orbit.epoch`, written onto every frame of that episode like `policy_id`.
 
 `is_last` is per-FRAME and true only on an episode's final frame. It marks
 both the terminal observation and the one frame whose action is the zero pad,
@@ -108,6 +111,10 @@ def write_lerobot_split(
         "truncated": {"dtype": "bool", "shape": (1,), "names": None},
         "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
     }
+    if batch.epoch_offsets is not None:
+        # (1, 1), not (1,): same Array2D workaround as reward/policy_id --
+        # see the module docstring.
+        features["epoch_offset_s"] = {"dtype": "float32", "shape": (1, 1), "names": None}
     if frames is not None:
         # Derived from the actual clip, not assumed square: the renderer
         # returns (H, W, 3), and H need not equal W.
@@ -127,6 +134,9 @@ def write_lerobot_split(
         terminated = bool(batch.terminated[episode])
         truncated = bool(batch.truncated[episode])
         policy_id = int(batch.policy_ids[episode]) if batch.policy_ids is not None else 0
+        epoch_offset = (
+            float(batch.epoch_offsets[episode]) if batch.epoch_offsets is not None else None
+        )
         clip = np.asarray(frames[episode]) if frames is not None else None
         for t in range(length):
             frame = {
@@ -141,6 +151,8 @@ def write_lerobot_split(
                 "policy_id": np.array([[policy_id]], dtype=np.int64),
                 "task": task_name,
             }
+            if epoch_offset is not None:
+                frame["epoch_offset_s"] = np.array([[epoch_offset]], dtype=np.float32)
             if clip is not None:
                 frame["observation.images.fpv"] = np.asarray(clip[t], dtype=np.uint8)
             dataset.add_frame(frame)

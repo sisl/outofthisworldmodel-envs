@@ -64,6 +64,18 @@ class OrbitConfig(ConfigModel):
             )
         return value
 
+    @field_validator("start_radius_range_m")
+    @classmethod
+    def _start_radius_range_is_valid(
+        cls, value: tuple[float, float]
+    ) -> tuple[float, float]:
+        lo, hi = value
+        if lo < 0.0 or hi < 0.0 or lo > hi:
+            raise ValueError(
+                f"start_radius_range_m must be (lo, hi) with 0 <= lo <= hi, got {value}"
+            )
+        return value
+
 
 # RTN (radial, along-track, normal) axes expressed in world coordinates, one
 # per row: rtn_vector = RTN_FROM_WORLD @ world_vector.

@@ -7,6 +7,7 @@ import pytest
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver, _lane_info
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.iss.orbit import OrbitConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
 from owm_envs.envs.iss.sensing import PRESETS
@@ -589,3 +590,67 @@ def test_vector_state_policy_survives_autoreset_with_noise():
     np.testing.assert_array_equal(clean.actions, noisy.actions)
     np.testing.assert_array_equal(clean.lengths, noisy.lengths)
     assert not np.array_equal(clean.observations, noisy.observations)
+
+
+# --- Epoch offsets ---
+
+
+def test_epoch_offsets_none_when_orbit_disabled():
+    batch = make_driver().generate(RolloutSpec(num_episodes=4, max_steps=8, seed=0))
+    assert batch.epoch_offsets is None
+
+
+def test_epoch_offsets_recorded_when_orbit_enabled():
+    cfg = free_flight_cfg()
+    cfg = cfg.model_copy(
+        update={"orbit": OrbitConfig(enabled=True, epoch_offset_range_s=(10.0, 90.0))}
+    )
+    driver = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+        policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=4, max_steps=8, seed=0))
+    assert batch.epoch_offsets is not None
+    assert batch.epoch_offsets.shape == (4,)
+    assert batch.epoch_offsets.dtype == np.float32
+    assert np.all(batch.epoch_offsets >= 10.0 - 1e-4)
+    assert np.all(batch.epoch_offsets <= 90.0 + 1e-4)
+
+
+def test_epoch_offsets_are_deterministic_in_the_seed():
+    cfg = free_flight_cfg().model_copy(
+        update={"orbit": OrbitConfig(enabled=True, epoch_offset_range_s=(0.0, 100.0))}
+    )
+
+    def batch():
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+        )
+        return driver.generate(RolloutSpec(num_episodes=4, max_steps=8, seed=5))
+
+    a, b = batch(), batch()
+    np.testing.assert_array_equal(a.epoch_offsets, b.epoch_offsets)
+
+
+def test_epoch_offsets_zero_when_range_is_degenerate_but_orbit_enabled():
+    cfg = free_flight_cfg().model_copy(update={"orbit": OrbitConfig(enabled=True)})
+    driver = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+        policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=4, max_steps=8, seed=0))
+    assert batch.epoch_offsets is not None
+    np.testing.assert_allclose(batch.epoch_offsets, 0.0)
+
+
+def test_epoch_offsets_none_for_a_backend_without_a_cfg_attribute():
+    # A non-ISS backend (no `.cfg`, matching _ConstantPolicySource's claim
+    # that the driver seam works with none of owm_envs.envs.iss anywhere in
+    # it) must never crash trying to read orbit config that doesn't exist.
+    env = _FakeVectorEnv()
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    assert batch.epoch_offsets is None
