@@ -19,6 +19,7 @@ import yaml
 from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
+from .orbit import OrbitConfig
 from .sensing import SensorNoiseConfig
 
 # Directory holding geometry shipped with this package. A relative
@@ -150,6 +151,9 @@ class ISSConfig(ConfigModel):
     dock: DockConfig = Field(default_factory=DockConfig)
     sensor_noise: SensorNoiseConfig = Field(default_factory=SensorNoiseConfig)
     observation: ObservationConfig = Field(default_factory=ObservationConfig)
+    # HCW relative orbital dynamics + gravity-gradient torque. Disabled by
+    # default, reproducing today's dynamics bit-for-bit.
+    orbit: OrbitConfig = Field(default_factory=OrbitConfig)
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     # Overrides the reward's position-error target. When None (default),
