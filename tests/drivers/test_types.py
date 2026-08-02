@@ -101,3 +101,8 @@ def test_rollout_spec_accepts_min_transitions_mode():
     spec = RolloutSpec(max_steps=5, seed=0, min_transitions=10)
     assert spec.min_transitions == 10
     assert spec.num_episodes is None
+
+
+def test_rollout_spec_rejects_a_non_positive_min_transitions():
+    with pytest.raises(ValueError, match="min_transitions"):
+        RolloutSpec(max_steps=5, seed=0, min_transitions=0)

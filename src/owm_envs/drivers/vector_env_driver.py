@@ -45,7 +45,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .types import PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
+from .types import TRANSITIONS_STREAM, PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
 
 
 def _lane_info(info: dict, lane: int) -> dict:
@@ -109,7 +109,13 @@ class VectorEnvDriver:
         act_dim = env.single_action_space.shape[0]
         records_policy_ids = self.policy_source.records_policy_ids
 
-        rng = np.random.default_rng(spec.seed)
+        # Salted in transitions mode so its stream doesn't collide with the
+        # episodes-mode stream at the same spec.seed (see TRANSITIONS_STREAM).
+        rng = (
+            np.random.default_rng([spec.seed, TRANSITIONS_STREAM])
+            if spec.min_transitions is not None
+            else np.random.default_rng(spec.seed)
+        )
 
         obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
 
@@ -290,10 +296,8 @@ class VectorEnvDriver:
                 lane_frozen = [False] * num_envs
                 lane_awaiting_reset = [False] * num_envs
 
-        # num_episodes mode can still overshoot within a single step() call
-        # (several lanes finishing at once past quota), hence the slice;
-        # min_transitions mode never overshoots -- the append guard above
-        # already stops at the first episode that crosses the target -- so
-        # every collected episode is packed.
+        # The slice is a defensive no-op kept for clarity: the append guard
+        # above already stops recording at quota in both modes, so `finished`
+        # never actually exceeds spec.num_episodes by the time we get here.
         episodes = finished if spec.num_episodes is None else finished[: spec.num_episodes]
         return pack_episodes(episodes, obs_dim, act_dim, records_policy_ids)

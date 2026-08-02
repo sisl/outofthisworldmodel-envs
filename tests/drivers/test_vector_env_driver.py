@@ -193,6 +193,30 @@ def test_vector_transitions_mode_is_deterministic():
     np.testing.assert_array_equal(a.lengths, b.lengths)
 
 
+def test_vector_transitions_mode_is_independent_of_episodes_mode_at_the_same_seed():
+    # numpy's default_rng([seed, 0]) is byte-identical to default_rng(seed),
+    # so without a salt, transitions-mode would draw the exact same stream as
+    # episodes-mode at the same spec.seed -- a transitions-mode dataset
+    # silently containing the episodes-mode dataset as its exact prefix.
+    cfg = ISSConfig(max_steps=10)
+
+    def make():
+        return VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+        )
+
+    episodes_batch = make().generate(RolloutSpec(max_steps=10, seed=0, num_episodes=2))
+    transitions_batch = make().generate(RolloutSpec(max_steps=10, seed=0, min_transitions=1))
+    first_len_a = int(episodes_batch.lengths[0])
+    first_len_b = int(transitions_batch.lengths[0])
+    obs_a = episodes_batch.observations[0, :first_len_a]
+    obs_b = transitions_batch.observations[0, :first_len_b]
+    assert not (
+        obs_a.shape == obs_b.shape and np.array_equal(obs_a, obs_b)
+    )
+
+
 def test_actions_stay_within_the_control_limits():
     cfg = free_flight_cfg()
     batch = make_driver().generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
