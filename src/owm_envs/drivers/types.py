@@ -17,6 +17,13 @@ from typing import Any, Protocol
 
 import numpy as np
 
+# Salts a transitions-mode chunk seed so it does not collide with the
+# episodes-mode stream at the same spec.seed. numpy's SeedSequence absorbs
+# trailing zeros, so `default_rng([seed, 0])` -- chunk 0's seed with no salt
+# -- draws byte-identically to `default_rng(seed)`, meaning a transitions-mode
+# run would silently reproduce episodes-mode's dataset at a shared seed.
+TRANSITIONS_STREAM = 0x7C5
+
 
 @dataclass(frozen=True)
 class RolloutSpec:
@@ -35,6 +42,10 @@ class RolloutSpec:
         if (self.num_episodes is None) == (self.min_transitions is None):
             raise ValueError(
                 "exactly one of num_episodes or min_transitions must be set"
+            )
+        if self.min_transitions is not None and self.min_transitions < 1:
+            raise ValueError(
+                f"min_transitions must be >= 1, got {self.min_transitions}"
             )
 
 

@@ -11,6 +11,8 @@ extra absorbing element appended to the state vector.
 
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -21,16 +23,9 @@ from ..envs.iss.goal import make_augment
 from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
 from ..envs.iss.reward import iss_reward
 from ..envs.iss.sensing import NOISE_STREAM, apply_sensor_noise
-from .types import RolloutSpec, TrajectoryBatch, pack_episodes
+from .types import TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
-
-# Salts the transitions-mode chunk seed so it does not collide with the
-# episodes-mode stream at the same spec.seed. numpy's SeedSequence absorbs
-# trailing zeros, so `default_rng([seed, 0])` -- chunk 0's seed with no salt
-# -- draws byte-identically to `default_rng(seed)`, meaning a transitions-mode
-# run would silently reproduce episodes-mode's dataset at a shared seed.
-_TRANSITIONS_STREAM = 0x7C5
 
 
 def supports_fused_rollout(backend: object) -> bool:
@@ -107,14 +102,20 @@ class ScanDriver:
         collected: list[dict] = []
         total_transitions = 0
         chunk_index = 0
+        # Each chunk contributes at least self.num_envs transitions (every
+        # lane completes >= 1 episode per chunk by construction), so this
+        # many chunks is a worst-case-safe upper bound on reaching the
+        # target -- tripping it indicates a bug, not an unreachable target.
+        max_chunks = max(1, math.ceil(spec.min_transitions / self.num_envs)) + 1
         while True:
-            if chunk_index > 10_000:
+            if chunk_index > max_chunks:
                 raise RuntimeError(
-                    "min_transitions target unreachable: only "
-                    f"{total_transitions} of {spec.min_transitions} transitions "
-                    f"produced after {chunk_index} chunks"
+                    "transitions accumulation exceeded the worst-case chunk "
+                    f"bound -- this indicates a bug, not an unreachable target: "
+                    f"only {total_transitions} of {spec.min_transitions} "
+                    f"transitions produced after {chunk_index} chunks"
                 )
-            base_rng = np.random.default_rng([spec.seed, _TRANSITIONS_STREAM, chunk_index])
+            base_rng = np.random.default_rng([spec.seed, TRANSITIONS_STREAM, chunk_index])
             for episode in self._run_chunk(base_rng, self.num_envs, max_steps):
                 collected.append(episode)
                 total_transitions += len(episode["obs"]) - 1
