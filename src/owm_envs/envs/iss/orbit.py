@@ -48,9 +48,9 @@ class OrbitConfig(ConfigModel):
     # reset exactly: a fixed start radius, zero initial speed, and a
     # nose-to-ISS attitude with zero error and zero rates.
     start_radius_range_m: tuple[float, float] = (100.0, 100.0)
-    start_speed_max_m_s: float = 0.0
-    start_attitude_error_max_deg: float = 0.0
-    start_rate_max_rad_s: float = 0.0
+    start_speed_max_m_s: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    start_attitude_error_max_deg: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    start_rate_max_rad_s: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
     @field_validator("epoch_offset_range_s")
     @classmethod

@@ -119,6 +119,12 @@ def generate(
         help="Append the dock-goal error block to observations. "
              "Overrides the --config file's observation.goal_error; "
              "default is whatever the config says."),
+    orbit: Optional[bool] = typer.Option(
+        None, "--orbit/--no-orbit",
+        help="Enable HCW relative orbital dynamics (CW accelerations + "
+             "gravity-gradient torque) and epoch-driven renderer lighting. "
+             "Overrides the --config file's orbit.enabled; "
+             "default is whatever the config says."),
     observe: str = typer.Option(
         "measurement", help="What scripted policies consume: state | measurement "
                             "(default: measurement, the noisy value the dataset records)."),
@@ -193,6 +199,8 @@ def generate(
         cfg = cfg.model_copy(update={"sensor_noise": PRESETS[noise]})
     if goal_error is not None:
         cfg = cfg.model_copy(update={"observation": ObservationConfig(goal_error=goal_error)})
+    if orbit is not None:
+        cfg = cfg.model_copy(update={"orbit": cfg.orbit.model_copy(update={"enabled": orbit})})
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
         policy_cfg = PolicyConfig(type=policy, observe=observe)

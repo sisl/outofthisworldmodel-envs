@@ -42,3 +42,22 @@ velocity = -0.35
 angular_velocity = -0.1
 control_effort = -0.05
 collision = -1000000.0
+
+# HCW relative orbital dynamics + gravity-gradient torque. Disabled by
+# default (enabled = false reproduces the physics above exactly). Uncomment
+# to turn on CW accelerations, gravity-gradient torque, per-episode start-time
+# sampling, and epoch-driven renderer lighting (see README "Orbital dynamics").
+# [orbit]
+# enabled = true
+# epoch = "2026-08-01T00:00:00Z"
+# sma_m = 6795000.0
+# ecc = 0.0005
+# inc_deg = 51.64
+# raan_deg = 0.0
+# argp_deg = 0.0
+# mean_anomaly_deg = 0.0
+# epoch_offset_range_s = [0.0, 5574.0]
+# start_radius_range_m = [100.0, 100.0]
+# start_speed_max_m_s = 0.0
+# start_attitude_error_max_deg = 0.0
+# start_rate_max_rad_s = 0.0

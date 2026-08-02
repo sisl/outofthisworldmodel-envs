@@ -565,3 +565,43 @@ def test_goal_error_flag_defaults_to_config(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is False
+
+
+def test_orbit_flag_overrides_the_env_config_on(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--orbit", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").orbit.enabled is True
+
+
+def test_orbit_flag_overrides_the_env_config_off(tmp_path):
+    from owm_envs.envs.iss.orbit import OrbitConfig
+
+    cfg_path = tmp_path / "env.yaml"
+    ISSConfig(orbit=OrbitConfig(enabled=True)).to_yaml(cfg_path)
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--config", str(cfg_path), "--steps", "8",
+        "--split", "train:2:0", "--no-orbit", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").orbit.enabled is False
+
+
+def test_orbit_flag_defaults_to_config(tmp_path):
+    from owm_envs.envs.iss.orbit import OrbitConfig
+
+    cfg_path = tmp_path / "env.yaml"
+    ISSConfig(orbit=OrbitConfig(enabled=True)).to_yaml(cfg_path)
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--config", str(cfg_path), "--steps", "8",
+        "--split", "train:2:0", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").orbit.enabled is True

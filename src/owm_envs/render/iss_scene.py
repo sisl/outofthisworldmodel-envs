@@ -465,5 +465,9 @@ class ISSScene:
         self._sun.local.position = light_position
         self._directional_light.local.position = light_position
 
+        # Epoch-relative, not geo-absolute: this is rotation SINCE t_offset_s
+        # = 0 (the configured epoch), not the Earth's true sidereal phase at
+        # that epoch, since the patch placement itself (earth_patch_center_
+        # lon/lat_deg) is not geo-referenced to begin with.
         self._earth_spin_angle_rad = float(OMEGA_EARTH) * t_offset_s
         self._apply_earth_surface_rotation()

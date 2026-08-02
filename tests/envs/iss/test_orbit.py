@@ -82,6 +82,16 @@ def test_start_radius_range_validator_rejects_bad_ranges():
     OrbitConfig(start_radius_range_m=(50.0, 50.0))  # does not raise
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["start_speed_max_m_s", "start_attitude_error_max_deg", "start_rate_max_rad_s"],
+)
+def test_negative_sampling_knobs_are_rejected(field):
+    with pytest.raises(ValidationError):
+        OrbitConfig(**{field: -1.0})
+    OrbitConfig(**{field: 0.0})  # does not raise
+
+
 def test_config_roundtrips_through_yaml(tmp_path):
     original = OrbitConfig(enabled=True, epoch_offset_range_s=(0.0, 90.0))
     path = tmp_path / "orbit.yaml"

@@ -24,6 +24,50 @@ in place.
 `observation.goal_error`, appending the dock-goal error block to
 observations; omit it to leave the config's own setting in place.
 
+`--orbit/--no-orbit` overrides the `--config` file's `orbit.enabled`; omit
+it to leave the config's own setting in place. See "Orbital dynamics"
+below for what it turns on.
+
+## Orbital dynamics
+
+`ISSConfig.orbit` (`OrbitConfig`, off by default) adds Hill-Clohessy-Wiltshire
+(HCW/CW) relative orbital dynamics on top of the docking physics: the
+chaser's translational equations of motion gain the CW relative
+accelerations (tidal stretching along the radial axis, Coriolis coupling
+between the radial and along-track axes) driven by the mean motion `n` of a
+configured ISS reference orbit, and its rotational equations gain the
+gravity-gradient torque that a real spacecraft experiences from being
+slightly off from the local vertical. With `orbit.enabled = False` (the
+default), none of this is evaluated and the simulation is bit-identical to
+before this feature existed.
+
+**Frame convention.** World coordinates ARE the LVLH (local-vertical,
+local-horizontal) frame of the reference orbit: `+z` is radial, pointing
+away from Earth ("up"); `-y` is along-track (the direction of orbital
+motion); `+x` is cross-track, completing a right-handed triad. This follows
+from the renderer's existing placement of the Earth (straight below the
+chaser, along `-z`) and the dock port's existing orientation (facing the ram
+direction, `-y`) -- the orbital-dynamics feature aligns to those rather than
+introducing a second frame.
+
+**Epoch and per-episode sampling.** `orbit.epoch` (an ISO 8601 UTC
+timestamp) plus the six classical orbital elements (`sma_m`, `ecc`,
+`inc_deg`, `raan_deg`, `argp_deg`, `mean_anomaly_deg`) define the reference
+orbit at `t = 0`. Each episode additionally samples a start-time offset
+uniformly from `orbit.epoch_offset_range_s` -- so different episodes begin
+at different points along the reference orbit and, when lighting follows the
+epoch (below), under different sun/Earth-rotation conditions. The sampled
+offset is recorded per episode as `epoch_offset_s` (present in `info` from
+the gym envs, and as a per-episode LeRobot feature when `orbit.enabled`).
+
+**Lighting.** The renderer's sun direction and Earth spin can follow the
+same epoch: set `render.sun_from_epoch = True` (with `render.orbit` giving
+the same elements/epoch as `orbit`, or a dict of `OrbitConfig` fields) and
+each rendered frame's sun direction and Earth rotation angle are computed
+from `ReferenceOrbit.sun_direction_world` at that frame's simulation time
+past the epoch, replacing the static configured `sun_direction_world`. Off
+by default: rendering is unaffected unless this is turned on explicitly.
+
 ## Asset acknowledgements
 
 The 3D assets under `src/owm_envs/render/resources/` are third-party works,
