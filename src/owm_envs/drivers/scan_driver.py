@@ -69,13 +69,30 @@ class ScanDriver:
         max_steps = min(spec.max_steps, self.cfg.max_steps)
         records_policy_ids = self.policy_cfg.type == "union"
 
+        # Horizon long enough that num_envs lanes yield at least
+        # `needed_episodes` episodes even if every episode runs the full
+        # max_steps. Episodes mode sizes to the requested count; transitions
+        # mode sizes to one episode per lane (ceil(num_envs/num_envs) == 1)
+        # since it loops chunks until enough transitions accumulate. The
+        # runner is built once here and reused across every chunk (see
+        # _build_runner) so a multi-chunk transitions run compiles the scan
+        # once instead of once per chunk -- JAX's jit cache is keyed on the
+        # function object, and a fresh closure per chunk would never hit it.
+        needed_episodes = spec.num_episodes if spec.min_transitions is None else self.num_envs
+        horizon = int(np.ceil(needed_episodes / self.num_envs)) * max_steps
+        runner, sample_extras = self._build_runner(max_steps, horizon)
+
         if spec.min_transitions is not None:
-            return self._generate_transitions(spec, max_steps, records_policy_ids)
+            return self._generate_transitions(
+                spec, runner, sample_extras, horizon, records_policy_ids
+            )
 
         # Single chunk sized to guarantee at least spec.num_episodes complete
         # episodes; seeding mirrors VectorEnvDriver exactly (see _run_chunk).
         base_rng = np.random.default_rng(spec.seed)
-        episodes = self._run_chunk(base_rng, spec.num_episodes, max_steps)
+        episodes = self._run_chunk(
+            base_rng, runner, sample_extras, spec.num_episodes, records_policy_ids
+        )
         if len(episodes) < spec.num_episodes:
             raise RuntimeError(
                 f"scan horizon produced only {len(episodes)} complete episodes, "
@@ -91,13 +108,21 @@ class ScanDriver:
         )
 
     def _generate_transitions(
-        self, spec: RolloutSpec, max_steps: int, records_policy_ids: bool
+        self,
+        spec: RolloutSpec,
+        runner,
+        sample_extras,
+        horizon: int,
+        records_policy_ids: bool,
     ) -> TrajectoryBatch:
         """min_transitions mode: run chunks of `self.num_envs` episodes each
         (every lane completes >= 1 episode per chunk by construction) until
         enough transitions accumulate, taking episodes one by one and
         stopping mid-chunk at the first episode that reaches the target --
         surplus episodes in that chunk are discarded.
+
+        `runner` and `sample_extras` are built once in `generate` (see
+        `_build_runner`) and reused across every chunk here.
         """
         collected: list[dict] = []
         total_transitions = 0
@@ -107,6 +132,10 @@ class ScanDriver:
         # many chunks is a worst-case-safe upper bound on reaching the
         # target -- tripping it indicates a bug, not an unreachable target.
         max_chunks = max(1, math.ceil(spec.min_transitions / self.num_envs)) + 1
+        # No early stop within a chunk: every completed episode is needed for
+        # this loop's own transitions accounting above, unlike episodes mode
+        # which can stop segmenting once it has spec.num_episodes.
+        wanted = self.num_envs * horizon
         while True:
             if chunk_index > max_chunks:
                 raise RuntimeError(
@@ -116,7 +145,9 @@ class ScanDriver:
                     f"transitions produced after {chunk_index} chunks"
                 )
             base_rng = np.random.default_rng([spec.seed, TRANSITIONS_STREAM, chunk_index])
-            for episode in self._run_chunk(base_rng, self.num_envs, max_steps):
+            for episode in self._run_chunk(
+                base_rng, runner, sample_extras, wanted, records_policy_ids
+            ):
                 collected.append(episode)
                 total_transitions += len(episode["obs"]) - 1
                 if total_transitions >= spec.min_transitions:
@@ -134,18 +165,25 @@ class ScanDriver:
             records_policy_ids=records_policy_ids,
         )
 
-    def _run_chunk(
-        self, base_rng: np.random.Generator, needed_episodes: int, max_steps: int
-    ) -> list[dict]:
-        """Run one fused scan over `self.num_envs` lanes and return the
-        resulting episodes in completion order -- no packing, no shortfall
-        check. The caller decides how many episodes it needs and what to do
-        if the chunk falls short.
+    def _build_runner(self, max_steps: int, horizon: int):
+        """Build the compiled per-chunk scan runner, once per `generate()` call.
+
+        Every chunk of a run (episodes mode has one, transitions mode loops
+        several) needs the same closures and the same `jax.jit(jax.vmap(...))`
+        wrapper; building them here and reusing the result across chunks
+        means the scan compiles once per `generate()` instead of once per
+        chunk -- JAX's jit cache is keyed on the function object, so a fresh
+        closure per chunk would recompile an identical program every time.
+
+        Returns `(runner, sample_extras)`: `runner` maps per-lane initial
+        state/index/extras/keys to the emitted per-lane scan output, and
+        `sample_extras` (needed by `_run_chunk` to build each chunk's initial
+        extras) is exposed separately because it is also called outside the
+        scan.
         """
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
         augment = make_augment(self.cfg, self.policy_cfg)
         extras_width = EXTRAS_DIM[self.policy_cfg.type]
-        records_policy_ids = self.policy_cfg.type == "union"
         dynamics, cfg = self.dynamics, self.cfg
         noise = cfg.sensor_noise
         observe_measurement = self.policy_cfg.observe == "measurement"
@@ -228,10 +266,32 @@ class ScanDriver:
 
             return (new_state, new_index, new_extras, key, noise_key), emitted
 
-        # Horizon long enough that num_envs lanes yield at least needed_episodes
-        # episodes even if every episode runs the full max_steps.
-        horizon = int(np.ceil(needed_episodes / self.num_envs)) * max_steps
+        def run_lane(state, index, extras, lane_key, noise_lane_key):
+            _, emitted = jax.lax.scan(
+                per_env_step,
+                (state, index, extras, lane_key, noise_lane_key),
+                None,
+                length=horizon,
+            )
+            return emitted
 
+        runner = jax.jit(jax.vmap(run_lane))
+        return runner, sample_extras
+
+    def _run_chunk(
+        self,
+        base_rng: np.random.Generator,
+        runner,
+        sample_extras,
+        wanted: int,
+        records_policy_ids: bool,
+    ) -> list[dict]:
+        """Run one fused scan over `self.num_envs` lanes and return up to
+        `wanted` resulting episodes in completion order -- no packing.
+
+        `runner` and `sample_extras` come from `_build_runner`, built once
+        per `generate()` call and shared across every chunk.
+        """
         # Mirror VectorEnvDriver's seeding exactly (a numpy Generator draws the
         # integer env seed that becomes the JAX key's origin -- see
         # ISSVectorEnv.reset / VectorEnvDriver.generate) so that, given the
@@ -241,7 +301,7 @@ class ScanDriver:
         env_seed = int(base_rng.integers(0, 2**31 - 1))
         key = jax.random.PRNGKey(env_seed)
         key, subkey = jax.random.split(key)
-        init_states = jax.vmap(dynamics.reset)(jax.random.split(subkey, self.num_envs))
+        init_states = jax.vmap(self.dynamics.reset)(jax.random.split(subkey, self.num_envs))
 
         key, extras_key, scan_key = jax.random.split(key, 3)
         init_extras = jax.vmap(sample_extras)(jax.random.split(extras_key, self.num_envs))
@@ -253,24 +313,7 @@ class ScanDriver:
         # whether noise is enabled.
         noise_lane_keys = jax.vmap(lambda k: jax.random.fold_in(k, NOISE_STREAM))(lane_keys)
 
-        def run_lane(state, index, extras, lane_key, noise_lane_key):
-            _, emitted = jax.lax.scan(
-                per_env_step,
-                (state, index, extras, lane_key, noise_lane_key),
-                None,
-                length=horizon,
-            )
-            return emitted
-
-        emitted = jax.jit(jax.vmap(run_lane))(
-            init_states, init_indices, init_extras, lane_keys, noise_lane_keys
-        )
-        # Return every episode the chunk completed, not just `needed_episodes`
-        # worth: the caller (generate/`_generate_transitions`) owns deciding
-        # how many of them to keep, and a chunk sized for `needed_episodes`
-        # in the worst case (every episode runs the full max_steps) can
-        # complete more than that when episodes end early.
-        wanted = self.num_envs * horizon
+        emitted = runner(init_states, init_indices, init_extras, lane_keys, noise_lane_keys)
         return self._segment_episodes(emitted, wanted, records_policy_ids)
 
     @staticmethod
