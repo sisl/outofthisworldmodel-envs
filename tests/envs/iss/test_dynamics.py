@@ -2,7 +2,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from astrojax.attitude_dynamics import torque_gravity_gradient
+from astrojax.relative_motion import hcw_stm
 
+from owm_envs.core.quaternion import quat_conjugate, quat_to_rotmat
 from owm_envs.envs.iss.config import (
     DockConfig,
     ISSConfig,
@@ -10,6 +13,7 @@ from owm_envs.envs.iss.config import (
     default_collision_boxes_path,
 )
 from owm_envs.envs.iss.dynamics import STATE_LABELS, ISSDynamics
+from owm_envs.envs.iss.orbit import RTN_FROM_WORLD, OrbitConfig, ReferenceOrbit
 
 ZERO_ACTION = jnp.zeros((6,), dtype=jnp.float32)
 
@@ -364,5 +368,132 @@ def test_step_is_vmap_compatible():
     s_next, events = jax.vmap(dyn.step)(states, actions)
     assert s_next.shape == (4, 13)
     assert events.collision.shape == (4,)
+
+
+# --- Reference-orbit dynamics (CW acceleration + gravity-gradient torque) ---
+#
+# astrojax API conventions confirmed by reading source
+# (.venv/.../astrojax/attitude_dynamics/gravity_gradient.py,
+# .venv/.../astrojax/relative_motion/hcw_dynamics.py):
+#
+# - `hcw_derivative(state_rtn, n)`: state is `[x, y, z, xdot, ydot, zdot]` in
+#   the chief's RTN frame; returns `[xdot, ydot, zdot, xddot, yddot, zddot]`,
+#   i.e. the acceleration half is `[3:6]`.
+# - `torque_gravity_gradient(q, r_eci, I, mu)`: despite its docstring
+#   claiming `q` is the body->inertial rotation, it is actually the
+#   INERTIAL->BODY (world->body) quaternion -- i.e. `quat_conjugate(q_bw)`,
+#   not `q_bw` -- confirmed empirically below: `q_bw` passed directly gives
+#   a torque rotated away from the closed-form value by the same angle as
+#   the attitude itself, while its conjugate matches to float32 precision.
+#   (`astrojax`'s `quaternion_to_rotation_matrix(q)` produces the identical
+#   matrix as this codebase's `quat_to_rotmat(q).T`, i.e. world->body for a
+#   `q_bw`-convention input -- the reverse of what the docstring states.)
+#   `r_eci` is the spacecraft's position vector (primary center ->
+#   spacecraft) in the inertial frame, shape (3,). `I` is the FULL 3x3
+#   inertia tensor (not a 3-vector diagonal) -- `dynamics.py` passes
+#   `jnp.diag(self._inertia_diag)`. Returns torque in the BODY frame.
+#   Internally it computes `r_hat_body x (I r_hat_body)` -- since that
+#   expression is invariant under negating the input vector, it doesn't
+#   matter whether `r_hat` is nadir or zenith; the cross-check below uses
+#   nadir (`R_bw^T @ [0,0,-1]`) and still agrees.
+
+
+def _orbit_cfg(**overrides) -> ISSConfig:
+    return ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+        orbit=OrbitConfig(enabled=True, **overrides),
+    )
+
+
+def test_orbit_disabled_step_matches_default_config_step():
+    # Explicit `orbit=OrbitConfig(enabled=False)` vs relying on the default
+    # (also disabled) must be bit-identical: the disabled branch in `_eom`
+    # is a static Python `if`, resolved at trace time, so it adds no ops.
+    cfg_default = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False)
+    )
+    cfg_explicit = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+        orbit=OrbitConfig(enabled=False),
+    )
+    dyn_default = ISSDynamics(cfg_default)
+    dyn_explicit = ISSDynamics(cfg_explicit)
+
+    s = make_state(pos=(50.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), omega=(0.1, -0.2, 0.3))
+    action = jnp.array([100.0, 20.0, -5.0, 0.01, -0.02, 0.03], dtype=jnp.float32)
+
+    s_next_default, _ = dyn_default.step(s, action)
+    s_next_explicit, _ = dyn_explicit.step(s, action)
+    np.testing.assert_array_equal(np.asarray(s_next_default), np.asarray(s_next_explicit))
+
+
+def test_cw_enabled_origin_at_rest_stays_at_rest():
+    dyn = ISSDynamics(_orbit_cfg())
+    s = make_state()
+    s_next, _ = dyn.step(s, ZERO_ACTION)
+    np.testing.assert_allclose(np.asarray(s_next), np.asarray(s), atol=1e-6)
+
+
+def test_cw_radial_offset_produces_expected_radial_acceleration():
+    # R = +z_world (RTN_FROM_WORLD row 0). A purely radial, at-rest offset
+    # has zero along-track/normal RTN components, so the HCW equations give
+    # x_ddot = 3n^2 x, y_ddot = -2n*xdot = 0, z_ddot = -n^2 z = 0: the whole
+    # acceleration should land back on +z_world.
+    cfg = _orbit_cfg()
+    dyn = ISSDynamics(cfg)
+    n = ReferenceOrbit(cfg.orbit).mean_motion
+
+    s = make_state(pos=(0.0, 0.0, 100.0))
+    deriv = dyn._eom(s, ZERO_ACTION)
+    accel_w = np.asarray(deriv[3:6])
+
+    expected_a_r = 3.0 * n**2 * 100.0
+    np.testing.assert_allclose(accel_w, np.array([0.0, 0.0, expected_a_r]), rtol=1e-3, atol=1e-7)
+
+
+def test_cw_free_drift_matches_analytic_hcw_solution_over_60s():
+    cfg = _orbit_cfg()
+    dyn = ISSDynamics(cfg)
+    n = ReferenceOrbit(cfg.orbit).mean_motion
+
+    s = make_state(pos=(0.0, 0.0, 100.0))  # x_R = 100 m, at rest
+    total_t = 60.0
+    n_steps = int(round(total_t / cfg.dt))
+    for _ in range(n_steps):
+        s, _ = dyn.step(s, ZERO_ACTION)
+
+    pos_rtn = RTN_FROM_WORLD @ np.asarray(s[0:3])
+    vel_rtn = RTN_FROM_WORLD @ np.asarray(s[3:6])
+    state_rtn = np.concatenate([pos_rtn, vel_rtn])
+
+    state0_rtn = np.array([100.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    expected_rtn = np.asarray(hcw_stm(n_steps * cfg.dt, n)) @ state0_rtn
+
+    np.testing.assert_allclose(state_rtn, expected_rtn, rtol=1e-3, atol=1e-3)
+
+
+def test_gravity_gradient_torque_matches_closed_form_for_random_attitudes():
+    cfg = _orbit_cfg()
+    dyn = ISSDynamics(cfg)
+    n = ReferenceOrbit(cfg.orbit).mean_motion
+    I = np.diag(np.asarray(cfg.physics.inertia_diag, dtype=np.float64))  # noqa: E741
+
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        q = rng.normal(size=4)
+        q = q / np.linalg.norm(q)
+        q_bw = jnp.asarray(q, dtype=jnp.float32)
+
+        tau_astrojax = np.asarray(
+            torque_gravity_gradient(quat_conjugate(q_bw), dyn._r_world_gg, dyn._inertia_matrix)
+        )
+
+        R_bw = np.asarray(quat_to_rotmat(q_bw), dtype=np.float64)
+        u_nadir = R_bw.T @ np.array([0.0, 0.0, -1.0])
+        tau_closed_form = 3.0 * n**2 * np.cross(u_nadir, I @ u_nadir)
+
+        np.testing.assert_allclose(tau_astrojax, tau_closed_form, rtol=1e-4, atol=1e-8)
 
 

@@ -21,6 +21,8 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from astrojax.attitude_dynamics import torque_gravity_gradient
+from astrojax.relative_motion import hcw_derivative
 
 from ...core.integrator import Integrator
 from ...core.quaternion import (
@@ -32,6 +34,7 @@ from ...core.quaternion import (
     rotate_body_to_world,
 )
 from .config import ISSConfig, load_collision_boxes
+from .orbit import RTN_FROM_WORLD, ReferenceOrbit
 
 STATE_LABELS: tuple[str, ...] = (
     "rel_x_m", "rel_y_m", "rel_z_m",
@@ -80,7 +83,30 @@ class ISSDynamics:
         if cfg.dock.max_body_rate_rad_s is not None:
             self._dock_max_body_rate = jnp.asarray(cfg.dock.max_body_rate_rad_s, dtype=jnp.float32)
 
+        # Reference-orbit dynamics (CW relative acceleration + gravity-gradient
+        # torque). Off by default: `cfg.orbit.enabled` is a plain Python bool
+        # fixed at construction, so the `if` in `_eom` below is resolved at
+        # trace time -- the disabled path never evaluates these attributes and
+        # is bit-identical to the pre-orbit dynamics.
+        if cfg.orbit.enabled:
+            self._n = ReferenceOrbit(cfg.orbit).mean_motion
+            self._rtn_from_world = jnp.asarray(RTN_FROM_WORLD, dtype=jnp.float32)
+            self._world_from_rtn = self._rtn_from_world.T
+            # Earth center sits at world -z (see orbit.py's RTN_FROM_WORLD
+            # docstring), so the chaser's radius vector from Earth center is
+            # +z_world with magnitude ~= the chief's semi-major axis (the
+            # chaser/chief separation is negligible against sma_m).
+            self._r_world_gg = jnp.array([0.0, 0.0, cfg.orbit.sma_m], dtype=jnp.float32)
+            self._inertia_matrix = jnp.diag(self._inertia_diag)
+        else:
+            self._n = None
+            self._rtn_from_world = None
+            self._world_from_rtn = None
+            self._r_world_gg = None
+            self._inertia_matrix = None
+
     def _eom(self, x: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
+        pos_w = x[0:3]
         vel_w = x[3:6]
         q_bw = quat_normalize(x[6:10])
         omega_b = x[10:13]
@@ -92,9 +118,31 @@ class ISSDynamics:
         vel_dot = force_w / self._mass - self._linear_damping * vel_w
         q_dot = quat_derivative_from_omega_body(q_bw, omega_b)
         coriolis = jnp.cross(omega_b, self._inertia_diag * omega_b)
-        omega_dot = self._inv_inertia_diag * (
-            torque_b - coriolis - self._angular_damping * omega_b
-        )
+        net_torque_b = torque_b - coriolis - self._angular_damping * omega_b
+
+        if self.cfg.orbit.enabled:
+            # Relative CW dynamics: map [pos; vel] world->RTN, take
+            # astrojax's HCW acceleration half, map back world.
+            state_rtn = jnp.concatenate(
+                [self._rtn_from_world @ pos_w, self._rtn_from_world @ vel_w]
+            )
+            accel_rtn = hcw_derivative(state_rtn, self._n)[3:6]
+            vel_dot = vel_dot + self._world_from_rtn @ accel_rtn
+
+            # Gravity-gradient torque, treating world as the inertial frame.
+            # Despite its docstring, astrojax's `torque_gravity_gradient`
+            # expects the INERTIAL->BODY quaternion (q_bw's conjugate): its
+            # `quaternion_to_rotation_matrix(q)` produces the same matrix as
+            # this codebase's `quat_to_rotmat(q).T` (world->body for q_bw),
+            # so passing q_bw directly rotates the position vector the wrong
+            # way. Confirmed against the closed-form `3n^2 u x (I u)` cross-
+            # check in tests/envs/iss/test_dynamics.py.
+            torque_gg = torque_gravity_gradient(
+                quat_conjugate(q_bw), self._r_world_gg, self._inertia_matrix
+            )
+            net_torque_b = net_torque_b + torque_gg
+
+        omega_dot = self._inv_inertia_diag * net_torque_b
         return jnp.concatenate([pos_dot, vel_dot, q_dot, omega_dot], axis=0)
 
     def _collision(self, pos_prev: jnp.ndarray, pos_next: jnp.ndarray) -> jnp.ndarray:
