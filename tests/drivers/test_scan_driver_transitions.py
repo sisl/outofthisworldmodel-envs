@@ -48,6 +48,51 @@ def test_scan_transitions_mode_spans_multiple_chunks():
     np.testing.assert_array_equal(a.lengths, b.lengths)
 
 
+def test_episodes_mode_early_stops_segmentation_at_the_requested_count(monkeypatch):
+    # _run_chunk passes `wanted` straight through to _segment_episodes;
+    # episodes mode must pass spec.num_episodes so segmentation stops once
+    # enough episodes are cut, instead of building (and discarding) a dict
+    # for every episode the chunk completes.
+    captured: list[int] = []
+    original = ScanDriver._segment_episodes
+
+    def spy(emitted, wanted, records_policy_ids):
+        captured.append(wanted)
+        return original(emitted, wanted, records_policy_ids)
+
+    monkeypatch.setattr(ScanDriver, "_segment_episodes", staticmethod(spy))
+
+    make_driver(num_envs=2, cfg=ISSConfig(max_steps=10)).generate(
+        RolloutSpec(max_steps=10, seed=0, num_episodes=3)
+    )
+
+    assert captured == [3]
+
+
+def test_transitions_mode_passes_the_full_chunk_bound_to_segmentation(monkeypatch):
+    # Transitions mode needs every completed episode in a chunk for its own
+    # accounting (it may stop consuming mid-chunk itself), so it must not
+    # early-stop segmentation: every chunk call gets num_envs * horizon.
+    captured: list[int] = []
+    original = ScanDriver._segment_episodes
+
+    def spy(emitted, wanted, records_policy_ids):
+        captured.append(wanted)
+        return original(emitted, wanted, records_policy_ids)
+
+    monkeypatch.setattr(ScanDriver, "_segment_episodes", staticmethod(spy))
+
+    cfg = ISSConfig(max_steps=10)
+    # num_envs=2, max_steps=10 -> forces >= 3 chunks (see
+    # test_scan_transitions_mode_spans_multiple_chunks).
+    make_driver(num_envs=2, cfg=cfg).generate(
+        RolloutSpec(max_steps=10, seed=0, min_transitions=60)
+    )
+
+    assert len(captured) >= 3
+    assert all(wanted == 2 * 10 for wanted in captured)
+
+
 def test_scan_transitions_mode_is_independent_of_episodes_mode_at_the_same_seed():
     # numpy's default_rng([seed, 0]) is byte-identical to default_rng(seed),
     # so without a salt, transitions-mode's first chunk (chunk_index=0) would
