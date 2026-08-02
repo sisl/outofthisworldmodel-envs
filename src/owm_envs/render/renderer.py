@@ -236,6 +236,7 @@ class ISSRenderer:
         state: np.ndarray,
         action: np.ndarray | None = None,
         view: ViewName = "DRAGON_ISO",
+        t_offset_s: float = 0.0,
     ) -> np.ndarray:
         if self._closed:
             raise RuntimeError("renderer is closed")
@@ -244,7 +245,7 @@ class ISSRenderer:
         if view not in all_views:
             raise ValueError(f"unknown view {view!r}; expected one of {sorted(all_views)}")
 
-        self._iss_scene.update(state, action)
+        self._iss_scene.update(state, action, t_offset_s)
         self._update_debug_overlays(action)
 
         chosen = all_views[view]

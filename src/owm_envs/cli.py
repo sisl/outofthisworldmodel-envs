@@ -240,7 +240,7 @@ def generate(
             total = int(batch.lengths.sum())
             typer.echo(f"[render] {name}: {total} frames at ~0.1 s/frame "
                        f"-> roughly {total * 0.1 / 60:.1f} min")
-            frames = render_batch_frames(batch, render_cfg, view=render_view)
+            frames = render_batch_frames(batch, render_cfg, view=render_view, dt=cfg.dt)
         if lerobot:
             from .datasets.lerobot_writer import write_lerobot_split
 

@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pygfx as gfx
 import pylinalg as la
+from astrojax.constants import OMEGA_EARTH
 
 from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
@@ -50,6 +51,13 @@ class RenderConfig(ConfigModel):
     sun_direction_world: tuple[float, float, float] = (1.0, -0.3, 0.5)
     sun_visual_distance_m: float = 1_000_000.0
     sun_angular_diameter_deg: float = 0.53
+    # When True, the sun direction and Earth's spin angle are driven by
+    # `orbit` (an `owm_envs.envs.iss.orbit.OrbitConfig` dump) at the sim time
+    # passed to `ISSScene.update`, replacing the static `sun_direction_world`
+    # above. Default off: rendering is byte-identical to a build with these
+    # two fields absent.
+    sun_from_epoch: bool = False
+    orbit: dict | None = None
 
     scene_camera_near_m: float = 5.0
     scene_camera_far_m: float = 1_000_000.0
@@ -79,6 +87,18 @@ def _unit(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     v = np.asarray(v, dtype=np.float32)
     n = float(np.linalg.norm(v))
     return (v / n).astype(np.float32) if n >= eps else np.zeros_like(v)
+
+
+def _reference_orbit_from_config(cfg: RenderConfig) -> ReferenceOrbit | None:
+    """A `ReferenceOrbit` built from `cfg.orbit`, or `None` when
+    `cfg.sun_from_epoch` is off. The import is local so
+    `owm_envs.render.iss_scene` stays importable without `owm_envs.envs.iss`
+    when epoch-driven lighting isn't used."""
+    if not cfg.sun_from_epoch:
+        return None
+    from owm_envs.envs.iss.orbit import OrbitConfig, ReferenceOrbit
+
+    return ReferenceOrbit(OrbitConfig(**(cfg.orbit or {})))
 
 
 def _strip_embedded_extras(scene_obj: gfx.WorldObject) -> gfx.Group:
@@ -219,6 +239,7 @@ class ISSScene:
 
     def __init__(self, cfg: RenderConfig) -> None:
         self.cfg = cfg
+        self._reference_orbit = _reference_orbit_from_config(cfg)
 
         # Earth patch local axes are east (+X), north (+Y), up (+Z); express
         # the planetary spin axis in that frame so the patch can be rotated
@@ -250,9 +271,13 @@ class ISSScene:
         self.scene.add(self._load_iss_group())
         self.scene.add(self._load_earth_group())
         self.scene.add(self._load_moon_group())
-        self.scene.add(self._build_sun_sphere())
+        # Held so `_apply_epoch_lighting` can re-point them per frame when
+        # `cfg.sun_from_epoch` is on.
+        self._sun = self._build_sun_sphere()
+        self.scene.add(self._sun)
+        self._directional_light = self._build_directional_light()
+        self.scene.add(self._directional_light)
         self.scene.add(self._build_ambient_light())
-        self.scene.add(self._build_directional_light())
         self.scene.add(self._build_fill_directional_light())
 
         self.dragon = self._load_dragon_group()
@@ -405,9 +430,17 @@ class ISSScene:
         light.cast_shadow = False
         return light
 
-    def update(self, state: np.ndarray, action: np.ndarray | None = None) -> None:
+    def update(
+        self, state: np.ndarray, action: np.ndarray | None = None, t_offset_s: float = 0.0
+    ) -> None:
         """Pose the Dragon capsule from a 13D state: 0:3 position, 6:10
-        quaternion q_bw (body -> world), the rest unused here."""
+        quaternion q_bw (body -> world), the rest unused here.
+
+        `t_offset_s` is the simulation time, in seconds past the orbit
+        epoch. It drives the sun direction and Earth's spin angle when
+        `cfg.sun_from_epoch` is on; otherwise it is ignored and the static
+        `cfg.sun_direction_world` lighting built in `__init__` stands.
+        """
         s = np.asarray(state, dtype=np.float32).reshape(-1)
         if s.shape[0] != 13:
             raise ValueError(f"expected a 13-element state, got shape {s.shape}")
@@ -420,3 +453,17 @@ class ISSScene:
         matrix[:3, :3] = rotation
         matrix[:3, 3] = position
         self.dragon.local.matrix = matrix
+
+        if self._reference_orbit is not None:
+            self._apply_epoch_lighting(t_offset_s)
+
+    def _apply_epoch_lighting(self, t_offset_s: float) -> None:
+        """Point the sun and rotate the Earth's surface to match `t_offset_s`
+        seconds past the orbit epoch, via `self._reference_orbit`."""
+        direction = _unit(self._reference_orbit.sun_direction_world(t_offset_s))
+        light_position = tuple((direction * self.cfg.sun_visual_distance_m).tolist())
+        self._sun.local.position = light_position
+        self._directional_light.local.position = light_position
+
+        self._earth_spin_angle_rad = float(OMEGA_EARTH) * t_offset_s
+        self._apply_earth_surface_rotation()
