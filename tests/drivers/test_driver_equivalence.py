@@ -28,6 +28,11 @@ rollout implementations is the segmentation/termination logic (two copies of
 "is this lane done, and where does the next episode start"), not the
 per-step arithmetic, which both drivers call through the same `ISSDynamics`,
 `iss_reward`, and policy functions.
+
+`epoch_offsets` (when `orbit.enabled`) is PRNG-derived per driver -- JAX
+`fold_in` in `ScanDriver`, seeded numpy `Generator` streams in
+`VectorEnvDriver` -- and, like the other documented structural-only fields,
+sits outside the bitwise cross-driver guarantee.
 """
 
 import numpy as np

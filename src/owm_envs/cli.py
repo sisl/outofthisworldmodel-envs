@@ -122,7 +122,9 @@ def generate(
     orbit: Optional[bool] = typer.Option(
         None, "--orbit/--no-orbit",
         help="Enable HCW relative orbital dynamics (CW accelerations + "
-             "gravity-gradient torque) and epoch-driven renderer lighting. "
+             "gravity-gradient torque). With --render, rendering automatically "
+             "follows the epoch (sun direction + Earth spin) too, unless the "
+             "--config file's render.sun_from_epoch is set explicitly. "
              "Overrides the --config file's orbit.enabled; "
              "default is whatever the config says."),
     observe: str = typer.Option(
@@ -242,9 +244,8 @@ def generate(
         frames = None
         if render:
             from .datasets.video import render_batch_frames
-            from .render.iss_scene import RenderConfig
 
-            render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
+            render_cfg = _render_config(cfg)
             total = int(batch.lengths.sum())
             typer.echo(f"[render] {name}: {total} frames at ~0.1 s/frame "
                        f"-> roughly {total * 0.1 / 60:.1f} min")
@@ -258,6 +259,24 @@ def generate(
 
     metadata.write(out)
     typer.echo(f"[done] {out}")
+
+
+def _render_config(cfg: ISSConfig):
+    """`RenderConfig` for `cfg`, with epoch-driven lighting following `--orbit`.
+
+    When `cfg.orbit.enabled`, `render.sun_from_epoch` and `render.orbit`
+    default to `True` and `cfg.orbit.model_dump()` -- so `--orbit --render`
+    delivers epoch lighting without a separate `--config render.*` block.
+    Either key set explicitly in `cfg.render` wins over that default (e.g. an
+    explicit `render.sun_from_epoch = false` opts back out).
+    """
+    from .render.iss_scene import RenderConfig
+
+    render_kwargs = dict(cfg.render) if cfg.render else {}
+    if cfg.orbit.enabled:
+        render_kwargs.setdefault("sun_from_epoch", True)
+        render_kwargs.setdefault("orbit", cfg.orbit.model_dump())
+    return RenderConfig(**render_kwargs)
 
 
 def _simulation_fps(dt: float) -> int | None:

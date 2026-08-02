@@ -80,9 +80,9 @@ class ISSEnv(gym.Env):
         self._renderer: Any | None = None
         # Per-episode start-time offset from cfg.orbit.epoch (seconds), set
         # via reset(options={"epoch_offset_s": x}) when orbit is enabled --
-        # 0.0 and never surfaced in info otherwise. Not yet consumed by the
+        # 0.0 and never surfaced in info otherwise. Not consumed by the
         # physics (mean_motion, which _eom uses, does not depend on epoch);
-        # it is recorded here for the renderer (a later feature) to read.
+        # render() adds it to the elapsed sim time to drive epoch lighting.
         self._epoch_offset_s: float = 0.0
         # Side stream for sensor-noise draws, derived by fold_in from the
         # dynamics key at reset -- never consumed from np_random, which also
@@ -179,8 +179,11 @@ class ISSEnv(gym.Env):
 
         if self._renderer is None:
             self._renderer = self._make_renderer()
+        t_offset_s = self._epoch_offset_s + self._step_index * self.cfg.dt
         return self._renderer.render(
-            np.asarray(self._state, dtype=np.float32), view=self.cfg.render_view
+            np.asarray(self._state, dtype=np.float32),
+            view=self.cfg.render_view,
+            t_offset_s=t_offset_s,
         )
 
     def _make_renderer(self) -> Any:

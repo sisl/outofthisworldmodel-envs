@@ -577,6 +577,35 @@ def test_orbit_flag_overrides_the_env_config_on(tmp_path):
     assert ISSConfig.from_yaml(out / "env_config.yaml").orbit.enabled is True
 
 
+def test_render_config_follows_the_epoch_when_orbit_is_enabled():
+    from owm_envs.cli import _render_config
+    from owm_envs.envs.iss.orbit import OrbitConfig
+
+    cfg = ISSConfig(orbit=OrbitConfig(enabled=True))
+    render_cfg = _render_config(cfg)
+    assert render_cfg.sun_from_epoch is True
+    assert render_cfg.orbit == cfg.orbit.model_dump()
+
+
+def test_render_config_honours_an_explicit_sun_from_epoch_override():
+    from owm_envs.cli import _render_config
+    from owm_envs.envs.iss.orbit import OrbitConfig
+
+    cfg = ISSConfig(
+        orbit=OrbitConfig(enabled=True), render={"sun_from_epoch": False}
+    )
+    render_cfg = _render_config(cfg)
+    assert render_cfg.sun_from_epoch is False
+
+
+def test_render_config_is_untouched_when_orbit_is_disabled():
+    from owm_envs.cli import _render_config
+
+    render_cfg = _render_config(ISSConfig())
+    assert render_cfg.sun_from_epoch is False
+    assert render_cfg.orbit is None
+
+
 def test_orbit_flag_overrides_the_env_config_off(tmp_path):
     from owm_envs.envs.iss.orbit import OrbitConfig
 

@@ -26,6 +26,33 @@ def test_unknown_render_mode_raises():
         ISSEnv(render_mode="ascii")
 
 
+class _FakeRenderer:
+    """Stands in for `ISSRenderer`, recording the `t_offset_s` it is called with."""
+
+    def __init__(self):
+        self.t_offset_s_calls: list[float] = []
+
+    def render(self, state, action=None, view="DRAGON_ISO", t_offset_s=0.0):
+        self.t_offset_s_calls.append(t_offset_s)
+        return np.zeros((4, 4, 3), dtype=np.uint8)
+
+
+def test_render_passes_the_elapsed_epoch_offset_to_the_renderer():
+    from owm_envs.envs.iss.orbit import OrbitConfig
+
+    cfg = ISSConfig(orbit=OrbitConfig(enabled=True))
+    env = ISSEnv(cfg, render_mode="rgb_array")
+    env.reset(seed=0, options={"epoch_offset_s": 7.0})
+    fake = _FakeRenderer()
+    env._renderer = fake  # bypass _make_renderer(); no pygfx needed
+
+    for _ in range(2):
+        env.step(np.zeros(6, dtype=np.float32))
+    env.render()
+
+    assert fake.t_offset_s_calls[-1] == pytest.approx(7.0 + 2 * cfg.dt)
+
+
 class TestWithRenderExtra:
     """Only runs when the optional render extra is installed."""
 

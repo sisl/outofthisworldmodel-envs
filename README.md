@@ -41,6 +41,12 @@ slightly off from the local vertical. With `orbit.enabled = False` (the
 default), none of this is evaluated and the simulation is bit-identical to
 before this feature existed.
 
+**What is not modeled.** The chief (ISS reference orbit) propagates as
+two-body Keplerian motion, with no J2 oblateness or drag; the CW relative
+dynamics are linearized about a circular reference orbit; and the attitude
+dynamics treat the LVLH frame as inertial, neglecting the O(n) frame-rotation
+terms that a rotating LVLH frame would otherwise contribute.
+
 **Frame convention.** World coordinates ARE the LVLH (local-vertical,
 local-horizontal) frame of the reference orbit: `+z` is radial, pointing
 away from Earth ("up"); `-y` is along-track (the direction of orbital
@@ -57,8 +63,13 @@ orbit at `t = 0`. Each episode additionally samples a start-time offset
 uniformly from `orbit.epoch_offset_range_s` -- so different episodes begin
 at different points along the reference orbit and, when lighting follows the
 epoch (below), under different sun/Earth-rotation conditions. The sampled
-offset is recorded per episode as `epoch_offset_s` (present in `info` from
-the gym envs, and as a per-episode LeRobot feature when `orbit.enabled`).
+offset is recorded per episode as `epoch_offset_s`: the dataset
+(`batch.epoch_offsets`, and the corresponding LeRobot feature when
+`orbit.enabled`) is the source of truth. The gym envs' `info["epoch_offset_s"]`
+reflects only an offset the caller explicitly provides via
+`reset(options={"epoch_offset_s": ...})` -- the dataset-generation drivers
+sample and record the offset themselves without threading it back through
+`reset()`, so `info` stays at its default (`0.0`) during generation.
 
 **Lighting.** The renderer's sun direction and Earth spin can follow the
 same epoch: set `render.sun_from_epoch = True` (with `render.orbit` giving
@@ -66,7 +77,10 @@ the same elements/epoch as `orbit`, or a dict of `OrbitConfig` fields) and
 each rendered frame's sun direction and Earth rotation angle are computed
 from `ReferenceOrbit.sun_direction_world` at that frame's simulation time
 past the epoch, replacing the static configured `sun_direction_world`. Off
-by default: rendering is unaffected unless this is turned on explicitly.
+by default: rendering is unaffected unless this is turned on explicitly. The
+`generate` CLI wires this automatically -- `--orbit --render` follows the
+epoch without a separate `render.sun_from_epoch` setting -- unless the
+`--config` file's `render` block sets `sun_from_epoch` itself, which wins.
 
 ## Asset acknowledgements
 

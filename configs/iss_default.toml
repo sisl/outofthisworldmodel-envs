@@ -45,8 +45,11 @@ collision = -1000000.0
 
 # HCW relative orbital dynamics + gravity-gradient torque. Disabled by
 # default (enabled = false reproduces the physics above exactly). Uncomment
-# to turn on CW accelerations, gravity-gradient torque, per-episode start-time
-# sampling, and epoch-driven renderer lighting (see README "Orbital dynamics").
+# to turn on CW accelerations, gravity-gradient torque, and per-episode
+# start-time sampling. When rendering (`--render`), the CLI also makes the
+# renderer's sun direction and Earth spin follow this epoch automatically,
+# unless render.sun_from_epoch is set explicitly in a render config block
+# (see README "Orbital dynamics").
 # [orbit]
 # enabled = true
 # epoch = "2026-08-01T00:00:00Z"
