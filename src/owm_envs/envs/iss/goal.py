@@ -9,12 +9,14 @@ i.e. goal-minus-current in the rotational sense. All are computed from the SAME
 (possibly noisy) observation the dataset records -- a navigation system's output,
 not privileged truth.
 
-The orbit goal targets the NEXT reference state along the commanded circle --
-the measured position's planar projection advanced by one timestep -- rather
-than the controller's current-projection setpoint, so a perfectly-tracking
-chaser still carries a constant one-step lead error (~= omega*radius*dt
-along-track): the trajectory's heading signal. Dock remains a static
-final-state target; random remains zeros.
+The orbit goal targets the reference state ONE TIMESTEP AHEAD along the
+commanded circle -- the measured position's planar projection advanced by
+one control step -- which is also what the orbit control law regulates to
+(see `policies.orbit_reference`, the single function both consume). The
+recorded goal error is therefore exactly the position/velocity/attitude/rate
+residual the controller is driving toward zero, not a synthetic look-ahead
+target it never chases. Dock remains a static final-state target; random
+remains zeros.
 """
 
 from __future__ import annotations
@@ -27,12 +29,11 @@ import jax.numpy as jnp
 from ...core.quaternion import (
     axis_angle_from_quat,
     quat_conjugate,
-    quat_from_body_z_to,
     quat_multiply,
     quat_normalize,
 )
 from .config import ISSConfig
-from .policies import PolicyConfig
+from .policies import PolicyConfig, orbit_reference
 
 GOAL_ERROR_DIM = 12
 
@@ -62,21 +63,11 @@ def dock_goal_error(measured, cfg: ISSConfig):
 
 
 def _orbit_goal_error(measured, orbit_extras, dt):
-    axis = orbit_extras[0:3]
-    radius, omega = orbit_extras[3], orbit_extras[4]
-    pos, zeros = measured[0:3], jnp.zeros((3,), jnp.float32)
-    pos_planar = pos - jnp.dot(pos, axis) * axis
-    r_hat = pos_planar / jnp.maximum(jnp.linalg.norm(pos_planar), 1e-8)
-    # Advance r_hat by the commanded motion (Rodrigues rotation about `axis`)
-    # so the target is the NEXT reference state, one dt ahead.
-    angle = omega * dt
-    cos_a, sin_a = jnp.cos(angle), jnp.sin(angle)
-    r_hat_next = (r_hat * cos_a + jnp.cross(axis, r_hat) * sin_a
-                  + axis * jnp.dot(axis, r_hat) * (1.0 - cos_a))
-    r_hat_next = r_hat_next / jnp.maximum(jnp.linalg.norm(r_hat_next), 1e-8)
-    p_des = radius * r_hat_next
-    v_des = omega * radius * jnp.cross(axis, r_hat_next)
-    return goal_error(measured, p_des, v_des, quat_from_body_z_to(-r_hat_next), zeros)
+    # Thin wrapper: the reference state is shared with the orbit control law
+    # via `policies.orbit_reference` (see module docstring).
+    p_des, v_des, q_des = orbit_reference(measured[0:3], orbit_extras, dt)
+    zeros = jnp.zeros((3,), jnp.float32)
+    return goal_error(measured, p_des, v_des, q_des, zeros)
 
 
 def make_augment(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable | None:

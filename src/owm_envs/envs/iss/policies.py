@@ -119,6 +119,35 @@ def _build_random(cfg: ISSConfig) -> PolicyFn:
     return policy_fn
 
 
+def orbit_reference(pos_w, orbit_extras, dt):
+    """Commanded orbit reference ONE TIMESTEP AHEAD of the current projection.
+
+    Both the orbit control law (`_build_orbit`'s policy_fn) and the
+    goal-error block (`goal._orbit_goal_error`) target this same state, so
+    the recorded goal is exactly what the controller chases. Returns
+    (p_des, v_des, q_des): position on the commanded circle after advancing
+    the current planar projection by omega*dt about the axis, the
+    tangential velocity there, and the center-pointing attitude there.
+
+    `orbit_extras` layout: (axis_world[3], radius, omega) -- 5 floats.
+    """
+    axis = orbit_extras[0:3]
+    radius, omega = orbit_extras[3], orbit_extras[4]
+    pos_planar = pos_w - jnp.dot(pos_w, axis) * axis
+    r_hat = pos_planar / _safe_norm(pos_planar)
+    # Advance r_hat by the commanded motion (Rodrigues rotation about `axis`)
+    # so the target is the NEXT reference state, one dt ahead.
+    angle = omega * dt
+    cos_a, sin_a = jnp.cos(angle), jnp.sin(angle)
+    r_hat_next = (r_hat * cos_a + jnp.cross(axis, r_hat) * sin_a
+                  + axis * jnp.dot(axis, r_hat) * (1.0 - cos_a))
+    r_hat_next = r_hat_next / _safe_norm(r_hat_next)
+    p_des = radius * r_hat_next
+    v_des = omega * radius * jnp.cross(axis, r_hat_next)
+    q_des = quat_from_body_z_to(-r_hat_next)
+    return p_des, v_des, q_des
+
+
 def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasFn]:
     # This "orbit" is not a passively stable relative orbit -- it is a
     # circular trajectory at a commanded angular speed around the target,
@@ -145,25 +174,17 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
 
     def policy_fn(state, key, extras):
         del key
-        axis_world = extras[0:3]
-        target_radius = extras[3]
-        orbit_omega = extras[4]
-
         pos_w, vel_w = state[0:3], state[3:6]
         q_bw = quat_normalize(state[6:10])
         omega_b = state[10:13]
 
-        # Project onto the orbital plane to get the desired point and tangential speed.
-        pos_planar = pos_w - jnp.dot(pos_w, axis_world) * axis_world
-        r_hat = pos_planar / _safe_norm(pos_planar)
-        p_des = target_radius * r_hat
-        v_des = orbit_omega * target_radius * jnp.cross(axis_world, r_hat)
+        p_des, v_des, q_des = orbit_reference(pos_w, extras, cfg.dt)
 
         force_world = -params.kp_position * (pos_w - p_des) - params.kd_velocity * (vel_w - v_des)
         force_body = quat_to_rotmat(q_bw).T @ force_world
 
         torque_body = _attitude_torque(
-            q_bw, quat_from_body_z_to(-r_hat), omega_b,
+            q_bw, q_des, omega_b,
             inertia_diag=inertia_diag,
             kp_attitude=params.kp_attitude, kd_attitude=params.kd_attitude,
         )
