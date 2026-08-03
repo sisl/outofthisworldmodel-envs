@@ -3,9 +3,18 @@ Training data environments for the Out of this World Model (OWM) world model
 
 ## Command-line usage
 
-    owm-envs generate --out logs/run1 --split train:512:0 --policy union
+    owm-envs generate --out logs/run1 --split train:100000t:0 --split val:20000t:1
     owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
     owm-envs list
+
+`--split NAME:COUNT[t]:SEED[:POLICY]` is repeatable. COUNT with a trailing
+`t` targets a minimum number of transitions -- the split runs whole episodes
+until it has accumulated at least that many -- rather than a fixed episode
+count. This is the RECOMMENDED way to size a split: target the training
+budget you actually need (transitions are what a world model actually trains
+on) rather than guessing an episode count first and checking how many
+transitions it happened to produce. Episode counts (`train:512:0`) remain
+supported for when the episode count itself is what matters.
 
 `--noise off|cooperative|noncooperative` overrides the `--config` file's
 `sensor_noise` with a named preset; omit it to leave the config's own setting

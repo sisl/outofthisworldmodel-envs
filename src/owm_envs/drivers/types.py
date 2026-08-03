@@ -12,19 +12,41 @@ Gymnasium pair.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import numpy as np
 
+# Salts a transitions-mode chunk seed so it does not collide with the
+# episodes-mode stream at the same spec.seed. numpy's SeedSequence absorbs
+# trailing zeros, so `default_rng([seed, 0])` -- chunk 0's seed with no salt
+# -- draws byte-identically to `default_rng(seed)`, meaning a transitions-mode
+# run would silently reproduce episodes-mode's dataset at a shared seed.
+TRANSITIONS_STREAM = 0x7C5
+
 
 @dataclass(frozen=True)
 class RolloutSpec:
-    """What to generate. Deliberately backend-agnostic."""
+    """What to generate. Deliberately backend-agnostic.
 
-    num_episodes: int
+    Exactly one of `num_episodes` or `min_transitions` sizes the rollout;
+    see `__post_init__`.
+    """
+
+    num_episodes: int | None = field(default=None, kw_only=True)
     max_steps: int
     seed: int
+    min_transitions: int | None = field(default=None, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if (self.num_episodes is None) == (self.min_transitions is None):
+            raise ValueError(
+                "exactly one of num_episodes or min_transitions must be set"
+            )
+        if self.min_transitions is not None and self.min_transitions < 1:
+            raise ValueError(
+                f"min_transitions must be >= 1, got {self.min_transitions}"
+            )
 
 
 @dataclass(frozen=True)

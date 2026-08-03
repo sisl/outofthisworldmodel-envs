@@ -470,3 +470,42 @@ def test_path_like_split_names_are_rejected():
             "train": SplitSpec(num_episodes=2, seed=0),
             "../evil": SplitSpec(num_episodes=2, seed=1),
         })
+
+
+def test_split_spec_rejects_both_num_episodes_and_min_transitions():
+    with pytest.raises(ValueError, match="exactly one"):
+        SplitSpec(num_episodes=2, min_transitions=100, seed=0)
+
+
+def test_split_spec_rejects_neither_num_episodes_nor_min_transitions():
+    with pytest.raises(ValueError, match="exactly one"):
+        SplitSpec(seed=0)
+
+
+def test_split_spec_min_transitions_mode_round_trips_through_yaml(tmp_path):
+    gen = GenerationConfig(splits={"train": SplitSpec(min_transitions=500, seed=0)})
+    path = tmp_path / "gen.yaml"
+    gen.to_yaml(path)
+    loaded = GenerationConfig.from_yaml(path)
+    assert loaded == gen
+    assert loaded.splits["train"].min_transitions == 500
+    assert loaded.splits["train"].num_episodes is None
+
+
+def test_card_records_min_transitions_and_num_episodes_requested():
+    train = batch_with_constant_observations(1.0)
+    val = batch_with_constant_observations(2.0)
+    gen = GenerationConfig(splits={
+        "train": SplitSpec(num_episodes=train.num_episodes, seed=0),
+        "val": SplitSpec(min_transitions=10, seed=1),
+    })
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), gen_cfg=gen,
+        batches={"train": train, "val": val}, fps=20,
+    )
+    assert metadata.card["splits"]["train"]["min_transitions"] is None
+    assert metadata.card["splits"]["train"]["num_episodes_requested"] == train.num_episodes
+    assert metadata.card["splits"]["val"]["min_transitions"] == 10
+    assert metadata.card["splits"]["val"]["num_episodes_requested"] is None
+    # "episodes" stays the ACTUAL count regardless of which mode was requested.
+    assert metadata.card["splits"]["val"]["episodes"] == val.num_episodes

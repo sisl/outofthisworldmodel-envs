@@ -45,7 +45,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .types import PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
+from .types import TRANSITIONS_STREAM, PolicySource, RolloutSpec, TrajectoryBatch, pack_episodes
 
 
 def _lane_info(info: dict, lane: int) -> dict:
@@ -83,7 +83,7 @@ class VectorEnvDriver:
         )
 
     def generate(self, spec: RolloutSpec) -> TrajectoryBatch:
-        if spec.num_episodes < 1:
+        if spec.num_episodes is not None and spec.num_episodes < 1:
             raise ValueError(f"num_episodes must be >= 1, got {spec.num_episodes}")
         if spec.max_steps < 1:
             raise ValueError(f"max_steps must be >= 1, got {spec.max_steps}")
@@ -109,7 +109,13 @@ class VectorEnvDriver:
         act_dim = env.single_action_space.shape[0]
         records_policy_ids = self.policy_source.records_policy_ids
 
-        rng = np.random.default_rng(spec.seed)
+        # Salted in transitions mode so its stream doesn't collide with the
+        # episodes-mode stream at the same spec.seed (see TRANSITIONS_STREAM).
+        rng = (
+            np.random.default_rng([spec.seed, TRANSITIONS_STREAM])
+            if spec.min_transitions is not None
+            else np.random.default_rng(spec.seed)
+        )
 
         obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
 
@@ -152,12 +158,22 @@ class VectorEnvDriver:
         lane_frozen = [False] * num_envs
 
         finished: list[dict[str, Any]] = []
+        # Only meaningful in min_transitions mode, but tracked unconditionally
+        # since it's cheap and keeps the quota check below mode-agnostic --
+        # sum(len(e["obs"]) - 1 for e in finished), maintained incrementally
+        # instead of recomputed, matching TrajectoryBatch.total_transitions.
+        transitions_collected = 0
         zero_action = np.zeros((act_dim,), dtype=np.float32)
+
+        def quota_met() -> bool:
+            if spec.num_episodes is not None:
+                return len(finished) >= spec.num_episodes
+            return transitions_collected >= spec.min_transitions
 
         action_low = np.asarray(env.single_action_space.low, dtype=np.float32)
         action_high = np.asarray(env.single_action_space.high, dtype=np.float32)
 
-        while len(finished) < spec.num_episodes:
+        while not quota_met():
             actions = np.zeros((num_envs, act_dim), dtype=np.float32)
             for lane in range(num_envs):
                 if lane_frozen[lane] or lane_awaiting_reset[lane]:
@@ -218,7 +234,12 @@ class VectorEnvDriver:
                 if env_done or horizon_hit:
                     lane_act[lane].append(zero_action.copy())
                     lane_rew[lane].append(0.0)
-                    if len(finished) < spec.num_episodes:
+                    if not quota_met():
+                        # Whole episodes only, first-crossing included: this
+                        # guard (not just the outer while) matters because
+                        # several lanes can finish within the same step()
+                        # call -- once the quota is met mid-loop, later lanes
+                        # in this same pass must NOT be recorded too.
                         finished.append(
                             {
                                 "obs": np.stack(lane_obs[lane]),
@@ -231,6 +252,7 @@ class VectorEnvDriver:
                                 else 0,
                             }
                         )
+                        transitions_collected += len(lane_obs[lane]) - 1
                     lane_act[lane] = []
                     lane_rew[lane] = []
                     lane_episode_state[lane] = self.policy_source.new_episode(
@@ -256,7 +278,7 @@ class VectorEnvDriver:
             # this never engages, and lanes keep their full independent
             # throughput, unless spec.max_steps actually forced a freeze.
             if (
-                len(finished) < spec.num_episodes
+                not quota_met()
                 and any(lane_frozen)
                 and all(lane_frozen[lane] or lane_awaiting_reset[lane] for lane in range(num_envs))
             ):
@@ -274,6 +296,8 @@ class VectorEnvDriver:
                 lane_frozen = [False] * num_envs
                 lane_awaiting_reset = [False] * num_envs
 
-        return pack_episodes(
-            finished[: spec.num_episodes], obs_dim, act_dim, records_policy_ids
-        )
+        # The slice is a defensive no-op kept for clarity: the append guard
+        # above already stops recording at quota in both modes, so `finished`
+        # never actually exceeds spec.num_episodes by the time we get here.
+        episodes = finished if spec.num_episodes is None else finished[: spec.num_episodes]
+        return pack_episodes(episodes, obs_dim, act_dim, records_policy_ids)

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
@@ -90,12 +90,24 @@ def code_provenance() -> dict:
 
 
 class SplitSpec(ConfigModel):
-    num_episodes: int = Field(default=64, ge=1)
+    # Exactly one of these two sizes the split: episode count, or usable
+    # (state, action, next-state) transitions (an episode of length L
+    # contributes L - 1). See `_validate_mode`.
+    num_episodes: int | None = Field(default=None, ge=1)
+    min_transitions: int | None = Field(default=None, ge=1)
     max_steps: int = Field(default=2000, ge=1)
     seed: int = Field(default=0, ge=0)
     # None inherits the run-level policy. Set it to give this split its own
     # -- e.g. a dock-only val split against a union-policy train split.
     policy: PolicyConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> "SplitSpec":
+        if (self.num_episodes is None) == (self.min_transitions is None):
+            raise ValueError(
+                "exactly one of num_episodes or min_transitions must be set"
+            )
+        return self
 
 
 class GenerationConfig(ConfigModel):
@@ -304,6 +316,8 @@ def build_run_metadata(
                 "transitions": b.total_transitions,
                 "seed": gen_cfg.splits[name].seed,
                 "max_steps": gen_cfg.splits[name].max_steps,
+                "min_transitions": gen_cfg.splits[name].min_transitions,
+                "num_episodes_requested": gen_cfg.splits[name].num_episodes,
                 "policy_type": _split_policy(name).type,
                 "union_weights": list(_split_policy(name).union_weights),
             }
