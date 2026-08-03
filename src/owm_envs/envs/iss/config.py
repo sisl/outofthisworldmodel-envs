@@ -141,9 +141,17 @@ class ISSConfig(ConfigModel):
     # also a divisor -- the recorded frame rate is 1/dt -- so zero would raise
     # rather than produce a wrong number.
     dt: float = Field(default=0.05, gt=0, allow_inf_nan=False)
-    # 2000 * 0.05 = 100 s. Past this the Earth-rotation texture sampling in the
-    # renderer visibly glitches, so episodes are capped here.
-    max_steps: int = 2000
+    # 7200 * 0.05 = 360 s. Sized for the orbit policy's largest commanded
+    # circle: at 500 m the chaser needs ~198 s to fly out from the start sphere
+    # and settle, and the fastest holdable orbit there has a ~148 s period, so
+    # anything shorter ends before a revolution completes.
+    #
+    # The renderer's Earth patch spans 50 deg and its rotation is currently
+    # static (applied once at scene build), so this is safe today. Once
+    # epoch-driven Earth rotation lands, the along-track ground-track motion
+    # over 360 s is ~23 deg against a +/-25 deg patch -- close enough to the
+    # edge that the patch width has to be revisited alongside it.
+    max_steps: int = 7200
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)

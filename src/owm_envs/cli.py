@@ -103,7 +103,7 @@ def generate(
              "COUNT is an episode count, or a minimum transition target with a "
              "trailing 't' (e.g. 100000t); POLICY overrides --policy for that split.",
     ),
-    steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 2000)."),
+    steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 7200)."),
     num_envs: Optional[int] = typer.Option(None, help="Parallel lanes (default 8)."),
     driver: Optional[str] = typer.Option(None, help="auto | scan | vector (default auto)."),
     fps: Optional[int] = typer.Option(None, help="Frames per second recorded in the dataset. "
@@ -168,7 +168,7 @@ def generate(
                 f"cannot read --gen-config {gen_config}: {exc}"
             ) from exc
     else:
-        resolved_steps = steps if steps is not None else 2000
+        resolved_steps = steps if steps is not None else 7200
         try:
             gen = GenerationConfig(
                 splits=_parse_split_flags(
