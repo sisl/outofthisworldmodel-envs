@@ -263,6 +263,15 @@ def test_noiseless_vector_env_info_state_equals_observation():
     np.testing.assert_array_equal(obs, info["state"])
 
 
+def test_vector_goal_error_observations_are_25_dim():
+    cfg = ISSConfig(observation={"goal_error": True})
+    env = ISSVectorEnv(num_envs=2, cfg=cfg)
+    assert env.single_observation_space.shape == (25,)
+    obs, info = env.reset(seed=4)
+    assert obs.shape == (2, 25)
+    assert info["state"].shape == (2, 13)
+
+
 def test_true_state_survives_autoreset_with_noise():
     # Sensor noise must not perturb the dynamics key stream: the true state
     # produced by an autoreset must be identical whether or not noise is

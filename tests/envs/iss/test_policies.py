@@ -97,6 +97,50 @@ def test_orbit_policy_action_is_finite_when_radial_direction_is_exact_body_minus
     assert np.all(np.isfinite(np.asarray(action)))
 
 
+def test_orbit_controller_and_goal_share_the_reference():
+    # The controller and the recorded goal-error block must chase the exact
+    # same commanded state -- otherwise the recorded goal is not what the
+    # policy is actually doing. Both must be built from the same
+    # `orbit_reference` call for a given (measured pos, extras, dt).
+    from owm_envs.core.quaternion import quat_normalize, quat_to_rotmat
+    from owm_envs.envs.iss.goal import goal_error
+    from owm_envs.envs.iss.policies import orbit_reference
+
+    params = PCFG.orbit
+    policy_fn, _ = make_policy(CFG, PCFG, "orbit")
+    extras = jnp.array([0.0, 0.0, 1.0, 120.0, 0.15], dtype=jnp.float32)
+
+    # A random off-circle state: not on the commanded radius, with nonzero
+    # velocity, a non-identity attitude and nonzero body rates.
+    key_pos, key_vel, key_quat, key_omega = jax.random.split(jax.random.PRNGKey(7), 4)
+    pos = jax.random.normal(key_pos, (3,), dtype=jnp.float32) * 50.0 + jnp.array(
+        [80.0, 30.0, 5.0], dtype=jnp.float32
+    )
+    vel = jax.random.normal(key_vel, (3,), dtype=jnp.float32)
+    q_bw = quat_normalize(jax.random.normal(key_quat, (4,), dtype=jnp.float32))
+    omega = 0.05 * jax.random.normal(key_omega, (3,), dtype=jnp.float32)
+    state = jnp.concatenate([pos, vel, q_bw, omega])
+
+    p_des, v_des, q_des = orbit_reference(state[0:3], extras, CFG.dt)
+
+    action = policy_fn(state, jax.random.PRNGKey(0), extras)
+    force_world_expected = -params.kp_position * (state[0:3] - p_des) - params.kd_velocity * (
+        state[3:6] - v_des
+    )
+    force_body_expected = quat_to_rotmat(q_bw).T @ force_world_expected
+    np.testing.assert_allclose(
+        np.asarray(action[0:3]), np.asarray(force_body_expected), atol=1e-3
+    )
+
+    goal_err = goal_error(state, p_des, v_des, q_des, jnp.zeros(3, jnp.float32))
+    np.testing.assert_allclose(
+        np.asarray(goal_err[0:3]), np.asarray(state[0:3] - p_des), atol=1e-6
+    )
+    np.testing.assert_allclose(
+        np.asarray(goal_err[3:6]), np.asarray(state[3:6] - v_des), atol=1e-6
+    )
+
+
 def test_union_selects_all_three_subpolicies_across_seeds():
     _, extras_fn = make_policy(CFG, PCFG, "union")
     chosen = {int(extras_fn(jax.random.PRNGKey(s))[0]) for s in range(200)}

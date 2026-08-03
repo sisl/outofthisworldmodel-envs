@@ -17,6 +17,7 @@ from gymnasium import spaces
 
 from .config import ISSConfig
 from .dynamics import ISSDynamics
+from .goal import GOAL_ERROR_DIM, dock_goal_error
 from .reward import iss_reward
 from .sensing import NOISE_STREAM, apply_sensor_noise
 
@@ -29,6 +30,9 @@ def _observation_space(cfg: ISSConfig) -> spaces.Box:
     high = np.array(
         [inf] * 3 + [inf] * 3 + [1.0] * 4 + [inf] * 3, dtype=np.float32
     )
+    if cfg.observation.goal_error:
+        low = np.concatenate([low, [-inf] * GOAL_ERROR_DIM]).astype(np.float32)
+        high = np.concatenate([high, [inf] * GOAL_ERROR_DIM]).astype(np.float32)
     return spaces.Box(low=low, high=high, dtype=np.float32)
 
 
@@ -83,6 +87,11 @@ class ISSEnv(gym.Env):
         # jit once at construction; both are pure functions of (state, action).
         self._jit_step = jax.jit(self.dynamics.step)
         self._jit_reset = jax.jit(self.dynamics.reset)
+        self._jit_dock_goal_error = (
+            jax.jit(lambda measured: dock_goal_error(measured, self.cfg))
+            if self.cfg.observation.goal_error
+            else None
+        )
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
@@ -135,13 +144,21 @@ class ISSEnv(gym.Env):
         )
 
     def _obs(self) -> np.ndarray:
-        state = np.asarray(self._state, dtype=np.float32)
         if not self.cfg.sensor_noise.enabled:
-            return state
-        # Noise draws come from `_noise_key`, a fold_in side stream set up in
-        # reset() -- split here, never touching np_random or the dynamics key.
-        self._noise_key, subkey = jax.random.split(self._noise_key)
-        measured = apply_sensor_noise(jnp.asarray(state), subkey, self.cfg.sensor_noise)
+            measured = jnp.asarray(self._state, dtype=jnp.float32)
+        else:
+            # Noise draws come from `_noise_key`, a fold_in side stream set up
+            # in reset() -- split here, never touching np_random or the
+            # dynamics key.
+            self._noise_key, subkey = jax.random.split(self._noise_key)
+            measured = apply_sensor_noise(
+                jnp.asarray(self._state), subkey, self.cfg.sensor_noise
+            )
+        if self._jit_dock_goal_error is not None:
+            # Computed from `measured`, not `self._state`: the goal block
+            # must reflect the same (possibly noisy) observation the caller
+            # receives, never a second noise draw or privileged truth.
+            measured = jnp.concatenate([measured, self._jit_dock_goal_error(measured)])
         return np.asarray(measured, dtype=np.float32)
 
     def _true_state(self) -> np.ndarray:

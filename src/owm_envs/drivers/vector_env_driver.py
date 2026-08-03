@@ -73,6 +73,15 @@ class VectorEnvDriver:
         self.env_factory = env_factory
         self.policy_source = policy_source
 
+    def _augment(self, observation: np.ndarray, episode_state: Any) -> np.ndarray:
+        """The observation to RECORD -- run through the policy source's
+        augment hook. Note this is never what `policy_source.act()` sees;
+        `act()` above is always called with the raw `obs[lane]`."""
+        return np.asarray(
+            self.policy_source.augment_observation(observation.copy(), episode_state),
+            dtype=np.float32,
+        )
+
     def generate(self, spec: RolloutSpec) -> TrajectoryBatch:
         if spec.num_episodes < 1:
             raise ValueError(f"num_episodes must be >= 1, got {spec.num_episodes}")
@@ -97,13 +106,21 @@ class VectorEnvDriver:
 
     def _run(self, env: Any, spec: RolloutSpec) -> TrajectoryBatch:
         num_envs = env.num_envs
-        obs_dim = env.single_observation_space.shape[0]
         act_dim = env.single_action_space.shape[0]
         records_policy_ids = self.policy_source.records_policy_ids
 
         rng = np.random.default_rng(spec.seed)
 
         obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
+
+        # Episode state is created before `lane_obs` below (rather than after,
+        # as the accumulator list order might suggest) purely so the initial
+        # observations can be augmented against it -- it draws from `rng` no
+        # differently than before, so this reorder changes no seed's result.
+        lane_episode_state = [
+            self.policy_source.new_episode(int(seed))
+            for seed in rng.integers(0, 2**31 - 1, size=num_envs)
+        ]
 
         # Per-lane episode accumulators. Each episode stores N + 1
         # observations (the seed state plus each post-step state, including
@@ -112,7 +129,16 @@ class VectorEnvDriver:
         # collision/docking state, the very thing a world model needs to
         # learn, would never appear in the dataset. `lane_obs` is seeded with
         # each lane's reset observation up front, before any action exists.
-        lane_obs: list[list[np.ndarray]] = [[o.copy()] for o in obs]
+        #
+        # Every observation stored here goes through
+        # `policy_source.augment_observation()` first (identity unless the
+        # source appends something, e.g. ISSPolicySource's goal-error block)
+        # -- `obs_dim` is measured from that augmented width, not the env's
+        # raw observation space, since the two can legitimately differ.
+        lane_obs: list[list[np.ndarray]] = [
+            [self._augment(o, lane_episode_state[lane])] for lane, o in enumerate(obs)
+        ]
+        obs_dim = lane_obs[0][0].shape[0]
         lane_act: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
         lane_rew: list[list[float]] = [[] for _ in range(num_envs)]
         lane_step = [0] * num_envs
@@ -124,10 +150,6 @@ class VectorEnvDriver:
         # done -- see module docstring. It keeps stepping (no-op, discarded)
         # until the whole cohort is safe to reset together.
         lane_frozen = [False] * num_envs
-        lane_episode_state = [
-            self.policy_source.new_episode(int(seed))
-            for seed in rng.integers(0, 2**31 - 1, size=num_envs)
-        ]
 
         finished: list[dict[str, Any]] = []
         zero_action = np.zeros((act_dim,), dtype=np.float32)
@@ -174,15 +196,18 @@ class VectorEnvDriver:
                     # NEXT_STEP autoreset -- next_obs is already the real
                     # reset state. Seed the new episode with it; nothing was
                     # actually applied to this lane, so there's no
-                    # transition to record.
-                    lane_obs[lane] = [next_obs[lane].copy()]
+                    # transition to record. `lane_episode_state[lane]` is
+                    # already this new episode's state (set when the previous
+                    # one was finalized below), so it's the right state to
+                    # augment against.
+                    lane_obs[lane] = [self._augment(next_obs[lane], lane_episode_state[lane])]
                     lane_awaiting_reset[lane] = False
                     lane_step[lane] = 0
                     continue
 
                 lane_act[lane].append(actions[lane].copy())
                 lane_rew[lane].append(float(rewards[lane]))
-                lane_obs[lane].append(next_obs[lane].copy())
+                lane_obs[lane].append(self._augment(next_obs[lane], lane_episode_state[lane]))
                 lane_step[lane] += 1
 
                 # The env's own truncation is driven by its own config, which
@@ -236,7 +261,13 @@ class VectorEnvDriver:
                 and all(lane_frozen[lane] or lane_awaiting_reset[lane] for lane in range(num_envs))
             ):
                 obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
-                lane_obs = [[o.copy()] for o in obs]
+                # Every lane here is either frozen or awaiting-reset, so
+                # `lane_episode_state[lane]` already holds each lane's next
+                # episode's state (set when it was finalized above) -- the
+                # same state this reset's observation belongs to.
+                lane_obs = [
+                    [self._augment(o, lane_episode_state[lane])] for lane, o in enumerate(obs)
+                ]
                 lane_act = [[] for _ in range(num_envs)]
                 lane_rew = [[] for _ in range(num_envs)]
                 lane_step = [0] * num_envs

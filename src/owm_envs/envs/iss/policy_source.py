@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .config import ISSConfig
+from .goal import make_augment
 from .policies import EXTRAS_DIM, PolicyConfig, make_policy
 
 # extras[0] holds the sub-policy index for the union mixture (see policies.py).
@@ -34,6 +35,7 @@ class ISSPolicySource:
         self._policy_fn, self._extras_fn = make_policy(cfg, policy_cfg)
         self._extras_width = EXTRAS_DIM[policy_cfg.type]
         self._observe = policy_cfg.observe
+        self._augment = make_augment(cfg, policy_cfg)
 
     def new_episode(self, seed: int) -> _EpisodeState:
         key = jax.random.PRNGKey(seed)
@@ -57,6 +59,12 @@ class ISSPolicySource:
         policy_input = info.get("state", observation) if self._observe == "state" else observation
         action = self._policy_fn(jnp.asarray(policy_input), act_key, episode_state.extras)
         return np.asarray(action, dtype=np.float32)
+
+    def augment_observation(self, observation: np.ndarray, episode_state: _EpisodeState) -> np.ndarray:
+        if self._augment is None:
+            return observation
+        augmented = self._augment(jnp.asarray(observation), episode_state.extras)
+        return np.asarray(augmented, dtype=np.float32)
 
     def policy_id(self, episode_state: _EpisodeState) -> int:
         if episode_state.extras.shape[0] == 0:

@@ -125,6 +125,16 @@ class RewardWeights(ConfigModel):
     collision: float = -1_000_000.0
 
 
+class ObservationConfig(ConfigModel):
+    """What the emitted observation contains beyond the 13-dim state."""
+
+    # Appends [pos_err(3), vel_err(3), att_err_axis_angle(3), rate_err(3)]
+    # (obs 13 -> 25). Gym envs use the dock pose as the goal; the rollout
+    # drivers resolve the goal per policy (dock pose / orbit desired state /
+    # zeros for random).
+    goal_error: bool = False
+
+
 class ISSConfig(ConfigModel):
     # Strictly positive and finite: dt scales every RK4 stage, so zero freezes
     # the simulation and a negative value integrates backwards in time. It is
@@ -139,6 +149,7 @@ class ISSConfig(ConfigModel):
     control: ControlConfig = Field(default_factory=ControlConfig)
     dock: DockConfig = Field(default_factory=DockConfig)
     sensor_noise: SensorNoiseConfig = Field(default_factory=SensorNoiseConfig)
+    observation: ObservationConfig = Field(default_factory=ObservationConfig)
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     # Overrides the reward's position-error target. When None (default),

@@ -59,6 +59,10 @@ class _ConstantPolicySource:
         del observation, episode_state, step, info
         return self._action.copy()
 
+    def augment_observation(self, observation, episode_state):
+        del episode_state
+        return observation
+
     def policy_id(self, episode_state):
         del episode_state
         return 0
@@ -448,6 +452,10 @@ class _CountingPolicySource:
         episode_id, step_in_episode = divmod(remainder, 100)
         self.calls.append((self._env.step_calls, lane, episode_id, step_in_episode))
         return np.zeros((1,), dtype=np.float32)
+
+    def augment_observation(self, observation, episode_state):
+        del episode_state
+        return observation
 
     def policy_id(self, episode_state):
         del episode_state

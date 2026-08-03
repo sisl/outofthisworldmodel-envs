@@ -1,4 +1,5 @@
 import gymnasium as gym
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from gymnasium.utils.env_checker import check_env
@@ -6,11 +7,16 @@ from gymnasium.utils.env_checker import check_env
 import owm_envs.envs  # noqa: F401  -- triggers registration
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
+from owm_envs.envs.iss.goal import dock_goal_error
 from owm_envs.envs.iss.sensing import PRESETS
 
 
 def test_passes_the_gymnasium_env_checker():
     check_env(ISSEnv(), skip_render_check=True)
+
+
+def test_env_checker_accepts_goal_error_observations():
+    check_env(ISSEnv(ISSConfig(observation={"goal_error": True})), skip_render_check=True)
 
 
 def test_registered_id_constructs():
@@ -170,6 +176,27 @@ def test_noisy_env_reset_is_reproducible_per_seed():
     a, _ = ISSEnv(cfg).reset(seed=11)
     b, _ = ISSEnv(cfg).reset(seed=11)
     np.testing.assert_array_equal(a, b)
+
+
+def test_goal_error_observation_is_25_dim_and_zero_at_dock():
+    cfg = ISSConfig(observation={"goal_error": True})
+    env = ISSEnv(cfg)
+    assert env.observation_space.shape == (25,)
+    obs, info = env.reset(seed=2)
+    assert obs.shape == (25,)
+    assert info["state"].shape == (13,)
+    np.testing.assert_allclose(
+        obs[13:], np.asarray(dock_goal_error(jnp.asarray(obs[:13]), cfg)), atol=1e-6
+    )
+
+
+def test_goal_block_uses_the_measured_state_when_noisy():
+    cfg = ISSConfig(observation={"goal_error": True}, sensor_noise=PRESETS["cooperative"])
+    obs, info = ISSEnv(cfg).reset(seed=2)
+    np.testing.assert_allclose(
+        obs[13:], np.asarray(dock_goal_error(jnp.asarray(obs[:13]), cfg)), atol=1e-6
+    )
+    assert not np.array_equal(obs[:13], info["state"])
 
 
 def test_noise_does_not_perturb_true_dynamics_across_resets():

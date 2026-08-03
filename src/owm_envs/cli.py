@@ -20,7 +20,7 @@ from pydantic import ValidationError
 
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
 from .drivers.types import RolloutSpec
-from .envs.iss.config import ISSConfig
+from .envs.iss.config import ISSConfig, ObservationConfig
 from .envs.iss.policies import PolicyConfig
 from .envs.iss.sensing import PRESETS
 
@@ -102,6 +102,11 @@ def generate(
     noise: Optional[str] = typer.Option(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "
                    "Overrides the --config file's sensor_noise."),
+    goal_error: Optional[bool] = typer.Option(
+        None, "--goal-error/--no-goal-error",
+        help="Append the dock-goal error block to observations. "
+             "Overrides the --config file's observation.goal_error; "
+             "default is whatever the config says."),
     observe: str = typer.Option(
         "measurement", help="What scripted policies consume: state | measurement "
                             "(default: measurement, the noisy value the dataset records)."),
@@ -174,6 +179,8 @@ def generate(
                 f"unknown --noise preset '{noise}'; use one of: {', '.join(PRESETS)}"
             )
         cfg = cfg.model_copy(update={"sensor_noise": PRESETS[noise]})
+    if goal_error is not None:
+        cfg = cfg.model_copy(update={"observation": ObservationConfig(goal_error=goal_error)})
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
         policy_cfg = PolicyConfig(type=policy, observe=observe)
@@ -292,10 +299,15 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
     from .envs.iss.policy_source import ISSPolicySource
 
     def build_vector() -> _Chosen:
+        # ISSPolicySource applies its own policy-aware goal-error block (see
+        # augment_observation) from the ORIGINAL cfg; the env it drives must
+        # therefore stay at the raw 13-dim observation, or the block would be
+        # appended twice -- once by the env, once by the policy source.
+        env_cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"goal_error": False})})
         return _Chosen(
             "vector",
             VectorEnvDriver(
-                env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
+                env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=env_cfg),
                 policy_source=ISSPolicySource(cfg, policy_cfg),
             ),
         )

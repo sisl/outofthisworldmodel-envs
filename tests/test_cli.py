@@ -60,6 +60,20 @@ def test_both_drivers_are_selectable(tmp_path):
         assert (out / "summary.json").exists()
 
 
+def test_resolve_driver_vector_path_does_not_double_augment():
+    # ISSPolicySource applies the goal-error block itself on the vector path
+    # (see policy_source.py); if _resolve_driver handed the ORIGINAL cfg to
+    # ISSVectorEnv too, the env would already emit 25-dim observations and
+    # the policy source would append a second block on top -- 37-dim, not 25.
+    from owm_envs.cli import _resolve_driver
+    from owm_envs.drivers.types import RolloutSpec
+
+    cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
+    chosen = _resolve_driver("vector", cfg, PolicyConfig(type="dock"), num_envs=2)
+    batch = chosen.driver.generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
+    assert batch.observations.shape[-1] == 25
+
+
 def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
     out = tmp_path / "auto"
     result = runner.invoke(
@@ -501,3 +515,22 @@ def test_unknown_noise_preset_is_rejected(tmp_path):
         "--split", "train:2:0", "--noise", "bogus", "--no-lerobot",
     ])
     assert result.exit_code != 0
+
+
+def test_goal_error_flag_overrides_the_env_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--goal-error", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is True
+
+
+def test_goal_error_flag_defaults_to_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is False
