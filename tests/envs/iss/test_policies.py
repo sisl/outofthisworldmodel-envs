@@ -181,6 +181,68 @@ def test_radius_range_must_be_ordered_positive_and_finite():
     for bad in ((0.0, 100.0), (-10.0, 100.0), (200.0, 100.0), (60.0, float("inf"))):
         with pytest.raises(ValueError):
             OrbitParams(radius_range_m=bad)
+    # Finite positive in Python, but zero / inf once the sampler casts to
+    # float32 -- the same hole by another route.
+    for bad in ((1e-100, 1e-100), (1e100, 1e100)):
+        with pytest.raises(ValueError):
+            OrbitParams(radius_range_m=bad)
+
+
+def test_full_speed_fraction_spends_exactly_the_thrust_budget():
+    # The bound must be ATTAINED, not merely respected: omega = 0 or any
+    # arbitrarily conservative rate would satisfy an upper-bound-only check.
+    for damping in (0.0, 0.05):
+        cfg = ISSConfig(
+            physics=PhysicsConfig(collision_boxes_path=None, linear_damping=damping),
+            dock=DockConfig(position=(0.0, 0.0, 0.0)),
+        )
+        pcfg = PolicyConfig(orbit=OrbitParams(speed_fraction_range=(1.0, 1.0)))
+        _, extras_fn = make_policy(cfg, pcfg, "orbit")
+        budget = pcfg.orbit.thrust_utilization * cfg.control.limit_force_n
+        for seed in range(20):
+            extras = extras_fn(jax.random.PRNGKey(seed))
+            radius, omega = float(extras[3]), float(extras[4])
+            centripetal = cfg.physics.mass * omega**2 * radius
+            drag = cfg.physics.mass * damping * omega * radius
+            assert np.isclose(np.hypot(centripetal, drag), budget, rtol=1e-4)
+
+
+def test_orbit_feedforward_cancels_linear_drag():
+    # With damping on, holding the circle needs m*c*v_des tangentially. Absent
+    # the feedforward the PD must source it from a standing radial error of
+    # roughly 7015 N / kp = 6.5 m at these settings -- 3.2%, well outside the
+    # 1% band asserted below.
+    damping = 0.05
+    cfg = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None, linear_damping=damping),
+        dock=DockConfig(position=(0.0, 0.0, 0.0)),
+    )
+    policy_fn, _ = make_policy(cfg, PCFG, "orbit")
+    dynamics = ISSDynamics(cfg)
+    radius = 200.0
+    ratio = PCFG.orbit.thrust_utilization * cfg.control.limit_force_n / (
+        cfg.physics.mass * radius
+    )
+    omega = float(np.sqrt(
+        2.0 * ratio**2 / (damping**2 + np.sqrt(damping**4 + 4.0 * ratio**2))
+    ))
+    axis = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
+    r_hat = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+    extras = jnp.array([0.0, 0.0, 1.0, radius, omega], dtype=jnp.float32)
+    state = jnp.concatenate([
+        radius * r_hat,
+        omega * radius * jnp.cross(axis, r_hat),
+        quat_from_body_z_to(-r_hat),
+        jnp.zeros((3,), dtype=jnp.float32),
+    ])
+    radii = []
+    for _ in range(2000):
+        action = policy_fn(state, jax.random.PRNGKey(0), extras)
+        state, _ = dynamics.step(state, action)
+        radii.append(float(jnp.linalg.norm(state[0:3] - jnp.dot(state[0:3], axis) * axis)))
+
+    settled = np.asarray(radii[len(radii) // 2:])
+    assert np.abs(settled.mean() / radius - 1.0) < 0.01
 
 
 def test_sampled_orbit_is_within_budget_under_linear_damping():

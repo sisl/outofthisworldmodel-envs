@@ -13,6 +13,7 @@ from typing import Callable, Literal
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
@@ -75,6 +76,15 @@ class OrbitParams(ConfigModel):
         if not 0.0 < lo <= hi or not math.isfinite(hi):
             raise ValueError(
                 f"radius_range_m must satisfy 0 < lo <= hi < inf, got {v}"
+            )
+        # The sampler works in float32, where a finite positive Python float
+        # can still underflow to zero or overflow to inf and reopen the same
+        # hole, so bound the range by what float32 represents.
+        f32 = np.finfo(np.float32)
+        if lo < float(f32.tiny) or hi > float(f32.max):
+            raise ValueError(
+                f"radius_range_m must stay within float32's normal range "
+                f"[{float(f32.tiny):g}, {float(f32.max):g}] m, got {v}"
             )
         return v
 
@@ -218,12 +228,16 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
         # linear damping is on, m*c*w*R tangentially to cancel the drag. The
         # two are perpendicular, so the steady-state force magnitude is
         #   |F|^2 = (m*w^2*R)^2 + (m*c*w*R)^2 = (m*R)^2 * w^2 * (w^2 + c^2).
-        # Bounding that by force_budget and solving the quadratic in w^2:
-        #   w_max = sqrt( (-c^2 + sqrt(c^4 + 4*(force_budget/(m*R))^2)) / 2 ),
-        # which collapses to sqrt(force_budget/(m*R)) when c = 0.
+        # Bounding that by force_budget leaves a quadratic in w^2, whose
+        # positive root is written here in the conjugate form
+        #   w^2 = 2q^2 / (c^2 + sqrt(c^4 + 4q^2)),   q = force_budget/(m*R),
+        # rather than the algebraically equal (-c^2 + sqrt(...))/2: that form
+        # subtracts near-equal quantities once c^4 >> 4q^2 and rounds a
+        # positive feasible rate to zero in float32. This form only ever adds.
+        # It collapses to sqrt(force_budget/(m*R)) when c = 0.
         ratio = force_budget / (mass * radius)
         omega_max = jnp.sqrt(
-            0.5 * (-damping**2 + jnp.sqrt(damping**4 + 4.0 * ratio**2))
+            2.0 * ratio**2 / (damping**2 + jnp.sqrt(damping**4 + 4.0 * ratio**2))
         )
         omega = fraction * omega_max
         return jnp.concatenate([axis, radius[None], omega[None]], axis=0)
