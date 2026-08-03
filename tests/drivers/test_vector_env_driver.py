@@ -231,7 +231,7 @@ def test_rejects_a_non_positive_episode_count():
 
 def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
     # spec.max_steps (5) is far below the env's own horizon (cfg.max_steps
-    # defaults to 2000), and free flight never terminates early, so every
+    # defaults to 7200), and free flight never terminates early, so every
     # episode must be cut short by the driver itself. A single lane makes
     # each episode in `finished` unambiguously that lane's Nth episode, so
     # "does episode N start where episode N-1 ended" is a direct check, not

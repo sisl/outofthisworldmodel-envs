@@ -8,6 +8,7 @@ extras_fn is None when the policy needs no per-episode randomisation.
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Literal
 
 import jax
@@ -62,6 +63,18 @@ class OrbitParams(ConfigModel):
         if not 0.0 < lo <= hi <= 1.0:
             raise ValueError(
                 f"speed_fraction_range must satisfy 0 < lo <= hi <= 1, got {v}"
+            )
+        return v
+
+    @field_validator("radius_range_m")
+    @classmethod
+    def _validate_radius_range_m(cls, v: tuple[float, float]) -> tuple[float, float]:
+        # The radius divides the rate bound, so a zero or negative value would
+        # yield an infinite or NaN omega rather than a load-time error.
+        lo, hi = v
+        if not 0.0 < lo <= hi or not math.isfinite(hi):
+            raise ValueError(
+                f"radius_range_m must satisfy 0 < lo <= hi < inf, got {v}"
             )
         return v
 
@@ -184,7 +197,8 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
     radius_range = jnp.asarray(params.radius_range_m, dtype=jnp.float32)
     fraction_range = jnp.asarray(params.speed_fraction_range, dtype=jnp.float32)
     mass = jnp.asarray(cfg.physics.mass, dtype=jnp.float32)
-    # Largest centripetal force the sampler may commit to holding the circle.
+    damping = jnp.asarray(cfg.physics.linear_damping, dtype=jnp.float32)
+    # Largest steady-state force the sampler may commit to holding the circle.
     force_budget = jnp.asarray(
         params.thrust_utilization * cfg.control.limit_force_n, dtype=jnp.float32
     )
@@ -200,8 +214,18 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
             key_fraction, (), minval=fraction_range[0], maxval=fraction_range[1],
             dtype=jnp.float32,
         )
-        # m*w^2*R <= force_budget  =>  w <= sqrt(force_budget / (m*R)).
-        omega = fraction * jnp.sqrt(force_budget / (mass * radius))
+        # Holding the circle costs m*w^2*R radially (centripetal) and, when
+        # linear damping is on, m*c*w*R tangentially to cancel the drag. The
+        # two are perpendicular, so the steady-state force magnitude is
+        #   |F|^2 = (m*w^2*R)^2 + (m*c*w*R)^2 = (m*R)^2 * w^2 * (w^2 + c^2).
+        # Bounding that by force_budget and solving the quadratic in w^2:
+        #   w_max = sqrt( (-c^2 + sqrt(c^4 + 4*(force_budget/(m*R))^2)) / 2 ),
+        # which collapses to sqrt(force_budget/(m*R)) when c = 0.
+        ratio = force_budget / (mass * radius)
+        omega_max = jnp.sqrt(
+            0.5 * (-damping**2 + jnp.sqrt(damping**4 + 4.0 * ratio**2))
+        )
+        omega = fraction * omega_max
         return jnp.concatenate([axis, radius[None], omega[None]], axis=0)
 
     def policy_fn(state, key, extras):
@@ -219,9 +243,14 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
         # dynamics never supply. Without this term the law has to manufacture
         # that force from a standing radial error, settling 5-13% wide of the
         # commanded radius. Feed it forward and the PD corrects only error.
-        centripetal = -mass * omega**2 * radius * (p_des / _safe_norm(p_des))
+        # `damping * v_des` cancels the drag the reference motion incurs, the
+        # other half of the steady-state force the rate bound budgets for.
+        feedforward = (
+            -mass * omega**2 * radius * (p_des / _safe_norm(p_des))
+            + mass * damping * v_des
+        )
         force_world = (
-            centripetal
+            feedforward
             - params.kp_position * (pos_w - p_des)
             - params.kd_velocity * (vel_w - v_des)
         )

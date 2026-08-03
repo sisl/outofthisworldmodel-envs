@@ -174,6 +174,45 @@ def test_speed_fraction_range_must_be_ordered_and_positive():
             OrbitParams(speed_fraction_range=bad)
 
 
+def test_radius_range_must_be_ordered_positive_and_finite():
+    # The radius divides the rate bound, so a zero radius would produce an
+    # infinite omega and a negative one a NaN -- both silently, at sample
+    # time inside a jit, rather than at config load.
+    for bad in ((0.0, 100.0), (-10.0, 100.0), (200.0, 100.0), (60.0, float("inf"))):
+        with pytest.raises(ValueError):
+            OrbitParams(radius_range_m=bad)
+
+
+def test_sampled_orbit_is_within_budget_under_linear_damping():
+    # Holding the circle also has to cancel drag, which costs m*c*w*R
+    # tangentially on top of the centripetal m*w^2*R. The two are
+    # perpendicular, so the budget bounds their resultant.
+    damped = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None, linear_damping=1.0),
+        dock=DockConfig(position=(0.0, 0.0, 0.0)),
+    )
+    _, extras_fn = make_policy(damped, PCFG, "orbit")
+    budget = PCFG.orbit.thrust_utilization * damped.control.limit_force_n
+    for seed in range(100):
+        extras = extras_fn(jax.random.PRNGKey(seed))
+        radius, omega = float(extras[3]), float(extras[4])
+        centripetal = damped.physics.mass * omega**2 * radius
+        drag = damped.physics.mass * damped.physics.linear_damping * omega * radius
+        assert np.hypot(centripetal, drag) <= budget * (1.0 + 1e-5)
+
+
+def test_orbit_extras_fn_is_jit_and_vmap_compatible():
+    # extras_fn runs inside the scan driver's jit, once per lane under vmap.
+    _, extras_fn = make_policy(CFG, PCFG, "orbit")
+    keys = jax.random.split(jax.random.PRNGKey(0), 4)
+    batched = jax.jit(jax.vmap(extras_fn))(keys)
+    assert batched.shape == (4, EXTRAS_DIM["orbit"])
+    assert np.all(np.isfinite(np.asarray(batched)))
+    np.testing.assert_allclose(
+        np.asarray(batched[0]), np.asarray(extras_fn(keys[0])), rtol=1e-6
+    )
+
+
 def test_orbit_policy_action_is_finite_when_radial_direction_is_exact_body_minus_z():
     # Chaser on world +z, identity attitude, orbit axis +x: the inward radial
     # direction is exactly (0, 0, -1), i.e. antiparallel to body +z. The
