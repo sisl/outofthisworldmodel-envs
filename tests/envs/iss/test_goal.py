@@ -1,8 +1,20 @@
 import jax.numpy as jnp
 import numpy as np
 
+from owm_envs.core.quaternion import (
+    axis_angle_from_quat,
+    quat_conjugate,
+    quat_from_body_z_to,
+    quat_multiply,
+)
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.goal import GOAL_ERROR_DIM, dock_goal_error, goal_error, make_augment
+from owm_envs.envs.iss.goal import (
+    GOAL_ERROR_DIM,
+    _orbit_goal_error,
+    dock_goal_error,
+    goal_error,
+    make_augment,
+)
 from owm_envs.envs.iss.policies import PolicyConfig
 
 
@@ -72,19 +84,52 @@ def test_union_augment_switches_on_the_episode_policy():
     np.testing.assert_allclose(out_dock[13:], np.asarray(dock_goal_error(s, cfg)), atol=1e-6)
 
 
-def test_orbit_augment_error_is_zero_on_the_commanded_circle():
+def test_orbit_goal_targets_the_next_reference_state():
     cfg = ISSConfig(observation={"goal_error": True})
     augment = make_augment(cfg, PolicyConfig(type="orbit"))
     radius, omega = 100.0, 0.1
     axis = jnp.asarray([0.0, 0.0, 1.0], jnp.float32)
     # On the circle at +x, moving tangentially (+y at omega*r), nose to center (-x).
-    from owm_envs.core.quaternion import quat_from_body_z_to
     q = quat_from_body_z_to(jnp.asarray([-1.0, 0.0, 0.0], jnp.float32))
     s = _state((radius, 0.0, 0.0), vel=(0.0, omega * radius, 0.0),
                quat=np.asarray(q), rate=(0.0, 0.0, 0.0))
     extras = jnp.concatenate([axis, jnp.asarray([radius, omega], jnp.float32)])
     out = np.asarray(augment(s, extras))
-    np.testing.assert_allclose(out[13:], np.zeros(12), atol=1e-4)
+
+    dt = cfg.dt
+    phi = omega * dt
+    # Target is the reference one dt ahead: p(phi) = R*(cos phi, sin phi, 0).
+    pos_err_expected = radius * np.array([1.0 - np.cos(phi), -np.sin(phi), 0.0])
+    v_now = np.array([0.0, omega * radius, 0.0])
+    v_next = omega * radius * np.array([-np.sin(phi), np.cos(phi), 0.0])
+    vel_err_expected = v_now - v_next
+
+    np.testing.assert_allclose(out[13:16], pos_err_expected, atol=1e-4)
+    np.testing.assert_allclose(out[16:19], vel_err_expected, atol=1e-4)
+
+    # Attitude target: nose pointed at the center from the NEXT reference
+    # position, built independently from the same (separately tested)
+    # quaternion primitives the implementation uses.
+    r_hat_next = np.array([np.cos(phi), np.sin(phi), 0.0])
+    q_target_expected = quat_from_body_z_to(jnp.asarray(-r_hat_next, jnp.float32))
+    q_err_expected = quat_multiply(quat_conjugate(jnp.asarray(q)), q_target_expected)
+    att_err_expected = np.asarray(axis_angle_from_quat(q_err_expected))
+    np.testing.assert_allclose(out[19:22], att_err_expected, atol=1e-4)
+
+    np.testing.assert_allclose(out[22:25], np.zeros(3), atol=1e-5)
+
+
+def test_orbit_goal_error_dt_zero_matches_current_projection_target():
+    cfg = ISSConfig(observation={"goal_error": True})
+    radius, omega = 100.0, 0.1
+    axis = jnp.asarray([0.0, 0.0, 1.0], jnp.float32)
+    q = quat_from_body_z_to(jnp.asarray([-1.0, 0.0, 0.0], jnp.float32))
+    s = _state((radius, 0.0, 0.0), vel=(0.0, omega * radius, 0.0),
+               quat=np.asarray(q), rate=(0.0, 0.0, 0.0))
+    extras = jnp.concatenate([axis, jnp.asarray([radius, omega], jnp.float32)])
+
+    err = np.asarray(_orbit_goal_error(s, extras, dt=0.0))
+    np.testing.assert_allclose(err, np.zeros(12), atol=1e-4)
 
 
 def test_make_augment_returns_none_when_disabled():
