@@ -52,8 +52,12 @@ class PhysicsConfig(ConfigModel):
     # centripetal force), so a NaN would propagate silently into every
     # sampled orbit, and a negative value would inject energy rather than
     # remove it.
-    linear_damping: float = Field(default=0.0, ge=0, allow_inf_nan=False)
-    angular_damping: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    # The upper bound is not arithmetic defensiveness: a coefficient of 1e6
+    # damps all motion within a microsecond, so anything beyond it describes
+    # no scenario this environment can represent, and capping it keeps the
+    # orbit rate bound's intermediates trivially in range.
+    linear_damping: float = Field(default=0.0, ge=0, le=1e6, allow_inf_nan=False)
+    angular_damping: float = Field(default=0.0, ge=0, le=1e6, allow_inf_nan=False)
 
     # Radii, not divisors -- a negative value is geometrically meaningless
     # (it would shrink the collision box or flip the start position to the
@@ -92,8 +96,12 @@ class ControlConfig(ConfigModel):
     realistic for a real Dragon -- purely a synthetic-dataset variety knob.
     """
 
-    limit_force_n: float = 18_000.0
-    limit_torque_nm: float = 90_000.0
+    # Strictly positive and finite: the orbit policy divides its rate bound by
+    # the force limit, so zero would command a stationary "orbit" and a
+    # negative or non-finite value would poison every sampled rate. A chaser
+    # with no thrust is also not a scenario any policy here can express.
+    limit_force_n: float = Field(default=18_000.0, gt=0, allow_inf_nan=False)
+    limit_torque_nm: float = Field(default=90_000.0, gt=0, allow_inf_nan=False)
 
 
 class DockConfig(ConfigModel):

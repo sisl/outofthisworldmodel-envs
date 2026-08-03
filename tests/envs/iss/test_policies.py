@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from owm_envs.core.quaternion import quat_from_body_z_to
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.iss.config import ControlConfig, DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
 from owm_envs.envs.iss.policies import EXTRAS_DIM, OrbitParams, PolicyConfig, make_policy
 
@@ -181,36 +181,55 @@ def test_radius_range_must_be_ordered_positive_and_finite():
     for bad in ((0.0, 100.0), (-10.0, 100.0), (200.0, 100.0), (60.0, float("inf"))):
         with pytest.raises(ValueError):
             OrbitParams(radius_range_m=bad)
-    # Finite positive in Python, but zero / inf once the sampler casts to
-    # float32 -- the same hole by another route.
-    for bad in ((1e-100, 1e-100), (1e100, 1e100)):
+    # Outside the physically meaningful span (1 mm to 1000 km), whatever
+    # float32 could nominally represent.
+    for bad in ((1e-100, 1e-100), (1e100, 1e100), (1e-4, 500.0), (60.0, 1e7)):
         with pytest.raises(ValueError):
             OrbitParams(radius_range_m=bad)
 
 
-def test_linear_damping_must_be_non_negative_and_finite():
+def test_damping_must_be_non_negative_finite_and_bounded():
     # The rate bound consumes linear_damping, so a NaN there would propagate
     # into every sampled orbit rather than failing at config load.
-    for bad in (float("nan"), float("inf"), -1.0):
+    for bad in (float("nan"), float("inf"), -1.0, 1e7):
         with pytest.raises(ValueError):
             PhysicsConfig(linear_damping=bad)
+        with pytest.raises(ValueError):
+            PhysicsConfig(angular_damping=bad)
 
 
-def test_rate_bound_stays_finite_across_the_representable_radius_range():
-    # The bound must not overflow its way to a NaN at the extremes the
-    # validator does accept: neither q^2 nor c^4 is ever formed, so every
-    # intermediate stays in range.
-    for lo_hi in ((1e-30, 1e-30), (1e30, 1e30), (60.0, 500.0)):
-        for damping in (0.0, 1e15):
-            cfg = ISSConfig(
-                physics=PhysicsConfig(collision_boxes_path=None, linear_damping=damping),
-                dock=DockConfig(position=(0.0, 0.0, 0.0)),
-            )
-            pcfg = PolicyConfig(orbit=OrbitParams(radius_range_m=lo_hi))
-            _, extras_fn = make_policy(cfg, pcfg, "orbit")
-            omega = float(extras_fn(jax.random.PRNGKey(0))[4])
-            assert np.isfinite(omega), f"radius={lo_hi} damping={damping} -> {omega}"
-            assert omega >= 0.0
+def test_force_and_torque_limits_must_be_positive_and_finite():
+    # The rate bound divides by limit_force_n: zero would command a
+    # stationary "orbit" and a non-finite value would poison every rate.
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            ControlConfig(limit_force_n=bad)
+        with pytest.raises(ValueError):
+            ControlConfig(limit_torque_nm=bad)
+
+
+def test_rate_bound_stays_finite_across_the_whole_accepted_domain():
+    # Every combination the validators accept, at both extremes -- physical
+    # bounds on the inputs are what make exhaustive corner coverage possible.
+    radii = (1e-3, 1e-3), (1e6, 1e6), (60.0, 500.0)
+    dampings = (0.0, 1e-6, 1e6)
+    forces = (1e-6, 18_000.0, 1e12)
+    for lo_hi in radii:
+        for damping in dampings:
+            for force in forces:
+                cfg = ISSConfig(
+                    physics=PhysicsConfig(
+                        collision_boxes_path=None, linear_damping=damping
+                    ),
+                    control=ControlConfig(limit_force_n=force),
+                    dock=DockConfig(position=(0.0, 0.0, 0.0)),
+                )
+                pcfg = PolicyConfig(orbit=OrbitParams(radius_range_m=lo_hi))
+                _, extras_fn = make_policy(cfg, pcfg, "orbit")
+                omega = float(extras_fn(jax.random.PRNGKey(0))[4])
+                assert np.isfinite(omega) and omega >= 0.0, (
+                    f"radius={lo_hi} damping={damping} force={force} -> {omega}"
+                )
 
 
 def test_full_speed_fraction_spends_exactly_the_thrust_budget():

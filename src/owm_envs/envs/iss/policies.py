@@ -34,6 +34,11 @@ ExtrasFn = Callable[[jax.Array], jnp.ndarray]
 # to allocate the per-env extras buffer before the first reset.
 EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 0, "union": 6}
 
+# Physically meaningful span for a commanded orbit radius around the station:
+# millimetres to 1000 km. See OrbitParams._validate_radius_range_m.
+_MIN_RADIUS_M = 1e-3
+_MAX_RADIUS_M = 1e6
+
 
 class OrbitParams(ConfigModel):
     radius_range_m: tuple[float, float] = (60.0, 500.0)
@@ -77,14 +82,16 @@ class OrbitParams(ConfigModel):
             raise ValueError(
                 f"radius_range_m must satisfy 0 < lo <= hi < inf, got {v}"
             )
-        # The sampler works in float32, where a finite positive Python float
-        # can still underflow to zero or overflow to inf and reopen the same
-        # hole, so bound the range by what float32 represents.
-        f32 = np.finfo(np.float32)
-        if lo < float(f32.tiny) or hi > float(f32.max):
+        # Bounded to a physically meaningful span rather than to float32's
+        # representable range: 1 mm to 1000 km around the station brackets
+        # anything relative proximity operations can mean, and keeps every
+        # intermediate in the rate bound far from overflow. Defending the
+        # arithmetic against a 1e38 m orbit instead would be defending a
+        # scenario 20 orders of magnitude past the observable universe.
+        if not _MIN_RADIUS_M <= lo <= hi <= _MAX_RADIUS_M:
             raise ValueError(
-                f"radius_range_m must stay within float32's normal range "
-                f"[{float(f32.tiny):g}, {float(f32.max):g}] m, got {v}"
+                f"radius_range_m must lie within "
+                f"[{_MIN_RADIUS_M:g}, {_MAX_RADIUS_M:g}] m, got {v}"
             )
         return v
 
