@@ -6,6 +6,7 @@ from gymnasium.utils.env_checker import check_env
 import owm_envs.envs  # noqa: F401  -- triggers registration
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.env import ISSEnv
+from owm_envs.envs.iss.sensing import PRESETS
 
 
 def test_passes_the_gymnasium_env_checker():
@@ -146,3 +147,40 @@ def test_render_fps_stays_a_usable_rate_for_coarse_timesteps(dt):
     # divide by or feed to an encoder. These dt values are unrealistic for
     # this environment but ISSConfig accepts them.
     assert ISSEnv(ISSConfig(dt=dt)).metadata["render_fps"] == 1
+
+
+def test_noisy_env_observation_differs_from_true_state_and_info_carries_state():
+    cfg = ISSConfig(sensor_noise=PRESETS["cooperative"])
+    env = ISSEnv(cfg)
+    obs, info = env.reset(seed=3)
+    assert "state" in info and info["state"].shape == (13,)
+    assert not np.array_equal(obs, info["state"])
+    obs2, _, _, _, info2 = env.step(np.zeros(6, dtype=np.float32))
+    assert not np.array_equal(obs2, info2["state"])
+
+
+def test_noiseless_env_info_state_equals_observation():
+    env = ISSEnv()
+    obs, info = env.reset(seed=3)
+    np.testing.assert_array_equal(obs, info["state"])
+
+
+def test_noisy_env_reset_is_reproducible_per_seed():
+    cfg = ISSConfig(sensor_noise=PRESETS["cooperative"])
+    a, _ = ISSEnv(cfg).reset(seed=11)
+    b, _ = ISSEnv(cfg).reset(seed=11)
+    np.testing.assert_array_equal(a, b)
+
+
+def test_noise_does_not_perturb_true_dynamics_across_resets():
+    clean = ISSEnv(ISSConfig())
+    noisy = ISSEnv(ISSConfig(sensor_noise=PRESETS["cooperative"]))
+    for env in (clean, noisy):
+        env.reset(seed=9)
+        for _ in range(5):
+            env.step(np.zeros(6, dtype=np.float32))
+    # Second, UNSEEDED reset: true state must not depend on how many
+    # noisy observations were drawn in the previous episode.
+    _, info_clean = clean.reset()
+    _, info_noisy = noisy.reset()
+    np.testing.assert_array_equal(info_clean["state"], info_noisy["state"])

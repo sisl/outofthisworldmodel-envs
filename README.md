@@ -1,6 +1,16 @@
 # outofthisworldmodel-envs
 Training data environments for the Out of this World Model (OWM) world model
 
+## Command-line usage
+
+    owm-envs generate --out logs/run1 --split train:512:0 --policy union
+    owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
+    owm-envs list
+
+`--noise off|cooperative|noncooperative` overrides the `--config` file's
+`sensor_noise` with a named preset; omit it to leave the config's own setting
+in place.
+
 ## Asset acknowledgements
 
 The 3D assets under `src/owm_envs/render/resources/` are third-party works,

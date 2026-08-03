@@ -7,7 +7,9 @@ from typer.testing import CliRunner
 
 from owm_envs.cli import app, _parse_split_flags
 from owm_envs.datasets.stats import GenerationConfig, SplitSpec
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.iss.sensing import PRESETS
 
 runner = CliRunner()
 
@@ -311,7 +313,7 @@ def test_render_without_lerobot_is_rejected(tmp_path):
 
 
 def test_parse_split_flags_builds_specs():
-    splits = _parse_split_flags(["train:4:0", "val:2:1"], steps=150)
+    splits = _parse_split_flags(["train:4:0", "val:2:1"], steps=150, observe="state")
     assert splits == {
         "train": SplitSpec(num_episodes=4, max_steps=150, seed=0),
         "val": SplitSpec(num_episodes=2, max_steps=150, seed=1),
@@ -319,9 +321,9 @@ def test_parse_split_flags_builds_specs():
 
 
 def test_parse_split_flags_accepts_a_per_split_policy():
-    splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150)
-    assert splits["train"].policy == PolicyConfig(type="union")
-    assert splits["val"].policy == PolicyConfig(type="dock")
+    splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150, observe="state")
+    assert splits["train"].policy == PolicyConfig(type="union", observe="state")
+    assert splits["val"].policy == PolicyConfig(type="dock", observe="state")
 
 
 @pytest.mark.parametrize("bad", ["train", "train:4", "train:4:0:bogus",
@@ -329,12 +331,23 @@ def test_parse_split_flags_accepts_a_per_split_policy():
                                  "train:x:0", "train:4:y", "train:0:0"])
 def test_parse_split_flags_rejects_malformed_entries(bad):
     with pytest.raises(typer.BadParameter):
-        _parse_split_flags([bad], steps=150)
+        _parse_split_flags([bad], steps=150, observe="state")
 
 
 def test_parse_split_flags_rejects_duplicate_names():
     with pytest.raises(typer.BadParameter, match="duplicate"):
-        _parse_split_flags(["train:4:0", "train:2:1"], steps=150)
+        _parse_split_flags(["train:4:0", "train:2:1"], steps=150, observe="state")
+
+
+def test_observe_flag_reaches_per_split_policies(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8",
+        "--split", "train:2:0:dock", "--observe", "measurement", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    gen = GenerationConfig.from_yaml(out / "generation_config.yaml")
+    assert gen.splits["train"].policy.observe == "measurement"
 
 
 def test_one_invocation_writes_every_split(tmp_path):
@@ -458,3 +471,33 @@ def test_malformed_gen_config_yaml_is_rejected_cleanly(tmp_path):
     ])
     assert result.exit_code != 0
     assert "gen-config" in result.output
+
+
+def test_noise_preset_flag_overrides_the_env_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--noise", "cooperative", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = ISSConfig.from_yaml(out / "env_config.yaml")
+    assert recorded.sensor_noise == PRESETS["cooperative"]
+
+
+def test_observe_flag_is_recorded_in_the_policy_config(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--policy", "dock", "--observe", "measurement", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = PolicyConfig.from_yaml(out / "policy_config.yaml")
+    assert recorded.observe == "measurement"
+
+
+def test_unknown_noise_preset_is_rejected(tmp_path):
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "r"), "--steps", "8",
+        "--split", "train:2:0", "--noise", "bogus", "--no-lerobot",
+    ])
+    assert result.exit_code != 0

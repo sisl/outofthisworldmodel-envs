@@ -5,10 +5,11 @@ import numpy as np
 import pytest
 
 from owm_envs.drivers.types import RolloutSpec
-from owm_envs.drivers.vector_env_driver import VectorEnvDriver
+from owm_envs.drivers.vector_env_driver import VectorEnvDriver, _lane_info
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
+from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)
@@ -31,6 +32,16 @@ def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None):
     )
 
 
+def test_lane_info_extracts_nested_vector_infos():
+    info = {
+        "state": np.arange(6).reshape(2, 3),
+        "metrics": {"distance": np.array([1.5, 2.5])},
+    }
+    lane = _lane_info(info, 1)
+    np.testing.assert_array_equal(lane["state"], np.array([3, 4, 5]))
+    assert lane["metrics"] == {"distance": 2.5}
+
+
 class _ConstantPolicySource:
     """A trivial PolicySource with no JAX and no ISS types anywhere in it --
     the extensibility claim the driver seam exists to make real."""
@@ -44,8 +55,8 @@ class _ConstantPolicySource:
         del seed
         return None
 
-    def act(self, observation, episode_state, step):
-        del observation, episode_state, step
+    def act(self, observation, episode_state, step, info):
+        del observation, episode_state, step, info
         return self._action.copy()
 
     def policy_id(self, episode_state):
@@ -427,8 +438,8 @@ class _CountingPolicySource:
         del seed
         return None
 
-    def act(self, observation, episode_state, step):
-        del episode_state, step
+    def act(self, observation, episode_state, step, info):
+        del episode_state, step, info
         # `env.step_calls` at call time is exactly the index this call's
         # action will target when step() next runs -- pending_history will
         # be appended at that same index.
@@ -469,3 +480,52 @@ def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
             f"that lane's autoreset step -- the action is discarded and "
             f"the call used the wrong episode's state"
         )
+
+
+def test_vector_driver_state_policy_actions_match_clean_run():
+    # observe="state" with noise on: actions must be computed from the true
+    # state, so a noisy run's actions match a clean run's actions per episode.
+    cfg_noisy = ISSConfig(max_steps=12, sensor_noise=PRESETS["cooperative"])
+    cfg_clean = ISSConfig(max_steps=12)
+
+    def batch(cfg):
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock", observe="state")),
+        )
+        return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
+
+    a, b = batch(cfg_clean), batch(cfg_noisy)
+    np.testing.assert_array_equal(a.actions, b.actions)
+    assert not np.array_equal(a.observations, b.observations)
+
+
+def test_vector_driver_measurement_policy_consumes_the_observation():
+    cfg = ISSConfig(max_steps=12, sensor_noise=PRESETS["noncooperative"])
+
+    def batch(observe):
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock", observe=observe)),
+        )
+        return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
+
+    assert not np.array_equal(batch("state").actions, batch("measurement").actions)
+
+
+def test_vector_state_policy_survives_autoreset_with_noise():
+    # 4 episodes over 2 lanes forces autoreset; random policy consumes act keys.
+    clean_cfg = ISSConfig(max_steps=10)
+    noisy_cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["cooperative"])
+
+    def batch(cfg):
+        driver = VectorEnvDriver(
+            env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+            policy_source=ISSPolicySource(cfg, PolicyConfig(type="random", observe="state")),
+        )
+        return driver.generate(RolloutSpec(num_episodes=4, max_steps=10, seed=0))
+
+    clean, noisy = batch(clean_cfg), batch(noisy_cfg)
+    np.testing.assert_array_equal(clean.actions, noisy.actions)
+    np.testing.assert_array_equal(clean.lengths, noisy.lengths)
+    assert not np.array_equal(clean.observations, noisy.observations)

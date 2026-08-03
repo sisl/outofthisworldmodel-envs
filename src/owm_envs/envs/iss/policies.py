@@ -56,6 +56,14 @@ class PolicyConfig(ConfigModel):
     # are rejected here, at config-load time, rather than inside make_policy
     # at rollout time.
     type: Literal["random", "orbit", "dock", "union"] = "random"
+    # What the scripted policies consume during data generation. Defaults to
+    # "measurement": policies act on the same noisy measurement the dataset
+    # records, so the recorded action-outcome pairs carry the aleatoric
+    # uncertainty of acting on an observed rather than true state -- the
+    # uncertainty a world model should learn. "state" gives noise-independent
+    # trajectories, for controlled ablations where clean/noisy runs must
+    # share trajectories.
+    observe: Literal["state", "measurement"] = "measurement"
     orbit: OrbitParams = Field(default_factory=OrbitParams)
     dock: DockParams = Field(default_factory=DockParams)
     # Positional order: [random, orbit, dock]. Normalised at build time.

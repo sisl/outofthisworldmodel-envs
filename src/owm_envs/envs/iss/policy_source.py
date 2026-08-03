@@ -33,6 +33,7 @@ class ISSPolicySource:
         self.records_policy_ids = policy_cfg.type == "union"
         self._policy_fn, self._extras_fn = make_policy(cfg, policy_cfg)
         self._extras_width = EXTRAS_DIM[policy_cfg.type]
+        self._observe = policy_cfg.observe
 
     def new_episode(self, seed: int) -> _EpisodeState:
         key = jax.random.PRNGKey(seed)
@@ -43,12 +44,18 @@ class ISSPolicySource:
             extras = self._extras_fn(extras_key)
         return _EpisodeState(key=key, extras=extras)
 
-    def act(self, observation: np.ndarray, episode_state: _EpisodeState, step: int) -> np.ndarray:
+    def act(
+        self, observation: np.ndarray, episode_state: _EpisodeState, step: int, info: dict
+    ) -> np.ndarray:
         # Fold the step index into the episode's base key rather than
         # threading mutable RNG state through the (deliberately opaque,
         # immutable) episode_state the driver holds.
         act_key = jax.random.fold_in(episode_state.key, step)
-        action = self._policy_fn(jnp.asarray(observation), act_key, episode_state.extras)
+        # observe="state" flies the policy on the true state (info["state"])
+        # rather than the possibly-noisy recorded observation; non-ISS infos
+        # without that key fall back to the observation.
+        policy_input = info.get("state", observation) if self._observe == "state" else observation
+        action = self._policy_fn(jnp.asarray(policy_input), act_key, episode_state.extras)
         return np.asarray(action, dtype=np.float32)
 
     def policy_id(self, episode_state: _EpisodeState) -> int:

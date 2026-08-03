@@ -142,7 +142,10 @@ class PolicySource(Protocol):
 
     The driver never sees a JAX key, a JAX array, or a backend-specific config
     type -- the source owns all of that internally, and hands back only numpy
-    arrays and an opaque `episode_state` it doesn't examine.
+    arrays and an opaque `episode_state` it doesn't examine. `info` is the
+    standard Gym info dict for that lane (numpy values), passed through
+    unexamined by the driver -- a policy source that needs more than the
+    observation (e.g. the true state under sensor noise) reads it from there.
     """
 
     records_policy_ids: bool
@@ -150,7 +153,9 @@ class PolicySource(Protocol):
     def new_episode(self, seed: int) -> Any:
         """Return opaque per-episode state (e.g. sampled hyperparameters)."""
 
-    def act(self, observation: np.ndarray, episode_state: Any, step: int) -> np.ndarray:
+    def act(
+        self, observation: np.ndarray, episode_state: Any, step: int, info: dict
+    ) -> np.ndarray:
         """Return an action as a numpy array, given a numpy observation."""
 
     def policy_id(self, episode_state: Any) -> int:
