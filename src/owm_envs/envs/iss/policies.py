@@ -34,12 +34,36 @@ EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 0, "union": 6}
 
 
 class OrbitParams(ConfigModel):
-    radius_range_m: tuple[float, float] = (60.0, 180.0)
-    angular_speed_range_rad_s: tuple[float, float] = (0.09, 0.24)
+    radius_range_m: tuple[float, float] = (60.0, 500.0)
+    # Rate is a fraction of the fastest orbit the thrusters can actually hold
+    # at the sampled radius, not an absolute rad/s. Holding radius R at rate w
+    # needs a sustained centripetal force m*w^2*R, so the feasible rate falls
+    # as 1/sqrt(R) and no single absolute range serves 60-500 m: a floor low
+    # enough for 500 m makes 60 m orbits crawl, and one fast enough for 60 m is
+    # unreachable past ~111 m. Expressing it as a fraction makes feasibility
+    # intrinsic -- further-out orbits are automatically slower.
+    speed_fraction_range: tuple[float, float] = (0.4, 1.0)
+    # Fraction of the per-axis force limit committed to that centripetal
+    # force. The remainder is the PD's headroom to correct errors with; at 1.0
+    # the whole budget goes to holding the circle and the fly-in transient
+    # saturates.
+    thrust_utilization: float = Field(default=0.6, gt=0.0, le=1.0)
     kp_position: float = 1080.0
     kd_velocity: float = 1500.0
     kp_attitude: float = 54_000.0
     kd_attitude: float = 47_000.0
+
+    @field_validator("speed_fraction_range")
+    @classmethod
+    def _validate_speed_fraction_range(
+        cls, v: tuple[float, float]
+    ) -> tuple[float, float]:
+        lo, hi = v
+        if not 0.0 < lo <= hi <= 1.0:
+            raise ValueError(
+                f"speed_fraction_range must satisfy 0 < lo <= hi <= 1, got {v}"
+            )
+        return v
 
 
 class DockParams(ConfigModel):
@@ -158,18 +182,26 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
     # learn what its actions do.
     inertia_diag = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
     radius_range = jnp.asarray(params.radius_range_m, dtype=jnp.float32)
-    omega_range = jnp.asarray(params.angular_speed_range_rad_s, dtype=jnp.float32)
+    fraction_range = jnp.asarray(params.speed_fraction_range, dtype=jnp.float32)
+    mass = jnp.asarray(cfg.physics.mass, dtype=jnp.float32)
+    # Largest centripetal force the sampler may commit to holding the circle.
+    force_budget = jnp.asarray(
+        params.thrust_utilization * cfg.control.limit_force_n, dtype=jnp.float32
+    )
 
     def extras_fn(key: jax.Array) -> jnp.ndarray:
-        key_axis, key_radius, key_omega = jax.random.split(key, 3)
+        key_axis, key_radius, key_fraction = jax.random.split(key, 3)
         axis = jax.random.normal(key_axis, (3,), dtype=jnp.float32)
         axis = axis / _safe_norm(axis)
         radius = jax.random.uniform(
             key_radius, (), minval=radius_range[0], maxval=radius_range[1], dtype=jnp.float32
         )
-        omega = jax.random.uniform(
-            key_omega, (), minval=omega_range[0], maxval=omega_range[1], dtype=jnp.float32
+        fraction = jax.random.uniform(
+            key_fraction, (), minval=fraction_range[0], maxval=fraction_range[1],
+            dtype=jnp.float32,
         )
+        # m*w^2*R <= force_budget  =>  w <= sqrt(force_budget / (m*R)).
+        omega = fraction * jnp.sqrt(force_budget / (mass * radius))
         return jnp.concatenate([axis, radius[None], omega[None]], axis=0)
 
     def policy_fn(state, key, extras):
@@ -177,10 +209,22 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
         pos_w, vel_w = state[0:3], state[3:6]
         q_bw = quat_normalize(state[6:10])
         omega_b = state[10:13]
+        radius, omega = extras[3], extras[4]
 
         p_des, v_des, q_des = orbit_reference(pos_w, extras, cfg.dt)
 
-        force_world = -params.kp_position * (pos_w - p_des) - params.kd_velocity * (vel_w - v_des)
+        # The PD reference is the radial projection of the CURRENT position, so
+        # it commands zero force exactly when the chaser is perfectly on the
+        # circle -- the moment it most needs centripetal force, which free-body
+        # dynamics never supply. Without this term the law has to manufacture
+        # that force from a standing radial error, settling 5-13% wide of the
+        # commanded radius. Feed it forward and the PD corrects only error.
+        centripetal = -mass * omega**2 * radius * (p_des / _safe_norm(p_des))
+        force_world = (
+            centripetal
+            - params.kp_position * (pos_w - p_des)
+            - params.kd_velocity * (vel_w - v_des)
+        )
         force_body = quat_to_rotmat(q_bw).T @ force_world
 
         torque_body = _attitude_torque(
