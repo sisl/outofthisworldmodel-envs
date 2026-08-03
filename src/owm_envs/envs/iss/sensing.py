@@ -23,7 +23,16 @@ NOISE_STREAM = 0x5EED
 
 
 class SensorNoiseConfig(ConfigModel):
-    """Per-axis Gaussian measurement noise. Disabled by default.
+    """PER-AXIS Gaussian measurement noise. Disabled by default.
+
+    Every sigma below is the standard deviation of ONE component, matching
+    how sensor accuracies are typically specified (e.g. a star tracker's
+    per-axis arcsecond rating). The magnitude of the combined 3-vector error
+    is therefore larger: its RMS is sqrt(3) * sigma, and for the attitude
+    block -- whose rotation-vector components are each N(0, sigma_att_rad^2)
+    -- the TOTAL rotation angle is Maxwell-distributed with RMS
+    sqrt(3) * sigma_att_rad and mean sqrt(8/pi) * sigma_att_rad. Divide a
+    total-angle requirement by sqrt(3) when setting sigma_att_rad.
 
     Position noise has a constant term and a range-proportional term
     (non-cooperative relative navigation degrades with distance); the two
