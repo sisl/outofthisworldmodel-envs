@@ -49,7 +49,7 @@ def test_random_policy_respects_control_limits():
 
 def test_dock_policy_pushes_toward_the_dock():
     policy_fn, _ = make_policy(CFG, PCFG, "dock")
-    empty = jnp.zeros((0,), dtype=jnp.float32)
+    empty = jnp.zeros((1,), dtype=jnp.float32)
     # Identity attitude, so body frame == world frame; chaser at +x must be pushed -x.
     action = policy_fn(state_at((10.0, 0.0, 0.0)), jax.random.PRNGKey(0), empty)
     assert float(action[0]) < 0.0
@@ -62,7 +62,7 @@ def test_dock_policy_drives_the_chaser_to_the_dock():
     )
     dyn = ISSDynamics(cfg)
     policy_fn, _ = make_policy(cfg, PCFG, "dock")
-    empty = jnp.zeros((0,), dtype=jnp.float32)
+    empty = jnp.zeros((1,), dtype=jnp.float32)
 
     s = state_at((30.0, 0.0, 0.0))
     force_limit = cfg.control.limit_force_n
@@ -445,7 +445,7 @@ def test_policy_type_roundtrips_through_yaml(tmp_path):
 
 def test_make_policy_falls_back_to_policy_cfg_type():
     policy_fn, _ = make_policy(CFG, PolicyConfig(type="dock"))
-    empty = jnp.zeros((0,), dtype=jnp.float32)
+    empty = jnp.zeros((1,), dtype=jnp.float32)
     # Identity attitude, so body frame == world frame; chaser at +x must be pushed -x,
     # which is what the dock policy (not the default random one) does.
     action = policy_fn(state_at((10.0, 0.0, 0.0)), jax.random.PRNGKey(0), empty)

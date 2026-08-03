@@ -201,6 +201,21 @@ class ISSConfig(ConfigModel):
     render: dict[str, Any] | None = None
 
 
+def dock_target(cfg: ISSConfig) -> np.ndarray:
+    """The (7,) [position, quaternion] row `DockConfig` names.
+
+    The single-target form of what `policies.dock_target_table` produces for a
+    port set, so both paths hand the same layout to the dynamics and the
+    goal-error block.
+    """
+    return np.concatenate(
+        [
+            np.asarray(cfg.dock.position, dtype=np.float32),
+            np.asarray(cfg.dock.quaternion, dtype=np.float32),
+        ]
+    )
+
+
 def default_collision_boxes_path() -> str:
     """Absolute path to the 318-AABB ISS geometry shipped with this package."""
     return str(_RESOURCES_DIR / DEFAULT_COLLISION_BOXES_FILENAME)

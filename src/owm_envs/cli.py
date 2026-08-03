@@ -21,7 +21,8 @@ from pydantic import ValidationError
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig, ObservationConfig
-from .envs.iss.policies import PolicyConfig
+from .envs.iss.docking_ports import PORT_NAMES
+from .envs.iss.policies import DockParams, PolicyConfig
 from .envs.iss.sensing import PRESETS
 
 app = typer.Typer(add_completion=False, help="Generate world-model training datasets.")
@@ -40,8 +41,20 @@ def list_envs() -> None:
     )
 
 
-def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str, SplitSpec]:
-    """`NAME:COUNT[t]:SEED[:POLICY]` flags -> split specs, all at `steps` max steps.
+def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
+    """Build a PolicyConfig, expanding a comma- or plus-joined port list.
+
+    `ports` accepts "all", which DockParams expands to every entry in
+    docking_ports.PORTS at validation time.
+    """
+    names = tuple(n for n in ports.replace("+", ",").split(",") if n)
+    return PolicyConfig(type=policy, observe=observe, dock=DockParams(ports=names))
+
+
+def _parse_split_flags(
+    values: list[str], steps: int, observe: str, policy: str, ports: str
+) -> dict[str, SplitSpec]:
+    """`NAME:COUNT[t]:SEED[:POLICY[:PORTS]]` flags -> split specs, all at `steps` max steps.
 
     COUNT is an episode count (`64`), or, with a trailing `t`, a minimum
     transition target (`100000t`) -- the split runs whole episodes until it
@@ -49,15 +62,20 @@ def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str,
 
     A `:POLICY` suffix's PolicyConfig inherits `--observe` rather than the
     PolicyConfig default, so a per-split policy still respects the run-level
-    observe flag.
+    observe flag. A further `:PORTS` suffix is a +-joined list of docking-port
+    names, or "all", and overrides `--dock-ports` for that split -- which is
+    how a held-out port is arranged: name the training ports on the train
+    split and leave validation at the default "all".
     """
     splits: dict[str, SplitSpec] = {}
     for raw in values:
         parts = raw.split(":")
-        if len(parts) not in (3, 4) or not parts[0]:
+        if len(parts) not in (3, 4, 5) or not parts[0]:
             raise typer.BadParameter(
-                f"--split expects NAME:COUNT[t]:SEED[:POLICY] "
-                f"(e.g. train:64:0, train:100000t:0 or val:8:1:dock), got '{raw}'"
+                f"--split expects NAME:COUNT[t]:SEED[:POLICY[:PORTS]] "
+                f"(e.g. train:64:0, train:100000t:0, val:8:1:dock, "
+                f"train:64:0:union:harmony_fwd_pma2+poisk_zenith, or val:8:1::all "
+                f"to keep --policy and override only the ports), got '{raw}'"
             )
         name, count_text, seed_text = parts[0], parts[1], parts[2]
         transitions_mode = count_text.endswith("t")
@@ -73,14 +91,30 @@ def _parse_split_flags(values: list[str], steps: int, observe: str) -> dict[str,
             raise typer.BadParameter(f"--split '{raw}': COUNT must be >= 1")
         if name in splits:
             raise typer.BadParameter(f"--split '{raw}': duplicate split name '{name}'")
+        # An empty POLICY field only means something when a PORTS field
+        # follows it (`train:4:0::all` keeps --policy and overrides the
+        # ports). On its own it is a typo, not a way to spell "inherit":
+        # dropping the trailing ':' already does that.
+        has_ports = len(parts) == 5 and bool(parts[4])
+        if len(parts) >= 4 and not parts[3] and not has_ports:
+            raise typer.BadParameter(
+                f"--split '{raw}': POLICY is empty; drop the trailing ':' to inherit "
+                "--policy, or name a port set after it (e.g. train:4:0::all)"
+            )
+        # None means "inherit the run-level policy", which is what the caller
+        # falls back to. Only a split that actually names a policy or a port
+        # set gets its own config, so an unqualified split still records no
+        # override rather than a copy of the run-level one.
         split_policy = None
-        if len(parts) == 4:
+        if len(parts) >= 4 and (parts[3] or has_ports):
             try:
-                split_policy = PolicyConfig(type=parts[3], observe=observe)
-            except Exception as exc:  # pydantic rejects unknown policy types
-                raise typer.BadParameter(
-                    f"--split '{raw}': invalid policy '{parts[3]}': {exc}"
-                ) from exc
+                split_policy = _policy_config(
+                    parts[3] or policy,
+                    observe,
+                    parts[4] if len(parts) == 5 else ports,
+                )
+            except Exception as exc:  # pydantic rejects unknown policies and ports
+                raise typer.BadParameter(f"--split '{raw}': {exc}") from exc
         splits[name] = SplitSpec(
             num_episodes=None if transitions_mode else count,
             min_transitions=count if transitions_mode else None,
@@ -99,9 +133,13 @@ def generate(
                                "run-level default; a split's :POLICY suffix overrides it."),
     split: Optional[list[str]] = typer.Option(
         None, "--split",
-        help="Repeatable NAME:COUNT[t]:SEED[:POLICY] (default: train:64:0 val:8:1); "
-             "COUNT is an episode count, or a minimum transition target with a "
-             "trailing 't' (e.g. 100000t); POLICY overrides --policy for that split.",
+        help="Repeatable NAME:COUNT[t]:SEED[:POLICY[:PORTS]] "
+             "(default: train:64:0 val:8:1::all); COUNT is an episode count, or a "
+             "minimum transition target with a trailing 't' (e.g. 100000t); POLICY "
+             "overrides --policy for that split and PORTS overrides --dock-ports "
+             "(a comma- or +-joined list of port names, or 'all'). The default "
+             "leaves validation on every port deliberately: training can hold ports out "
+             "while validation still measures the held-out ones.",
     ),
     steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 7200)."),
     num_envs: Optional[int] = typer.Option(None, help="Parallel lanes (default 8)."),
@@ -109,7 +147,10 @@ def generate(
     fps: Optional[int] = typer.Option(None, help="Frames per second recorded in the dataset. "
                                       "Defaults to the simulation rate, 1/dt."),
     gen_config: Optional[Path] = typer.Option(
-        None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps."),
+        None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps. "
+                   "configs/generation_default.yaml is the shipped docking recipe: a union-policy "
+                   "train split on the five non-zenith ports and a dock-policy val split on all "
+                   "seven, so validation measures the held-out zenith approaches."),
     config: Optional[Path] = typer.Option(None, help="ISSConfig YAML to load."),
     noise: Optional[str] = typer.Option(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "
@@ -122,6 +163,16 @@ def generate(
     observe: str = typer.Option(
         "measurement", help="What scripted policies consume: state | measurement "
                             "(default: measurement, the noisy value the dataset records)."),
+    dock_ports: str = typer.Option(
+        "",
+        help="Docking ports the dock and union policies may target, drawn uniformly "
+             f"per episode: 'all' or a comma-joined subset of {', '.join(PORT_NAMES)}. "
+             "Empty (the default) keeps the single pose in ISSConfig.dock. Sets the "
+             "default for every split; a :PORTS suffix on --split overrides it, which "
+             "is how validation keeps the full set while training holds ports out. The "
+             "built-in default splits already put validation on 'all'. Inert for the "
+             "random and orbit policies.",
+    ),
     lerobot: bool = typer.Option(True, "--lerobot/--no-lerobot", help="Write a LeRobot dataset."),
     render: bool = typer.Option(
         False,
@@ -172,7 +223,7 @@ def generate(
         try:
             gen = GenerationConfig(
                 splits=_parse_split_flags(
-                    split or ["train:64:0", "val:8:1"], resolved_steps, observe
+                    split or ["train:64:0", "val:8:1::all"], resolved_steps, observe, policy, dock_ports
                 ),
                 num_envs=num_envs if num_envs is not None else 8,
                 fps=fps,
@@ -195,8 +246,8 @@ def generate(
         cfg = cfg.model_copy(update={"observation": ObservationConfig(goal_error=goal_error)})
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
-        policy_cfg = PolicyConfig(type=policy, observe=observe)
-    except Exception as exc:  # pydantic rejects unknown policy types
+        policy_cfg = _policy_config(policy, observe, dock_ports)
+    except Exception as exc:  # pydantic rejects unknown policies and ports
         raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
 
     # Drivers bake their policy in at construction, so a split with its own
@@ -218,7 +269,11 @@ def generate(
             if spec.min_transitions is not None
             else f"{spec.num_episodes} episodes"
         )
-        typer.echo(f"[generate] {name}: driver={chosen.name} policy={split_policy.type} "
+        ports_note = (
+            f" ports={len(split_policy.dock.ports)}" if split_policy.dock.ports else ""
+        )
+        typer.echo(f"[generate] {name}: driver={chosen.name} policy={split_policy.type}"
+                   f"{ports_note} "
                    f"target={target}, got {batch.num_episodes} episodes, "
                    f"{batch.total_transitions} transitions")
         batches[name] = batch
@@ -322,6 +377,23 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
     from .envs.iss.policy_source import ISSPolicySource
 
     def build_vector() -> _Chosen:
+        # ISSVectorEnv reads its dock pose straight off ISSConfig and has no
+        # channel for a per-episode target, so a policy given any port set at
+        # all regulates to the assigned port but is scored against DockConfig.
+        # One port is no safer than several: even PMA-2's derived pose sits
+        # 0.84 m off the shipped DockConfig one, well outside the success
+        # gate. The scan driver, which --driver auto selects, carries the
+        # target per lane and does not have this gap.
+        ports = policy_cfg.dock.ports
+        if ports:
+            targeted = f"the {len(ports)} ports" if len(ports) > 1 else "the port"
+            typer.echo(
+                f"[warn] --driver vector scores dock success against DockConfig, not "
+                f"{targeted} this policy targets ({', '.join(p.name for p in ports)}), "
+                f"so 'success' is "
+                f"scored at the wrong pose for every episode whose assigned port is not "
+                f"DockConfig's; --driver scan does not have this limitation"
+            )
         # ISSPolicySource applies its own policy-aware goal-error block (see
         # augment_observation) from the ORIGINAL cfg; the env it drives must
         # therefore stay at the raw 13-dim observation, or the block would be

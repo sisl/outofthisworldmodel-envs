@@ -16,7 +16,7 @@ import numpy as np
 
 from .config import ISSConfig
 from .goal import make_augment
-from .policies import EXTRAS_DIM, PolicyConfig, make_policy
+from .policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
 
 # extras[0] holds the sub-policy index for the union mixture (see policies.py).
 _UNION_POLICY_IDX = 0
@@ -32,6 +32,12 @@ class ISSPolicySource:
 
     def __init__(self, cfg: ISSConfig, policy_cfg: PolicyConfig):
         self.records_policy_ids = policy_cfg.type == "union"
+        # Every ISS episode has a dock target, so this source always supplies
+        # one: the assigned port's pose under a port set, the `DockConfig`
+        # pose otherwise. It comes from the same selector the goal-error block
+        # uses, so the recorded pose is the one the episode was scored against.
+        self.records_dock_targets = True
+        self._select_dock_target = dock_target_selector(cfg, policy_cfg)
         self._policy_fn, self._extras_fn = make_policy(cfg, policy_cfg)
         self._extras_width = EXTRAS_DIM[policy_cfg.type]
         self._observe = policy_cfg.observe
@@ -70,3 +76,6 @@ class ISSPolicySource:
         if episode_state.extras.shape[0] == 0:
             return 0
         return int(episode_state.extras[_UNION_POLICY_IDX])
+
+    def dock_target(self, episode_state: _EpisodeState) -> np.ndarray:
+        return np.asarray(self._select_dock_target(episode_state.extras), dtype=np.float32)

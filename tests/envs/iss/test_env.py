@@ -5,7 +5,7 @@ import pytest
 from gymnasium.utils.env_checker import check_env
 
 import owm_envs.envs  # noqa: F401  -- triggers registration
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_target
 from owm_envs.envs.iss.env import ISSEnv
 from owm_envs.envs.iss.goal import dock_goal_error
 from owm_envs.envs.iss.sensing import PRESETS
@@ -186,7 +186,7 @@ def test_goal_error_observation_is_25_dim_and_zero_at_dock():
     assert obs.shape == (25,)
     assert info["state"].shape == (13,)
     np.testing.assert_allclose(
-        obs[13:], np.asarray(dock_goal_error(jnp.asarray(obs[:13]), cfg)), atol=1e-6
+        obs[13:], np.asarray(dock_goal_error(jnp.asarray(obs[:13]), jnp.asarray(dock_target(cfg)))), atol=1e-6
     )
 
 
@@ -194,7 +194,7 @@ def test_goal_block_uses_the_measured_state_when_noisy():
     cfg = ISSConfig(observation={"goal_error": True}, sensor_noise=PRESETS["cooperative"])
     obs, info = ISSEnv(cfg).reset(seed=2)
     np.testing.assert_allclose(
-        obs[13:], np.asarray(dock_goal_error(jnp.asarray(obs[:13]), cfg)), atol=1e-6
+        obs[13:], np.asarray(dock_goal_error(jnp.asarray(obs[:13]), jnp.asarray(dock_target(cfg)))), atol=1e-6
     )
     assert not np.array_equal(obs[:13], info["state"])
 

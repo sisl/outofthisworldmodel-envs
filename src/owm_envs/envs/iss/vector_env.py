@@ -20,7 +20,7 @@ import numpy as np
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
-from .config import ISSConfig
+from .config import ISSConfig, dock_target
 from .dynamics import ISSDynamics
 from .env import _action_space, _observation_space, _render_fps
 from .goal import dock_goal_error
@@ -71,7 +71,7 @@ class ISSVectorEnv(VectorEnv):
             else None
         )
         self._batched_dock_goal_error = (
-            jax.jit(jax.vmap(lambda measured: dock_goal_error(measured, self.cfg)))
+            jax.jit(jax.vmap(lambda measured: dock_goal_error(measured, jnp.asarray(dock_target(self.cfg)))))
             if self.cfg.observation.goal_error
             else None
         )
