@@ -46,8 +46,18 @@ class PhysicsConfig(ConfigModel):
     # Free-body motion in vacuum has no medium to damp against, so the
     # physical default is zero. Non-zero values are a deliberate, unphysical
     # artificial-stabilisation knob, not a default choice.
-    linear_damping: float = 0.0
-    angular_damping: float = 0.0
+    #
+    # Non-negative and finite: the orbit policy's rate bound consumes
+    # linear_damping (holding a circle has to cancel drag as well as supply
+    # centripetal force), so a NaN would propagate silently into every
+    # sampled orbit, and a negative value would inject energy rather than
+    # remove it.
+    # The upper bound is not arithmetic defensiveness: a coefficient of 1e6
+    # damps all motion within a microsecond, so anything beyond it describes
+    # no scenario this environment can represent, and capping it keeps the
+    # orbit rate bound's intermediates trivially in range.
+    linear_damping: float = Field(default=0.0, ge=0, le=1e6, allow_inf_nan=False)
+    angular_damping: float = Field(default=0.0, ge=0, le=1e6, allow_inf_nan=False)
 
     # Radii, not divisors -- a negative value is geometrically meaningless
     # (it would shrink the collision box or flip the start position to the
@@ -86,8 +96,12 @@ class ControlConfig(ConfigModel):
     realistic for a real Dragon -- purely a synthetic-dataset variety knob.
     """
 
-    limit_force_n: float = 18_000.0
-    limit_torque_nm: float = 90_000.0
+    # Strictly positive and finite: the orbit policy divides its rate bound by
+    # the force limit, so zero would command a stationary "orbit" and a
+    # negative or non-finite value would poison every sampled rate. A chaser
+    # with no thrust is also not a scenario any policy here can express.
+    limit_force_n: float = Field(default=18_000.0, gt=0, allow_inf_nan=False)
+    limit_torque_nm: float = Field(default=90_000.0, gt=0, allow_inf_nan=False)
 
 
 class DockConfig(ConfigModel):
@@ -141,9 +155,17 @@ class ISSConfig(ConfigModel):
     # also a divisor -- the recorded frame rate is 1/dt -- so zero would raise
     # rather than produce a wrong number.
     dt: float = Field(default=0.05, gt=0, allow_inf_nan=False)
-    # 2000 * 0.05 = 100 s. Past this the Earth-rotation texture sampling in the
-    # renderer visibly glitches, so episodes are capped here.
-    max_steps: int = 2000
+    # 7200 * 0.05 = 360 s. Sized for the orbit policy's largest commanded
+    # circle: at 500 m the chaser needs ~198 s to fly out from the start sphere
+    # and settle, and the fastest holdable orbit there has a ~148 s period, so
+    # anything shorter ends before a revolution completes.
+    #
+    # The renderer's Earth patch spans 50 deg and its rotation is currently
+    # static (applied once at scene build), so this is safe today. Once
+    # epoch-driven Earth rotation lands, the along-track ground-track motion
+    # over 360 s is ~23 deg against a +/-25 deg patch -- close enough to the
+    # edge that the patch width has to be revisited alongside it.
+    max_steps: int = 7200
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)

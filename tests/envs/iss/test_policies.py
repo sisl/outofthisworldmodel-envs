@@ -3,9 +3,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.core.quaternion import quat_from_body_z_to
+from owm_envs.envs.iss.config import ControlConfig, DockConfig, ISSConfig, PhysicsConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
-from owm_envs.envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
+from owm_envs.envs.iss.policies import EXTRAS_DIM, OrbitParams, PolicyConfig, make_policy
 
 CFG = ISSConfig(
     physics=PhysicsConfig(collision_boxes_path=None),
@@ -86,6 +87,238 @@ def test_orbit_extras_axis_is_a_unit_vector():
     assert lo <= float(extras[3]) <= hi
 
 
+def test_sampled_orbit_is_always_within_the_thrust_budget():
+    # Free-body dynamics: holding radius R at rate w needs a sustained
+    # centripetal force m*w^2*R, and actions are clipped per axis at
+    # limit_force_n. Sampling radius and rate independently (as it used to)
+    # commanded circles needing up to 124 kN against an 18 kN limit.
+    _, extras_fn = make_policy(CFG, PCFG, "orbit")
+    budget = PCFG.orbit.thrust_utilization * CFG.control.limit_force_n
+    for seed in range(200):
+        extras = extras_fn(jax.random.PRNGKey(seed))
+        radius, omega = float(extras[3]), float(extras[4])
+        assert CFG.physics.mass * omega**2 * radius <= budget + 1e-3
+
+
+def test_orbit_rate_falls_as_one_over_sqrt_radius():
+    # omega = fraction * sqrt(alpha * F_limit / (m * R)), so at a fixed
+    # fraction a 4x larger radius must orbit exactly half as fast.
+    cfg = PolicyConfig(orbit=OrbitParams(speed_fraction_range=(1.0, 1.0)))
+    near, far = 100.0, 400.0
+    rates = []
+    for radius in (near, far):
+        _, extras_fn = make_policy(
+            CFG, PolicyConfig(orbit=cfg.orbit.model_copy(
+                update={"radius_range_m": (radius, radius)})), "orbit")
+        rates.append(float(extras_fn(jax.random.PRNGKey(3))[4]))
+    assert np.isclose(rates[0] / rates[1], np.sqrt(far / near), rtol=1e-4)
+
+
+def test_speed_fraction_range_bounds_the_sampled_rate():
+    lo, hi = 0.25, 0.75
+    cfg = PolicyConfig(orbit=OrbitParams(speed_fraction_range=(lo, hi)))
+    _, extras_fn = make_policy(CFG, cfg, "orbit")
+    budget = cfg.orbit.thrust_utilization * CFG.control.limit_force_n
+    for seed in range(100):
+        extras = extras_fn(jax.random.PRNGKey(seed))
+        radius, omega = float(extras[3]), float(extras[4])
+        omega_max = np.sqrt(budget / (CFG.physics.mass * radius))
+        assert lo - 1e-5 <= omega / omega_max <= hi + 1e-5
+
+
+def test_orbit_feedforward_holds_the_commanded_circle():
+    # The PD reference is the radial projection of the CURRENT position, so it
+    # commands zero force exactly when the chaser is perfectly on the circle --
+    # the moment it most needs centripetal force. Without a feedforward the law
+    # must run a standing radial error to generate it, settling 5-13% wide.
+    policy_fn, _ = make_policy(CFG, PCFG, "orbit")
+    dynamics = ISSDynamics(CFG)
+    radius = 200.0
+    omega = float(np.sqrt(
+        PCFG.orbit.thrust_utilization * CFG.control.limit_force_n
+        / (CFG.physics.mass * radius)
+    ))
+    axis = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
+    r_hat = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+    extras = jnp.array([0.0, 0.0, 1.0, radius, omega], dtype=jnp.float32)
+
+    # Start exactly on the commanded circle, at the commanded tangential speed,
+    # already pointing at the station: only the centripetal force is missing.
+    state = jnp.concatenate([
+        radius * r_hat,
+        omega * radius * jnp.cross(axis, r_hat),
+        quat_from_body_z_to(-r_hat),
+        jnp.zeros((3,), dtype=jnp.float32),
+    ])
+    limit = CFG.control.limit_force_n
+    radii = []
+    for _ in range(2000):
+        action = policy_fn(state, jax.random.PRNGKey(0), extras)
+        assert np.all(np.abs(np.asarray(action[0:3])) < limit), "thrust saturated"
+        state, _ = dynamics.step(state, action)
+        radii.append(float(jnp.linalg.norm(state[0:3] - jnp.dot(state[0:3], axis) * axis)))
+
+    settled = np.asarray(radii[len(radii) // 2:])
+    assert np.abs(settled.mean() / radius - 1.0) < 0.01
+
+
+def test_thrust_utilization_must_be_a_fraction():
+    for bad in (0.0, -0.1, 1.5):
+        with pytest.raises(ValueError):
+            OrbitParams(thrust_utilization=bad)
+
+
+def test_speed_fraction_range_must_be_ordered_and_positive():
+    for bad in ((0.8, 0.4), (0.0, 1.0), (-0.1, 0.5), (0.5, 1.5)):
+        with pytest.raises(ValueError):
+            OrbitParams(speed_fraction_range=bad)
+
+
+def test_radius_range_must_be_ordered_positive_and_finite():
+    # The radius divides the rate bound, so a zero radius would produce an
+    # infinite omega and a negative one a NaN -- both silently, at sample
+    # time inside a jit, rather than at config load.
+    for bad in ((0.0, 100.0), (-10.0, 100.0), (200.0, 100.0), (60.0, float("inf"))):
+        with pytest.raises(ValueError):
+            OrbitParams(radius_range_m=bad)
+    # Outside the physically meaningful span (1 mm to 1000 km), whatever
+    # float32 could nominally represent.
+    for bad in ((1e-100, 1e-100), (1e100, 1e100), (1e-4, 500.0), (60.0, 1e7)):
+        with pytest.raises(ValueError):
+            OrbitParams(radius_range_m=bad)
+
+
+def test_damping_must_be_non_negative_finite_and_bounded():
+    # The rate bound consumes linear_damping, so a NaN there would propagate
+    # into every sampled orbit rather than failing at config load.
+    for bad in (float("nan"), float("inf"), -1.0, 1e7):
+        with pytest.raises(ValueError):
+            PhysicsConfig(linear_damping=bad)
+        with pytest.raises(ValueError):
+            PhysicsConfig(angular_damping=bad)
+
+
+def test_force_and_torque_limits_must_be_positive_and_finite():
+    # The rate bound divides by limit_force_n: zero would command a
+    # stationary "orbit" and a non-finite value would poison every rate.
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            ControlConfig(limit_force_n=bad)
+        with pytest.raises(ValueError):
+            ControlConfig(limit_torque_nm=bad)
+
+
+def test_rate_bound_stays_finite_across_the_whole_accepted_domain():
+    # Every combination the validators accept, at both extremes -- physical
+    # bounds on the inputs are what make exhaustive corner coverage possible.
+    radii = (1e-3, 1e-3), (1e6, 1e6), (60.0, 500.0)
+    dampings = (0.0, 1e-6, 1e6)
+    forces = (1e-6, 18_000.0, 1e12)
+    for lo_hi in radii:
+        for damping in dampings:
+            for force in forces:
+                cfg = ISSConfig(
+                    physics=PhysicsConfig(
+                        collision_boxes_path=None, linear_damping=damping
+                    ),
+                    control=ControlConfig(limit_force_n=force),
+                    dock=DockConfig(position=(0.0, 0.0, 0.0)),
+                )
+                pcfg = PolicyConfig(orbit=OrbitParams(radius_range_m=lo_hi))
+                _, extras_fn = make_policy(cfg, pcfg, "orbit")
+                omega = float(extras_fn(jax.random.PRNGKey(0))[4])
+                assert np.isfinite(omega) and omega >= 0.0, (
+                    f"radius={lo_hi} damping={damping} force={force} -> {omega}"
+                )
+
+
+def test_full_speed_fraction_spends_exactly_the_thrust_budget():
+    # The bound must be ATTAINED, not merely respected: omega = 0 or any
+    # arbitrarily conservative rate would satisfy an upper-bound-only check.
+    for damping in (0.0, 0.05):
+        cfg = ISSConfig(
+            physics=PhysicsConfig(collision_boxes_path=None, linear_damping=damping),
+            dock=DockConfig(position=(0.0, 0.0, 0.0)),
+        )
+        pcfg = PolicyConfig(orbit=OrbitParams(speed_fraction_range=(1.0, 1.0)))
+        _, extras_fn = make_policy(cfg, pcfg, "orbit")
+        budget = pcfg.orbit.thrust_utilization * cfg.control.limit_force_n
+        for seed in range(20):
+            extras = extras_fn(jax.random.PRNGKey(seed))
+            radius, omega = float(extras[3]), float(extras[4])
+            centripetal = cfg.physics.mass * omega**2 * radius
+            drag = cfg.physics.mass * damping * omega * radius
+            assert np.isclose(np.hypot(centripetal, drag), budget, rtol=1e-4)
+
+
+def test_orbit_feedforward_cancels_linear_drag():
+    # With damping on, holding the circle needs m*c*v_des tangentially. Absent
+    # the feedforward the PD must source it from a standing radial error of
+    # roughly 7015 N / kp = 6.5 m at these settings -- 3.2%, well outside the
+    # 1% band asserted below.
+    damping = 0.05
+    cfg = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None, linear_damping=damping),
+        dock=DockConfig(position=(0.0, 0.0, 0.0)),
+    )
+    policy_fn, _ = make_policy(cfg, PCFG, "orbit")
+    dynamics = ISSDynamics(cfg)
+    radius = 200.0
+    ratio = PCFG.orbit.thrust_utilization * cfg.control.limit_force_n / (
+        cfg.physics.mass * radius
+    )
+    omega = float(np.sqrt(
+        2.0 * ratio**2 / (damping**2 + np.sqrt(damping**4 + 4.0 * ratio**2))
+    ))
+    axis = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
+    r_hat = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+    extras = jnp.array([0.0, 0.0, 1.0, radius, omega], dtype=jnp.float32)
+    state = jnp.concatenate([
+        radius * r_hat,
+        omega * radius * jnp.cross(axis, r_hat),
+        quat_from_body_z_to(-r_hat),
+        jnp.zeros((3,), dtype=jnp.float32),
+    ])
+    radii = []
+    for _ in range(2000):
+        action = policy_fn(state, jax.random.PRNGKey(0), extras)
+        state, _ = dynamics.step(state, action)
+        radii.append(float(jnp.linalg.norm(state[0:3] - jnp.dot(state[0:3], axis) * axis)))
+
+    settled = np.asarray(radii[len(radii) // 2:])
+    assert np.abs(settled.mean() / radius - 1.0) < 0.01
+
+
+def test_sampled_orbit_is_within_budget_under_linear_damping():
+    # Holding the circle also has to cancel drag, which costs m*c*w*R
+    # tangentially on top of the centripetal m*w^2*R. The two are
+    # perpendicular, so the budget bounds their resultant.
+    damped = ISSConfig(
+        physics=PhysicsConfig(collision_boxes_path=None, linear_damping=1.0),
+        dock=DockConfig(position=(0.0, 0.0, 0.0)),
+    )
+    _, extras_fn = make_policy(damped, PCFG, "orbit")
+    budget = PCFG.orbit.thrust_utilization * damped.control.limit_force_n
+    for seed in range(100):
+        extras = extras_fn(jax.random.PRNGKey(seed))
+        radius, omega = float(extras[3]), float(extras[4])
+        centripetal = damped.physics.mass * omega**2 * radius
+        drag = damped.physics.mass * damped.physics.linear_damping * omega * radius
+        assert np.hypot(centripetal, drag) <= budget * (1.0 + 1e-5)
+
+
+def test_orbit_extras_fn_is_jit_and_vmap_compatible():
+    # extras_fn runs inside the scan driver's jit, once per lane under vmap.
+    _, extras_fn = make_policy(CFG, PCFG, "orbit")
+    keys = jax.random.split(jax.random.PRNGKey(0), 4)
+    batched = jax.jit(jax.vmap(extras_fn))(keys)
+    assert batched.shape == (4, EXTRAS_DIM["orbit"])
+    assert np.all(np.isfinite(np.asarray(batched)))
+    np.testing.assert_allclose(
+        np.asarray(batched[0]), np.asarray(extras_fn(keys[0])), rtol=1e-6
+    )
+
+
 def test_orbit_policy_action_is_finite_when_radial_direction_is_exact_body_minus_z():
     # Chaser on world +z, identity attitude, orbit axis +x: the inward radial
     # direction is exactly (0, 0, -1), i.e. antiparallel to body +z. The
@@ -124,8 +357,16 @@ def test_orbit_controller_and_goal_share_the_reference():
     p_des, v_des, q_des = orbit_reference(state[0:3], extras, CFG.dt)
 
     action = policy_fn(state, jax.random.PRNGKey(0), extras)
-    force_world_expected = -params.kp_position * (state[0:3] - p_des) - params.kd_velocity * (
-        state[3:6] - v_des
+    # Centripetal feedforward along the reference radial, plus the PD on the
+    # error against that same reference.
+    radius_cmd, omega_cmd = extras[3], extras[4]
+    centripetal = (
+        -CFG.physics.mass * omega_cmd**2 * radius_cmd * (p_des / jnp.linalg.norm(p_des))
+    )
+    force_world_expected = (
+        centripetal
+        - params.kp_position * (state[0:3] - p_des)
+        - params.kd_velocity * (state[3:6] - v_des)
     )
     force_body_expected = quat_to_rotmat(q_bw).T @ force_world_expected
     np.testing.assert_allclose(
