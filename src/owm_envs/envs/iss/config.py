@@ -46,8 +46,14 @@ class PhysicsConfig(ConfigModel):
     # Free-body motion in vacuum has no medium to damp against, so the
     # physical default is zero. Non-zero values are a deliberate, unphysical
     # artificial-stabilisation knob, not a default choice.
-    linear_damping: float = 0.0
-    angular_damping: float = 0.0
+    #
+    # Non-negative and finite: the orbit policy's rate bound consumes
+    # linear_damping (holding a circle has to cancel drag as well as supply
+    # centripetal force), so a NaN would propagate silently into every
+    # sampled orbit, and a negative value would inject energy rather than
+    # remove it.
+    linear_damping: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    angular_damping: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
     # Radii, not divisors -- a negative value is geometrically meaningless
     # (it would shrink the collision box or flip the start position to the

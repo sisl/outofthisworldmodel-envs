@@ -229,15 +229,18 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
         # two are perpendicular, so the steady-state force magnitude is
         #   |F|^2 = (m*w^2*R)^2 + (m*c*w*R)^2 = (m*R)^2 * w^2 * (w^2 + c^2).
         # Bounding that by force_budget leaves a quadratic in w^2, whose
-        # positive root is written here in the conjugate form
-        #   w^2 = 2q^2 / (c^2 + sqrt(c^4 + 4q^2)),   q = force_budget/(m*R),
-        # rather than the algebraically equal (-c^2 + sqrt(...))/2: that form
-        # subtracts near-equal quantities once c^4 >> 4q^2 and rounds a
-        # positive feasible rate to zero in float32. This form only ever adds.
-        # It collapses to sqrt(force_budget/(m*R)) when c = 0.
+        # positive root is taken here as
+        #   w_max = q * sqrt(2 / (c^2 + hypot(c^2, 2q))),  q = budget/(m*R),
+        # rather than the algebraically equal sqrt((-c^2 + sqrt(c^4+4q^2))/2).
+        # That form subtracts near-equal quantities once c^4 >> 4q^2 and
+        # rounds a positive feasible rate to zero in float32; this one only
+        # ever adds. Factoring q out and using hypot also keeps every
+        # intermediate in range -- neither q^2 nor c^4 is ever formed, so no
+        # accepted radius or damping can overflow its way to a NaN rate.
+        # Collapses to sqrt(budget/(m*R)) when c = 0.
         ratio = force_budget / (mass * radius)
-        omega_max = jnp.sqrt(
-            2.0 * ratio**2 / (damping**2 + jnp.sqrt(damping**4 + 4.0 * ratio**2))
+        omega_max = ratio * jnp.sqrt(
+            2.0 / (damping**2 + jnp.hypot(damping**2, 2.0 * ratio))
         )
         omega = fraction * omega_max
         return jnp.concatenate([axis, radius[None], omega[None]], axis=0)

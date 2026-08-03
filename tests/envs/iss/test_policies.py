@@ -188,6 +188,31 @@ def test_radius_range_must_be_ordered_positive_and_finite():
             OrbitParams(radius_range_m=bad)
 
 
+def test_linear_damping_must_be_non_negative_and_finite():
+    # The rate bound consumes linear_damping, so a NaN there would propagate
+    # into every sampled orbit rather than failing at config load.
+    for bad in (float("nan"), float("inf"), -1.0):
+        with pytest.raises(ValueError):
+            PhysicsConfig(linear_damping=bad)
+
+
+def test_rate_bound_stays_finite_across_the_representable_radius_range():
+    # The bound must not overflow its way to a NaN at the extremes the
+    # validator does accept: neither q^2 nor c^4 is ever formed, so every
+    # intermediate stays in range.
+    for lo_hi in ((1e-30, 1e-30), (1e30, 1e30), (60.0, 500.0)):
+        for damping in (0.0, 1e15):
+            cfg = ISSConfig(
+                physics=PhysicsConfig(collision_boxes_path=None, linear_damping=damping),
+                dock=DockConfig(position=(0.0, 0.0, 0.0)),
+            )
+            pcfg = PolicyConfig(orbit=OrbitParams(radius_range_m=lo_hi))
+            _, extras_fn = make_policy(cfg, pcfg, "orbit")
+            omega = float(extras_fn(jax.random.PRNGKey(0))[4])
+            assert np.isfinite(omega), f"radius={lo_hi} damping={damping} -> {omega}"
+            assert omega >= 0.0
+
+
 def test_full_speed_fraction_spends_exactly_the_thrust_budget():
     # The bound must be ATTAINED, not merely respected: omega = 0 or any
     # arbitrarily conservative rate would satisfy an upper-bound-only check.
