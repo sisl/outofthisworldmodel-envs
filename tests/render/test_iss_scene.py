@@ -86,3 +86,19 @@ def test_no_reference_to_the_missing_bump_texture():
         assert "bump" not in source.lower(), f"{module_info.name} still references bump"
 
     assert "EarthColorMap-80k" not in open(scene_module.__file__).read()
+
+
+def test_shipped_asset_matches_the_pinned_world_frame():
+    # The station's world placement is a constant of the environment: the
+    # collision hull and the dock poses are authored against it. Pinning the
+    # shipped asset's world-frame extent (and that the recentred vertex mean
+    # is zero, which is how ISS_RECENTRE_OFFSET was measured) means no asset
+    # swap, upright-rotation change or offset edit can drift it silently.
+    from owm_envs.render import asset_path
+    from owm_envs.render.iss_scene import iss_vertices_world
+
+    points = iss_vertices_world(asset_path("international-space-station", RenderConfig().iss_asset))
+    assert points.shape == (325374, 3)
+    np.testing.assert_allclose(points.mean(axis=0), [0.0, 0.0, 0.0], atol=1e-5)
+    np.testing.assert_allclose(points.min(axis=0), [-55.761206, -25.293193, -31.652401], atol=1e-4)
+    np.testing.assert_allclose(points.max(axis=0), [56.227223, 33.333488, 37.131761], atol=1e-4)

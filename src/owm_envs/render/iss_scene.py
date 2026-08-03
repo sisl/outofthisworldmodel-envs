@@ -3,6 +3,16 @@
 Builds a static pygfx scene graph once and re-poses the Dragon capsule from
 the simulation state on every call to `ISSScene.update`. Camera views and the
 force/torque debug overlays are built on top of this scene elsewhere.
+
+The station asset is the ISS as it stood between February and May 2015: CATS
+was installed on the JEM exposed facility in January 2015 and the PMM was
+relocated off Unity nadir that May, and the model shows both. It therefore
+predates BEAM (2016), PMA-3's move to Harmony zenith (2017), the Bishop
+airlock (2020), Nauka and Prichal (2021) and the iROSA arrays (2021), and it
+still carries Pirs, which was deorbited in 2021. Two later JEM payloads,
+ECOSTRESS (2018) and OCO-3 (2019), are fitted anachronistically. Anything
+that reads a port or an airlock off this geometry is reading the 2015
+configuration.
 """
 
 from __future__ import annotations
@@ -19,6 +29,7 @@ from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
 from owm_envs.render import asset_path
 from owm_envs.render.earth import earth_texture_path
+from owm_envs.render.iss_frame import ISS_RECENTRE_OFFSET, UPRIGHT_EULER_XYZ
 from owm_envs.render.loaders import load_cubemap_from_faces, load_glb_scene
 
 
@@ -27,6 +38,12 @@ class RenderConfig(ConfigModel):
 
     image_width: int = 512
     image_height: int = 512
+
+    # Filename under resources/international-space-station. A variant with
+    # different visiting vehicles must place the station identically; check a
+    # new asset with scripts/check_iss_asset.py before pointing this at it.
+    iss_asset: str = "ISS_stationary.glb"
+    iss_recentre_offset: tuple[float, float, float] = ISS_RECENTRE_OFFSET
 
     earth_radius_m: float = 6_378_137.0
     iss_altitude_m: float = 420_000.0
@@ -238,7 +255,7 @@ class ISSScene:
         # Loaded assets face +Y; rotate them onto this environment's body +Z
         # so the capsule's nose and the station's long axis agree with the
         # simulation's convention.
-        self._upright_quat = la.quat_from_euler(np.array([np.pi / 2.0, 0.0, 0.0], dtype=np.float32), order="xyz")
+        self._upright_quat = la.quat_from_euler(np.array(UPRIGHT_EULER_XYZ, dtype=np.float32), order="xyz")
 
         self.background = gfx.Scene()
         starmap = load_cubemap_from_faces(asset_path("nasa_starmap_2020"), ext="png")
@@ -283,14 +300,10 @@ class ISSScene:
         return dragon_group
 
     def _load_iss_group(self) -> gfx.Group:
-        scene_obj = load_glb_scene(asset_path("international-space-station", "ISS_stationary.glb"))
+        scene_obj = load_glb_scene(asset_path("international-space-station", self.cfg.iss_asset))
         iss_group = _strip_embedded_extras(scene_obj)
         iss_group.local.rotation = self._upright_quat
-
-        center = _visible_geometry_center(iss_group)
-        if center is not None:
-            iss_group.local.position = tuple((-center).tolist())
-
+        iss_group.local.position = tuple(-np.asarray(self.cfg.iss_recentre_offset, dtype=np.float32))
         return iss_group
 
     def _load_earth_group(self) -> gfx.Group:
@@ -420,3 +433,37 @@ class ISSScene:
         matrix[:3, :3] = rotation
         matrix[:3, 3] = position
         self.dragon.local.matrix = matrix
+
+
+def iss_vertices_world(
+    asset: str | Path,
+    recentre: tuple[float, float, float] = ISS_RECENTRE_OFFSET,
+) -> np.ndarray:
+    """Every visible ISS vertex of `asset`, in world coordinates.
+
+    Applies the same upright rotation and recentring `ISSScene` does, so the
+    result is directly comparable with the dock poses in `envs/iss` and with
+    the collision hull. Used by the world-frame pinning test in `tests/render/test_iss_scene.py`.
+    """
+    group = _strip_embedded_extras(load_glb_scene(Path(asset)))
+    group.local.rotation = la.quat_from_euler(
+        np.array(UPRIGHT_EULER_XYZ, dtype=np.float32), order="xyz"
+    )
+    group.local.position = tuple(-np.asarray(recentre, dtype=np.float32))
+
+    collected: list[np.ndarray] = []
+
+    def visit(node: gfx.WorldObject, parent_matrix: np.ndarray) -> None:
+        matrix = parent_matrix @ np.asarray(node.local.matrix, dtype=np.float64)
+        if isinstance(node, gfx.Mesh) and bool(getattr(node, "visible", True)):
+            arr = _mesh_positions(node)
+            if arr is not None:
+                homogeneous = np.concatenate([arr.astype(np.float64), np.ones((arr.shape[0], 1))], axis=1)
+                collected.append((matrix @ homogeneous.T).T[:, :3])
+        for child in getattr(node, "children", []) or []:
+            visit(child, matrix)
+
+    visit(group, np.eye(4, dtype=np.float64))
+    if not collected:
+        return np.zeros((0, 3), dtype=np.float64)
+    return np.concatenate(collected, axis=0)
