@@ -24,6 +24,28 @@ in place.
 `observation.goal_error`, appending the dock-goal error block to
 observations; omit it to leave the config's own setting in place.
 
+## Validating a run
+
+Two checks on a generated run before it is published:
+
+    uv run --extra datasets python scripts/check_sensor_noise.py logs/run1
+    uv run --extra datasets python scripts/plot_trajectories_3d.py logs/run1 --out logs/run1_traj
+
+`check_sensor_noise.py` measures the residual between each frame's
+`observation_vector` and its `state_vector` -- the sensor-noise draw the
+simulator actually made -- and compares its RMS per channel against the sigmas
+in the run's `env_config.yaml`, exiting non-zero when any channel is off by
+more than `--tolerance` (default 10%). It also breaks position error down by
+true range, which is what shows whether the non-cooperative preset's
+range-proportional term landed. A run generated with noise disabled is held to
+exact zeros.
+
+`plot_trajectories_3d.py` writes one self-contained plotly page per split for
+the eyeball check: each episode's true path, the dock poses they were flying
+to, and the station origin, on equal-aspect axes. It draws the first 64
+episodes of a split by default (`--max-episodes`), since a published split
+holds far more paths than a browser will open at once.
+
 ## Asset acknowledgements
 
 The 3D assets under `src/owm_envs/render/resources/` are third-party works,
