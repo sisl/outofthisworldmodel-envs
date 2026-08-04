@@ -306,14 +306,15 @@ def test_push_honours_an_explicit_name_and_namespace(tmp_path, api):
     assert "whoami" not in api.calls
 
 
-def test_push_makes_the_repo_private_before_uploading_into_it(tmp_path, api):
-    push_run(_write_run(tmp_path), private=True)
+@pytest.mark.parametrize("private", [True, False])
+def test_push_applies_an_asked_for_visibility_before_uploading(tmp_path, api, private):
+    push_run(_write_run(tmp_path), private=private)
     # create_repo's `private` is ignored for a repo that already exists, so the
     # setting has to be applied on its own -- and applied before the data
-    # lands, or a private run is briefly world-readable.
+    # lands, or a repo asked to be private is briefly world-readable.
     assert api.calls == ["whoami", "create_repo", "update_repo_settings", "upload_folder"]
     assert api.settings_kwargs == {"repo_id": "acct/owm-iss-noncoop-goal-dt50ms",
-                                   "repo_type": "dataset", "private": True}
+                                   "repo_type": "dataset", "private": private}
 
 
 def test_push_leaves_an_existing_repos_visibility_alone_by_default(tmp_path, api):
