@@ -168,8 +168,8 @@ def iter_batch_frames(
     from measured state.
     """
     source = (
-        batch.true_observations
-        if batch.true_observations is not None
+        batch.true_state
+        if batch.true_state is not None
         else batch.observations[..., :13]
     )
 
