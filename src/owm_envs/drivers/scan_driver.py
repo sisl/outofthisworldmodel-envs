@@ -106,6 +106,7 @@ class ScanDriver:
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
             records_dock_targets=True,
+            records_true_observations=True,
         )
 
     def _generate_transitions(
@@ -165,6 +166,7 @@ class ScanDriver:
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
             records_dock_targets=True,
+            records_true_observations=True,
         )
 
     def _build_runner(self, max_steps: int, horizon: int):
@@ -262,8 +264,11 @@ class ScanDriver:
                 obs_out, obs_next_out = augment(measured, extras), augment(measured_next, extras)
             else:
                 obs_out, obs_next_out = measured, measured_next
+            # `state`/`next_state` ride along un-noised and un-augmented: the
+            # true dynamics state behind each emitted observation, on the same
+            # pre-step/terminal layout so the segmenter can cut it identically.
             emitted = (obs_out, obs_next_out, action, reward, terminated, truncated, done,
-                       extras, dock_pose)
+                       extras, dock_pose, state, next_state)
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
             # iteration, with newly sampled extras.
@@ -343,9 +348,19 @@ class ScanDriver:
         Each dict also carries "lane", the lane it was cut from. pack_episodes
         ignores unknown keys; tests use it to check lane coverage.
         """
-        states, next_states, actions, rewards, terminated, truncated, done, extras, dock_poses = (
-            np.asarray(x) for x in emitted
-        )
+        (
+            states,
+            next_states,
+            actions,
+            rewards,
+            terminated,
+            truncated,
+            done,
+            extras,
+            dock_poses,
+            true_states,
+            true_next_states,
+        ) = (np.asarray(x) for x in emitted)
         act_dim = actions.shape[-1]
         zero_action = np.zeros((1, act_dim), dtype=np.float32)
         zero_reward = np.zeros((1,), dtype=np.float32)
@@ -365,6 +380,12 @@ class ScanDriver:
                         # `done` fired.
                         "obs": np.concatenate(
                             [states[lane, start : t + 1], next_states[lane, t : t + 1]],
+                            axis=0,
+                        ),
+                        # The same N+1 cut over the true states, so
+                        # "true_obs"[i] is the un-noised state behind "obs"[i].
+                        "true_obs": np.concatenate(
+                            [true_states[lane, start : t + 1], true_next_states[lane, t : t + 1]],
                             axis=0,
                         ),
                         # N+1 actions: the N real actions plus a zero pad,

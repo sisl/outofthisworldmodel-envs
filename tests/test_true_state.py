@@ -115,3 +115,41 @@ def test_validate_rejects_nonzero_true_observation_padding():
     dirty[1, 3] = 1.0
     with pytest.raises(ValueError, match="padding"):
         _rebuild(batch, dirty).validate()
+
+
+def _scan_batch(noise: str, goal_error: bool):
+    from owm_envs.drivers.scan_driver import ScanDriver
+    from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
+    from owm_envs.envs.iss.policies import PolicyConfig
+    from owm_envs.envs.iss.sensing import PRESETS
+
+    cfg = ISSConfig(
+        sensor_noise=PRESETS[noise],
+        observation=ObservationConfig(goal_error=goal_error),
+    )
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2)
+    return driver.generate(RolloutSpec(num_episodes=2, max_steps=20, seed=0))
+
+
+def test_scan_truth_equals_obs_without_noise():
+    batch = _scan_batch("off", goal_error=False)
+    assert batch.true_observations is not None
+    np.testing.assert_array_equal(batch.true_observations, batch.observations)
+
+
+def test_scan_truth_differs_under_noise():
+    batch = _scan_batch("noncooperative", goal_error=False)
+    real = batch.lengths[0]
+    measured = batch.observations[0, :real, :13]
+    true = batch.true_observations[0, :real]
+    assert not np.allclose(measured, true)
+    # Quaternions stay unit under both channels.
+    np.testing.assert_allclose(np.linalg.norm(true[:, 6:10], axis=1), 1.0, atol=1e-5)
+
+
+def test_scan_truth_is_13_dim_with_goal_error():
+    batch = _scan_batch("off", goal_error=True)
+    assert batch.observations.shape[-1] == 25
+    assert batch.true_observations.shape[-1] == 13
+    np.testing.assert_array_equal(batch.true_observations, batch.observations[:, :, :13])
