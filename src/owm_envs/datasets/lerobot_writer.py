@@ -101,6 +101,10 @@ import numpy as np
 
 from ..drivers.types import TrajectoryBatch
 
+# "the iterator had nothing left", distinct from a clip that is itself None --
+# which is a caller bug worth the AttributeError it earns, not an end of input.
+_MISSING = object()
+
 
 def write_lerobot_split(
     root: str | Path,
@@ -174,13 +178,26 @@ def write_lerobot_split(
         repo_id=repo_id, fps=fps, root=root, features=features, use_videos=frames is not None
     )
 
-    for episode in range(batch.num_episodes):
-        _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
+    try:
+        for episode in range(batch.num_episodes):
+            _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
 
-    if clips is not None and next(clips, None) is not None:
-        raise ValueError(
-            f"frames has more clips than the batch's {batch.num_episodes} episodes"
-        )
+        # A surplus clip cannot be seen without pulling one past the last
+        # episode, and pulling it earlier would hold two clips at once -- the
+        # peak this writer exists to avoid. So it is found with the split
+        # already on disk, which is not a half-written one: every episode that
+        # was written did match its own clip.
+        if clips is not None and next(clips, _MISSING) is not _MISSING:
+            raise ValueError(
+                f"frames has more clips than the batch's {batch.num_episodes} episodes"
+            )
+    finally:
+        # A write that dies part-way leaves the source suspended, and the
+        # raised exception's traceback keeps this frame -- and so the source --
+        # alive for as long as the exception is held. Closing it here runs its
+        # cleanup at the failure rather than whenever the traceback is dropped.
+        if clips is not None and hasattr(clips, "close"):
+            clips.close()
 
     return root
 
@@ -244,8 +261,8 @@ def _peek_frame_shape(
     its shape comes from a real clip rather than from the render config, so
     one clip must be pulled up front.
     """
-    head = next(clips, None)
-    if head is None:
+    head = next(clips, _MISSING)
+    if head is _MISSING:
         raise ValueError("frames is empty; expected one clip per episode")
     head = np.asarray(head)
     return head.shape[1:], _hand_back(head, clips)
@@ -274,8 +291,8 @@ def _next_clip(
     Same two checks as `_validate_frames`, applied as the clip arrives --
     the only point at which a lazily produced clip can be checked at all.
     """
-    clip = next(clips, None)
-    if clip is None:
+    clip = next(clips, _MISSING)
+    if clip is _MISSING:
         raise ValueError(f"frames ran out after {episode} clips; batch has more episodes")
     clip = np.asarray(clip)
     if int(clip.shape[0]) != length:

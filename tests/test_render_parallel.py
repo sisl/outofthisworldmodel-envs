@@ -244,6 +244,34 @@ def test_writer_rejects_a_mismatched_clip_length_from_an_iterator(tmp_path):
         )
 
 
+def test_writer_closes_the_clip_source_when_an_episode_fails(tmp_path):
+    """A write that dies part-way leaves the clip generator suspended, and the
+    raised exception's traceback pins the writer's frame -- so the render pool
+    behind that generator would stay up until the exception was discarded,
+    which for a CLI error is process exit. Closing the source is what runs the
+    pool's own shutdown. `excinfo` holds that traceback here on purpose: it is
+    what stops refcount collection from standing in for the close.
+    """
+    write_lerobot_split = _writer()
+
+    batch = _fake_batch()
+    closed = []
+
+    def clips():
+        try:
+            yield np.zeros((int(batch.lengths[0]), 32, 32, 3), dtype=np.uint8)
+            yield np.zeros((int(batch.lengths[1]) + 1, 32, 32, 3), dtype=np.uint8)
+        finally:
+            closed.append(True)
+
+    with pytest.raises(ValueError) as excinfo:
+        write_lerobot_split(
+            tmp_path / "closed", "iss/closed", batch, fps=20, frames=clips()
+        )
+    assert "episode 1" in str(excinfo.value)
+    assert closed == [True]
+
+
 def test_writer_rejects_a_mismatched_frame_shape_from_an_iterator(tmp_path):
     write_lerobot_split = _writer()
 
