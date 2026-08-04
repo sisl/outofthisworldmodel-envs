@@ -155,6 +155,28 @@ def test_scan_truth_is_13_dim_with_goal_error():
     np.testing.assert_array_equal(batch.true_observations, batch.observations[:, :, :13])
 
 
+def test_scan_transitions_mode_records_truth():
+    """min_transitions is a separate packing path from episodes mode (it
+    accumulates across chunks), so it needs its own proof that truth survives."""
+    from owm_envs.drivers.scan_driver import ScanDriver
+    from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.policies import PolicyConfig
+    from owm_envs.envs.iss.sensing import PRESETS
+
+    cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["noncooperative"])
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)
+    batch = driver.generate(RolloutSpec(max_steps=10, seed=0, min_transitions=60))
+
+    assert batch.true_observations is not None
+    assert batch.true_observations.shape == batch.observations.shape[:2] + (13,)
+    for i in range(batch.num_episodes):
+        length = int(batch.lengths[i])
+        true = batch.true_observations[i, :length]
+        assert not np.allclose(true, 0.0)
+        assert not np.allclose(true, batch.observations[i, :length, :13])
+
+
 def test_scan_truth_stays_aligned_across_autoresets():
     """Truth must be dynamics-consistent for EVERY episode, including the
     second and third a lane produces after an in-scan autoreset.
@@ -191,3 +213,121 @@ def test_scan_truth_stays_aligned_across_autoresets():
                 jnp.asarray(batch.dock_targets[i]),
             )
             np.testing.assert_allclose(np.asarray(stepped), true[t + 1], rtol=1e-4, atol=1e-4)
+
+
+def _vector_driver(cfg, policy_type="random", num_envs=2, goal_error=False):
+    from owm_envs.drivers.vector_env_driver import VectorEnvDriver
+    from owm_envs.envs.iss.policies import PolicyConfig
+    from owm_envs.envs.iss.policy_source import ISSPolicySource
+    from owm_envs.envs.iss.vector_env import ISSVectorEnv
+
+    # The goal-error block is appended by the policy source on this path, so
+    # the env itself is always built without it (see the driver-equivalence
+    # tests) -- otherwise the block would be added twice.
+    source_cfg = cfg.model_copy(
+        update={"observation": cfg.observation.model_copy(update={"goal_error": goal_error})}
+    )
+    return VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
+        policy_source=ISSPolicySource(source_cfg, PolicyConfig(type=policy_type)),
+    )
+
+
+def _vector_batch(noise: str, goal_error: bool):
+    from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.sensing import PRESETS
+
+    cfg = ISSConfig(sensor_noise=PRESETS[noise])
+    driver = _vector_driver(cfg, goal_error=goal_error)
+    return driver.generate(RolloutSpec(num_episodes=2, max_steps=20, seed=0))
+
+
+def test_vector_truth_equals_obs_without_noise():
+    batch = _vector_batch("off", goal_error=False)
+    assert batch.true_observations is not None
+    np.testing.assert_array_equal(batch.true_observations, batch.observations)
+
+
+def test_vector_truth_differs_under_noise():
+    batch = _vector_batch("noncooperative", goal_error=False)
+    real = batch.lengths[0]
+    measured = batch.observations[0, :real, :13]
+    true = batch.true_observations[0, :real]
+    assert not np.allclose(measured, true)
+    np.testing.assert_allclose(np.linalg.norm(true[:, 6:10], axis=1), 1.0, atol=1e-5)
+
+
+def test_vector_truth_is_13_dim_with_goal_error():
+    batch = _vector_batch("off", goal_error=True)
+    assert batch.observations.shape[-1] == 25
+    assert batch.true_observations.shape[-1] == 13
+    np.testing.assert_array_equal(batch.true_observations, batch.observations[:, :, :13])
+
+
+@pytest.mark.parametrize(
+    ("env_max_steps", "spec_max_steps"),
+    [
+        # The env's own limit binds, so every episode after the first starts
+        # from a NEXT_STEP autoreset -- the driver's awaiting-reset path.
+        (10, 20),
+        # The requested horizon binds, so no lane is ever env-terminated: each
+        # lane freezes at the horizon and the cohort is reset together -- the
+        # driver's freeze + whole-vector reset path.
+        (7200, 10),
+    ],
+)
+def test_vector_truth_stays_aligned_across_resets(env_max_steps, spec_max_steps):
+    """Truth must be dynamics-consistent for EVERY episode a lane produces,
+    across both of the driver's episode-boundary paths.
+
+    Replaying each recorded action from its recorded true state has to
+    reproduce the next one: truth shifted by a timestep, or carrying a
+    neighbouring episode's state across a reset, would still differ from the
+    noisy observations and so survive the noise test above.
+    """
+    import jax.numpy as jnp
+
+    from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.dynamics import ISSDynamics
+    from owm_envs.envs.iss.sensing import PRESETS
+
+    cfg = ISSConfig(max_steps=env_max_steps, sensor_noise=PRESETS["noncooperative"])
+    driver = _vector_driver(cfg, num_envs=1)
+    batch = driver.generate(RolloutSpec(num_episodes=3, max_steps=spec_max_steps, seed=0))
+    dynamics = ISSDynamics(cfg)
+
+    assert batch.num_episodes == 3
+    for i in range(batch.num_episodes):
+        length = int(batch.lengths[i])
+        assert length > 1
+        true = batch.true_observations[i, :length]
+        # Every episode's truth must begin on the start sphere: a lane that
+        # carried the previous episode's final state across a reset would
+        # essentially never land there by chance.
+        np.testing.assert_allclose(
+            np.linalg.norm(true[0, 0:3]), cfg.physics.start_radius_m, rtol=1e-4
+        )
+        for t in range(length - 1):
+            stepped, _ = dynamics.step(jnp.asarray(true[t]), jnp.asarray(batch.actions[i, t]))
+            np.testing.assert_allclose(np.asarray(stepped), true[t + 1], rtol=1e-4, atol=1e-4)
+
+
+def test_vector_transitions_mode_records_truth():
+    from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.sensing import PRESETS
+
+    cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["noncooperative"])
+    batch = _vector_driver(cfg, policy_type="dock").generate(
+        RolloutSpec(max_steps=10, seed=0, min_transitions=60)
+    )
+
+    assert batch.true_observations is not None
+    assert batch.true_observations.shape == batch.observations.shape[:2] + (13,)
+    for i in range(batch.num_episodes):
+        length = int(batch.lengths[i])
+        true = batch.true_observations[i, :length]
+        assert not np.allclose(true, 0.0)
+        assert not np.allclose(true, batch.observations[i, :length, :13])
