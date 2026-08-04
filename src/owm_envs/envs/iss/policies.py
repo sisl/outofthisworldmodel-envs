@@ -49,13 +49,13 @@ EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 1, "union": 7}
 DOCK_SLOT: dict[str, int] = {"dock": 0, "union": 6}
 
 # Physically meaningful span for a commanded orbit radius around the station:
-# millimetres to 1000 km; the shipped default keeps orbits inside the 500 m domain boundary with 2x margin. See OrbitParams._validate_radius_range_m.
+# millimetres to 1000 km; the shipped default keeps orbits inside the 500 m domain boundary. See OrbitParams._validate_radius_range_m.
 _MIN_RADIUS_M = 1e-3
 _MAX_RADIUS_M = 1e6
 
 
 class OrbitParams(ConfigModel):
-    radius_range_m: tuple[float, float] = (60.0, 250.0)
+    radius_range_m: tuple[float, float] = (60.0, 400.0)
     # Rate is a fraction of the fastest orbit the thrusters can actually hold
     # at the sampled radius, not an absolute rad/s. Holding radius R at rate w
     # needs a sustained centripetal force m*w^2*R, so the feasible rate falls
