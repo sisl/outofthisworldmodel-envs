@@ -6,10 +6,13 @@ from owm_envs.render import asset_path, resources_dir
 
 EXPECTED = [
     ("international-space-station", "ISS_stationary.glb"),
-    ("earth", "patches", "earth_color_patch.jpg"),
-    ("earth", "patches", "earth_clouds_patch.jpg"),
     ("moon", "moon_small.glb"),
     ("spacex-dragon-capsule", "spacex_dragon_2_exterior.glb"),
+    # The full-resolution maps are gitignored; these committed fallbacks are
+    # what a fresh clone renders with.
+    ("earth", "maps", "earth_color_fallback.jpg"),
+    ("earth", "maps", "earth_clouds_fallback.jpg"),
+    ("earth", "maps", "earth_bump_fallback.png"),
 ]
 CUBEMAP_FACES = ["px", "nx", "py", "ny", "pz", "nz"]
 

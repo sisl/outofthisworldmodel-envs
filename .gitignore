@@ -219,3 +219,10 @@ __marimo__/
 
 # uncommitted proof-of-concept scripts
 pocs/
+
+# multi-gigabyte Earth texture sources and the ~46 MB full-resolution maps
+# downsampled from them; reduced-resolution fallback maps are committed instead
+src/owm_envs/render/resources/earth/sources/
+src/owm_envs/render/resources/earth/maps/*_full.*
+# temporaries from an interrupted downsample
+src/owm_envs/render/resources/earth/maps/*.part
