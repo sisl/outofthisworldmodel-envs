@@ -284,7 +284,15 @@ def pack_episodes(
         if dock_targets is not None:
             dock_targets[i] = episode["dock_target"]
         if true_observations is not None:
-            true_observations[i, :length] = episode["true_obs"]
+            # Checked rather than assigned blind: a (13,) or (1, 13) true_obs
+            # broadcasts silently across all `length` timesteps, and the result
+            # survives `validate` because duplicated rows look like real data.
+            true_obs = episode["true_obs"]
+            if true_obs.shape != (length, 13):
+                raise ValueError(
+                    f"episode {i} true_obs must be ({length}, 13), got {true_obs.shape}"
+                )
+            true_observations[i, :length] = true_obs
 
     batch = TrajectoryBatch(
         observations=observations,
