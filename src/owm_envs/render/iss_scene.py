@@ -104,11 +104,11 @@ class RenderConfig(ConfigModel):
     # planet bound, 1.34x clear of the hull.
     #
     # The window used to be far tighter -- effectively the single point 0.40 --
-    # because the atmospheric glow shells were still depth-tested, and they
-    # reach much further out than the surface does, so they needed a near plane
-    # the hull could not afford. Composite them by draw order like the cloud
-    # deck (see `_GLOW_QUEUE`) and that constraint disappears entirely; only the
-    # surface and the hull are left, and they are a factor of two apart.
+    # because the atmospheric glow shells reach much further out than the
+    # surface does and were being clipped away below that. Comparing their
+    # depth on `<=` instead of `<` (see `_GLOW_QUEUE`) costs nothing and
+    # retires that constraint, leaving only the surface and the hull, which
+    # are a factor of two apart.
     #
     # The STATION is not the binding constraint: the closest an FPV camera came
     # to ISS geometry over a full run of docking episodes was 2.19 m, 6x clear.
@@ -573,15 +573,19 @@ class ISSScene:
             mat.alpha_mode = "add"
             mat.side = gfx.VisibleSide.back
             mat.depth_write = False
-            # Same reasoning as the cloud deck, and the same fix. These shells
-            # reach much further out than the surface does -- the camera sits
-            # inside the outer ones, so their back faces run to ~1.4e7 m -- and
-            # depth-testing them against the globe simply discarded whatever
-            # fell past the depth range, taking the atmospheric limb with it.
-            # Addition commutes, so they need no ordering among themselves;
-            # they only need to land after the deck and before the station.
+            # These shells reach much further out than the surface does -- the
+            # camera sits inside the outer ones, so their back faces run to
+            # ~1.4e7 m -- and past the depth range those fragments round to a
+            # depth of exactly 1.0 and lose `<` against the cleared buffer.
+            # That is what was eating the atmospheric limb at small near
+            # planes. `<=` is the whole fix: a saturated fragment still draws
+            # where nothing occludes it, while the globe -- whose depth is
+            # comfortably under 1.0 -- still hides the far-side shells behind
+            # it. Dropping the depth test instead would let those far-side
+            # back faces add over the planet, and it is precisely their being
+            # hidden there that makes this a limb and not a wash.
             mat.render_queue = _GLOW_QUEUE
-            mat.depth_test = False
+            mat.depth_compare = "<="
             shell = gfx.Mesh(geom, mat)
             shell.local.rotation = surface_rotation
             earth_group.add(shell)

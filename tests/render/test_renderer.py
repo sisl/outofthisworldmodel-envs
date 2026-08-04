@@ -346,9 +346,12 @@ def test_the_cloud_deck_is_drawn_between_the_globe_and_the_station(renderer):
     assert max(m.material.render_queue for m in glow) < min(
         m.material.render_queue for m in station
     )
-    # The shells reach past the surface, so depth-testing them clipped the
-    # atmospheric limb away exactly as it clipped the deck.
-    assert not any(m.material.depth_test for m in glow)
+    # The shells still depth-test -- being hidden behind the globe is what
+    # makes them a limb rather than a wash -- but on `<=`, so a fragment whose
+    # depth saturates to 1.0 past the depth range still draws against the
+    # cleared buffer instead of losing `<` to it.
+    assert all(m.material.depth_test for m in glow)
+    assert all(m.material.depth_compare == "<=" for m in glow)
     assert not any(m.material.depth_write for m in glow)
     assert deck.material.depth_test is False
     assert deck.material.depth_write is False
@@ -422,6 +425,56 @@ def test_the_station_occludes_the_cloud_deck(renderer):
     # rather than with its perimeter.
     bleed = float((cloud_pixels & station).sum()) / int(station.sum())
     assert bleed < 0.005, f"{bleed:.2%} of the station was painted over by cloud"
+
+
+def _erode(mask, iterations):
+    out = mask.copy()
+    for _ in range(iterations):
+        e = out.copy()
+        e[1:] &= out[:-1]
+        e[:-1] &= out[1:]
+        e[:, 1:] &= out[:, :-1]
+        e[:, :-1] &= out[:, 1:]
+        out = e
+    return out
+
+
+def test_the_atmosphere_is_a_limb_not_a_wash_over_the_planet(renderer):
+    """What the glow shells' depth test is for.
+
+    They are additive back-face spheres, so the fragment drawn for each is on
+    the FAR side of the shell. Over the planet those fall behind the globe and
+    the depth test drops them; only around the limb, where the ray misses the
+    surface entirely, do they survive and accumulate. Drop the depth test to
+    stop the far shells being clipped and the effect inverts into a blue wash
+    over the whole disc -- measured, +7.2 levels over the disc interior where
+    it should be adding nothing.
+    """
+    cfg = RenderConfig(image_width=160, image_height=160)
+    state = _state_pitched(_limb_depression_deg(cfg) + 25.0)
+    shells = [
+        mesh
+        for mesh in _collect_meshes(renderer._iss_scene._earth_surface_group.parent)
+        if mesh not in tuple(renderer._iss_scene._earth_surface_group.children)
+    ]
+    assert shells, "expected the atmospheric shells to be present"
+
+    try:
+        with_glow = renderer.render(state, view="DRAGON_FPV").astype(np.float64)
+        for shell in shells:
+            shell.visible = False
+        without = renderer.render(state, view="DRAGON_FPV").astype(np.float64)
+    finally:
+        for shell in shells:
+            shell.visible = True
+
+    added = with_glow - without
+    on_earth = _earth_hit_mask(cfg, state, *added.shape[:2])
+    # Eroded hard, so "interior" excludes the limb the glow belongs to.
+    interior = _erode(on_earth, 12)
+    assert interior.any(), "the framing must show a solid piece of the disc"
+    assert added[interior].mean() < 0.5, "the atmosphere is washing over the planet"
+    assert added[~on_earth].mean() > 5.0, "the atmosphere should light the limb"
 
 
 def _sky_only(renderer, state):
