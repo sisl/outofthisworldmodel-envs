@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 from owm_envs.cli import app, _parse_split_flags
 from owm_envs.datasets.stats import GenerationConfig, SplitSpec
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.iss.docking_ports import PORT_NAMES
+from owm_envs.envs.iss.policies import DockParams, PolicyConfig
 from owm_envs.envs.iss.sensing import PRESETS
 
 runner = CliRunner()
@@ -327,7 +328,7 @@ def test_render_without_lerobot_is_rejected(tmp_path):
 
 
 def test_parse_split_flags_builds_specs():
-    splits = _parse_split_flags(["train:4:0", "val:2:1"], steps=150, observe="state")
+    splits = _parse_split_flags(["train:4:0", "val:2:1"], steps=150, observe="state", policy="random", ports="")
     assert splits == {
         "train": SplitSpec(num_episodes=4, max_steps=150, seed=0),
         "val": SplitSpec(num_episodes=2, max_steps=150, seed=1),
@@ -335,7 +336,7 @@ def test_parse_split_flags_builds_specs():
 
 
 def test_parse_split_flags_accepts_a_transition_target():
-    splits = _parse_split_flags(["train:100000t:0", "val:20000t:1"], steps=150, observe="state")
+    splits = _parse_split_flags(["train:100000t:0", "val:20000t:1"], steps=150, observe="state", policy="random", ports="")
     assert splits == {
         "train": SplitSpec(min_transitions=100000, max_steps=150, seed=0),
         "val": SplitSpec(min_transitions=20000, max_steps=150, seed=1),
@@ -343,7 +344,7 @@ def test_parse_split_flags_accepts_a_transition_target():
 
 
 def test_parse_split_flags_accepts_a_transition_target_with_a_policy():
-    splits = _parse_split_flags(["train:100000t:0:union"], steps=150, observe="state")
+    splits = _parse_split_flags(["train:100000t:0:union"], steps=150, observe="state", policy="random", ports="")
     assert splits["train"] == SplitSpec(
         min_transitions=100000, max_steps=150, seed=0,
         policy=PolicyConfig(type="union", observe="state"),
@@ -351,7 +352,7 @@ def test_parse_split_flags_accepts_a_transition_target_with_a_policy():
 
 
 def test_parse_split_flags_accepts_a_per_split_policy():
-    splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150, observe="state")
+    splits = _parse_split_flags(["train:4:0:union", "val:2:1:dock"], steps=150, observe="state", policy="random", ports="")
     assert splits["train"].policy == PolicyConfig(type="union", observe="state")
     assert splits["val"].policy == PolicyConfig(type="dock", observe="state")
 
@@ -363,12 +364,80 @@ def test_parse_split_flags_accepts_a_per_split_policy():
                                  "train:t12:0", "train:-5t:0"])
 def test_parse_split_flags_rejects_malformed_entries(bad):
     with pytest.raises(typer.BadParameter):
-        _parse_split_flags([bad], steps=150, observe="state")
+        _parse_split_flags([bad], steps=150, observe="state", policy="random", ports="")
+
+
+def test_parse_split_flags_accepts_a_port_suffix_without_a_policy():
+    splits = _parse_split_flags(["val:8:1::all"], steps=150, observe="state", policy="dock", ports="")
+    assert splits["val"].policy == PolicyConfig(
+        type="dock", observe="state", dock=DockParams(ports=("all",))
+    )
+
+
+@pytest.mark.parametrize("joined", ["harmony_fwd_pma2,poisk_zenith",
+                                    "harmony_fwd_pma2+poisk_zenith"])
+def test_parse_split_flags_accepts_comma_or_plus_joined_ports(joined):
+    splits = _parse_split_flags([f"train:4:0:dock:{joined}"], steps=150, observe="state",
+                                policy="random", ports="")
+    names = tuple(port.name for port in splits["train"].policy.dock.ports)
+    assert names == ("harmony_fwd_pma2", "poisk_zenith")
+
+
+def test_parse_split_flags_rejects_an_unknown_port_naming_the_known_ones():
+    with pytest.raises(typer.BadParameter, match="known ports are"):
+        _parse_split_flags(["train:4:0:dock:not_a_port"], steps=150, observe="state",
+                           policy="random", ports="")
+
+
+def test_split_ports_override_the_run_level_dock_ports():
+    splits = _parse_split_flags(
+        ["train:4:0::poisk_zenith", "val:2:1"], steps=150, observe="state",
+        policy="dock", ports="all",
+    )
+    assert tuple(p.name for p in splits["train"].policy.dock.ports) == ("poisk_zenith",)
+    # An unqualified split records no override and inherits --dock-ports at
+    # the call site instead.
+    assert splits["val"].policy is None
+
+
+def test_parse_split_flags_rejects_an_empty_policy_field():
+    # `train:4:0:` is a typo, not a way to spell "inherit --policy"; dropping
+    # the trailing ':' already does that.
+    with pytest.raises(typer.BadParameter, match="POLICY is empty"):
+        _parse_split_flags(["train:4:0:"], steps=150, observe="state", policy="random", ports="")
+    with pytest.raises(typer.BadParameter, match="POLICY is empty"):
+        _parse_split_flags(["train:4:0::"], steps=150, observe="state", policy="random", ports="")
+
+
+def test_dock_ports_all_reaches_the_run_level_policy(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--policy", "dock", "--dock-ports", "all", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    gen_policy = PolicyConfig.from_yaml(out / "policy_config.yaml")
+    assert tuple(p.name for p in gen_policy.dock.ports) == PORT_NAMES
+
+
+def test_vector_driver_warns_for_a_single_port_set(tmp_path):
+    # The vector env scores `docked` against DockConfig whatever ports the
+    # policy targets, and one port is no safer than several: even PMA-2's
+    # derived pose is 0.84 m off the shipped one.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:2:0",
+        "--policy", "dock", "--dock-ports", "harmony_fwd_pma2",
+        "--driver", "vector", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "scores dock success against DockConfig" in result.output
+    assert "harmony_fwd_pma2" in result.output
 
 
 def test_parse_split_flags_rejects_duplicate_names():
     with pytest.raises(typer.BadParameter, match="duplicate"):
-        _parse_split_flags(["train:4:0", "train:2:1"], steps=150, observe="state")
+        _parse_split_flags(["train:4:0", "train:2:1"], steps=150, observe="state", policy="random", ports="")
 
 
 def test_observe_flag_reaches_per_split_policies(tmp_path):

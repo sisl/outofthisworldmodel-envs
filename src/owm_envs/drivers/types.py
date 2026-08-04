@@ -101,6 +101,15 @@ class TrajectoryBatch:
     terminated: np.ndarray  # (E,) bool
     truncated: np.ndarray  # (E,) bool
     policy_ids: np.ndarray | None  # (E,) int32, or None when not a mixture
+    # (E, 7) float32 [position, quaternion] dock target per episode: the pose
+    # that episode's control law regulated toward and that its success gate
+    # and goal-error block were scored against. The pose itself rather than an
+    # index into the port table, because the table's indices shift whenever a
+    # port is added or removed, so a stored index stops reproducing the
+    # episode as soon as the table changes. None only when the source cannot
+    # supply one -- every ISS driver can, recording the `DockConfig` pose for
+    # a run with no port set.
+    dock_targets: np.ndarray | None = None
 
     @property
     def num_episodes(self) -> int:
@@ -133,6 +142,15 @@ class TrajectoryBatch:
                 )
         if self.policy_ids is not None and self.policy_ids.shape[0] != n:
             raise ValueError(f"episode count mismatch: policy_ids has {self.policy_ids.shape[0]}, expected {n}")
+        if self.dock_targets is not None:
+            if self.dock_targets.shape[0] != n:
+                raise ValueError(
+                    f"episode count mismatch: dock_targets has {self.dock_targets.shape[0]}, expected {n}"
+                )
+            if self.dock_targets.shape[1:] != (7,):
+                raise ValueError(
+                    f"dock_targets rows must be (7,) [position, quaternion], got {self.dock_targets.shape[1:]}"
+                )
 
         if self.actions.shape[1] != t or self.rewards.shape[1] != t:
             raise ValueError("time dimension mismatch between observations, actions and rewards")
@@ -171,6 +189,7 @@ class PolicySource(Protocol):
     """
 
     records_policy_ids: bool
+    records_dock_targets: bool
 
     def new_episode(self, seed: int) -> Any:
         """Return opaque per-episode state (e.g. sampled hyperparameters)."""
@@ -193,12 +212,16 @@ class PolicySource(Protocol):
     def policy_id(self, episode_state: Any) -> int:
         """Sub-policy index for mixture policies; 0 when not a mixture."""
 
+    def dock_target(self, episode_state: Any) -> np.ndarray:
+        """The (7,) [position, quaternion] pose this episode is docking to."""
+
 
 def pack_episodes(
     episodes: list[dict],
     obs_dim: int,
     act_dim: int,
     records_policy_ids: bool,
+    records_dock_targets: bool = False,
 ) -> TrajectoryBatch:
     """Pad a list of variable-length episodes into a TrajectoryBatch.
 
@@ -207,7 +230,8 @@ def pack_episodes(
     there is only one.
 
     Each episode dict carries `obs` (L, obs_dim), `act` (L, act_dim), `rew` (L,),
-    `terminated` bool, `truncated` bool, and `policy_id` int.
+    `terminated` bool, `truncated` bool, `policy_id` int, and, when
+    `records_dock_targets`, `dock_target` (7,).
     """
     n = len(episodes)
     if n == 0:
@@ -221,6 +245,7 @@ def pack_episodes(
     terminated = np.zeros(n, dtype=bool)
     truncated = np.zeros(n, dtype=bool)
     policy_ids = np.zeros(n, dtype=np.int32) if records_policy_ids else None
+    dock_targets = np.zeros((n, 7), dtype=np.float32) if records_dock_targets else None
 
     for i, episode in enumerate(episodes):
         length = int(episode["obs"].shape[0])
@@ -232,6 +257,8 @@ def pack_episodes(
         truncated[i] = episode["truncated"]
         if policy_ids is not None:
             policy_ids[i] = episode["policy_id"]
+        if dock_targets is not None:
+            dock_targets[i] = episode["dock_target"]
 
     batch = TrajectoryBatch(
         observations=observations,
@@ -241,6 +268,7 @@ def pack_episodes(
         terminated=terminated,
         truncated=truncated,
         policy_ids=policy_ids,
+        dock_targets=dock_targets,
     )
     batch.validate()
     return batch

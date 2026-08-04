@@ -3,7 +3,7 @@ import numpy as np
 
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
-from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
+from owm_envs.envs.iss.config import ISSConfig, ObservationConfig, dock_target
 from owm_envs.envs.iss.goal import dock_goal_error
 from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
@@ -28,7 +28,7 @@ def test_vector_driver_records_policy_aware_goal_blocks():
     assert batch.observations.shape[-1] == 25
     row = batch.observations[0, 0]
     np.testing.assert_allclose(
-        row[13:], np.asarray(dock_goal_error(jnp.asarray(row[:13]), cfg)), atol=1e-5
+        row[13:], np.asarray(dock_goal_error(jnp.asarray(row[:13]), dock_target(cfg))), atol=1e-5
     )
 
 

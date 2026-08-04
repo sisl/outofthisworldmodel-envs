@@ -12,21 +12,30 @@ lerobot is an optional extra. The import is function-local so the rest of the
 package imports and tests without it.
 
 Schema: `observation_vector` (float32, obs_dim) and `action` (float32,
-act_dim) carry the trajectory itself. Five more features carry outcome
+act_dim) carry the trajectory itself. Six more features carry outcome
 metadata that would otherwise be lost once a TrajectoryBatch is discarded:
 `reward` (the per-frame reward; zero on an episode's final frame, whose
 action slot is a zero pad rather than a real action), `is_last`,
-`terminated`, `truncated`, and `policy_id`.
+`terminated`, `truncated`, `policy_id`, and `dock_target`.
 
 `is_last` is per-FRAME and true only on an episode's final frame. It marks
 both the terminal observation and the one frame whose action is the zero pad,
 which must be dropped when forming (observation, action, next observation)
-transitions. `terminated`, `truncated` and `policy_id` are per-EPISODE facts
-written onto every frame of that episode -- deliberate redundancy so a
-dataset can be filtered frame-wise (e.g. "give me every frame of every
-collision episode") without joining back to episode boundaries. Combining
-them, `is_last & terminated` selects exactly the collision and dock frames,
-and `is_last & truncated` exactly the horizon cuts.
+transitions. `terminated`, `truncated`, `policy_id` and `dock_target` are
+per-EPISODE facts written onto every frame of that episode -- deliberate
+redundancy so a dataset can be filtered frame-wise (e.g. "give me every frame
+of every collision episode") without joining back to episode boundaries.
+Combining them, `is_last & terminated` selects exactly the collision and dock
+frames, and `is_last & truncated` exactly the horizon cuts.
+
+`dock_target` is the (1, 7) [position, quaternion] pose the episode was flying
+to: the port it was assigned under a port set, or the `DockConfig` pose for a
+run that configured none. The pose itself rather than an index into the port
+table, because the table's indices shift whenever a port is added or removed,
+so a stored index stops reproducing the episode as soon as the table changes;
+a pose is self-contained and stays comparable across table versions. A batch
+whose `dock_targets` is None -- a driver whose policy source cannot supply one
+-- writes all-NaN rows, which no real pose can collide with.
 
 Episode boundaries are recoverable from lerobot's own bookkeeping too --
 `meta.episodes["length"]`, and `frame_index` restarting at 0 -- and that
@@ -49,7 +58,9 @@ and `truncated` survive at shape `(1,)` only because `bool()` -- unlike
 `reward`/`policy_id` do not, for either float32 or int64. Shape `(1, 1)`
 takes the `Array2D` path instead, which round-trips correctly. It reads back
 as a (1, 1) array rather than a bare scalar; callers should `.reshape(())` or
-index `[0, 0]`.
+index `[0, 0]`. `dock_target` takes the same `Array2D` path at (1, 7), which
+is not a special case at all -- it reads back as a (1, 7) array, and callers
+want the row rather than a scalar anyway.
 
 One further feature, `observation.images.fpv`, carries an egocentric video
 clip per episode. It is only declared when the caller passes `frames` -- a
@@ -107,6 +118,7 @@ def write_lerobot_split(
         "terminated": {"dtype": "bool", "shape": (1,), "names": None},
         "truncated": {"dtype": "bool", "shape": (1,), "names": None},
         "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
+        "dock_target": {"dtype": "float32", "shape": (1, 7), "names": None},
     }
     if frames is not None:
         # Derived from the actual clip, not assumed square: the renderer
@@ -127,6 +139,11 @@ def write_lerobot_split(
         terminated = bool(batch.terminated[episode])
         truncated = bool(batch.truncated[episode])
         policy_id = int(batch.policy_ids[episode]) if batch.policy_ids is not None else 0
+        dock_target = (
+            np.asarray(batch.dock_targets[episode], dtype=np.float32).reshape(1, 7)
+            if batch.dock_targets is not None
+            else np.full((1, 7), np.nan, dtype=np.float32)
+        )
         clip = np.asarray(frames[episode]) if frames is not None else None
         for t in range(length):
             frame = {
@@ -139,6 +156,7 @@ def write_lerobot_split(
                 "terminated": np.array([terminated]),
                 "truncated": np.array([truncated]),
                 "policy_id": np.array([[policy_id]], dtype=np.int64),
+                "dock_target": dock_target,
                 "task": task_name,
             }
             if clip is not None:

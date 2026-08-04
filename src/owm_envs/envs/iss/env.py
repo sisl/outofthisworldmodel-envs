@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium import spaces
 
-from .config import ISSConfig
+from .config import ISSConfig, dock_target
 from .dynamics import ISSDynamics
 from .goal import GOAL_ERROR_DIM, dock_goal_error
 from .reward import iss_reward
@@ -88,7 +88,7 @@ class ISSEnv(gym.Env):
         self._jit_step = jax.jit(self.dynamics.step)
         self._jit_reset = jax.jit(self.dynamics.reset)
         self._jit_dock_goal_error = (
-            jax.jit(lambda measured: dock_goal_error(measured, self.cfg))
+            jax.jit(lambda measured: dock_goal_error(measured, jnp.asarray(dock_target(self.cfg))))
             if self.cfg.observation.goal_error
             else None
         )

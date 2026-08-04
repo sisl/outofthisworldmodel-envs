@@ -118,6 +118,34 @@ def test_reward_goal_position_override_targets_the_override_not_the_dock():
     assert np.isclose(float(r), -16.0, atol=1e-4)  # (4-0)^2, not (4-1)^2
 
 
+def test_dock_position_argument_moves_the_position_target():
+    # A multi-port rollout hands the episode's own port position in, so the
+    # reward is shaped toward the point that episode is flying to rather than
+    # the single pose in DockConfig.
+    cfg = ISSConfig(
+        dock=DockConfig(position=(1.0, 0.0, 0.0)),
+        reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
+                                     control_effort=0.0, collision=0.0),
+    )
+    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg,
+                   jnp.asarray([4.0, 0.0, 0.0], dtype=jnp.float32))
+    assert np.isclose(float(r), 0.0, atol=1e-4)  # peak at the port, not at (1, 0, 0)
+
+
+def test_reward_goal_position_outranks_a_per_episode_dock_position():
+    # The override exists to shape the reward toward some other point
+    # entirely; an assigned port does not revoke it.
+    cfg = ISSConfig(
+        dock=DockConfig(position=(1.0, 0.0, 0.0)),
+        reward_goal_position=(0.0, 0.0, 0.0),
+        reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
+                                     control_effort=0.0, collision=0.0),
+    )
+    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg,
+                   jnp.asarray([4.0, 0.0, 0.0], dtype=jnp.float32))
+    assert np.isclose(float(r), -16.0, atol=1e-4)
+
+
 def test_penalties_are_negative_rewards():
     """The weights are negative AND the sum is not negated. Getting exactly one
     of those right turns every penalty into a reward."""

@@ -31,7 +31,7 @@ from ...core.quaternion import (
     quat_normalize,
     rotate_body_to_world,
 )
-from .config import ISSConfig, load_collision_boxes
+from .config import ISSConfig, dock_target, load_collision_boxes
 
 STATE_LABELS: tuple[str, ...] = (
     "rel_x_m", "rel_y_m", "rel_z_m",
@@ -69,10 +69,11 @@ class ISSDynamics:
         self._box_centers = jnp.asarray(centers, dtype=jnp.float32)
         self._box_half_extents = jnp.asarray(half_extents, dtype=jnp.float32)
 
-        self._dock_position = jnp.asarray(cfg.dock.position, dtype=jnp.float32)
+        # Default target when `step` is not given one: the pose named by
+        # DockConfig. A multi-port rollout passes the episode's own target in.
+        self._dock_target = jnp.asarray(dock_target(cfg), dtype=jnp.float32)
         self._dock_max_distance = jnp.asarray(cfg.dock.max_distance_m, dtype=jnp.float32)
         self._dock_max_velocity = jnp.asarray(cfg.dock.max_velocity_m_s, dtype=jnp.float32)
-        self._dock_quaternion = jnp.asarray(cfg.dock.quaternion, dtype=jnp.float32)
         if cfg.dock.max_attitude_error_deg is not None:
             self._dock_max_attitude_error_rad = jnp.asarray(
                 jnp.deg2rad(cfg.dock.max_attitude_error_deg), dtype=jnp.float32
@@ -147,11 +148,16 @@ class ISSDynamics:
         return jnp.any(t_enter <= t_exit)
 
     def _docked(
-        self, pos_w: jnp.ndarray, vel_w: jnp.ndarray, q_bw: jnp.ndarray, omega_b: jnp.ndarray
+        self,
+        pos_w: jnp.ndarray,
+        vel_w: jnp.ndarray,
+        q_bw: jnp.ndarray,
+        omega_b: jnp.ndarray,
+        target: jnp.ndarray,
     ) -> jnp.ndarray:
         if not self.cfg.dock.enabled:
             return jnp.array(False)
-        near = jnp.linalg.norm(pos_w - self._dock_position) <= self._dock_max_distance
+        near = jnp.linalg.norm(pos_w - target[0:3]) <= self._dock_max_distance
         slow = jnp.linalg.norm(vel_w) <= self._dock_max_velocity
         docked = jnp.logical_and(near, slow)
 
@@ -159,7 +165,7 @@ class ISSDynamics:
         # on at trace time rather than with jnp.where -- `_docked` runs inside
         # jit/vmap, but `self.cfg.dock.*` is not a traced array.
         if self.cfg.dock.max_attitude_error_deg is not None:
-            q_err = quat_multiply(quat_conjugate(q_bw), self._dock_quaternion)
+            q_err = quat_multiply(quat_conjugate(q_bw), target[3:7])
             # abs() handles the q/-q double cover: q and -q are the same
             # rotation, but without it their w components differ in sign and
             # give angles 2*pi apart.
@@ -174,9 +180,18 @@ class ISSDynamics:
 
         return docked
 
-    def step(self, state: jnp.ndarray, action: jnp.ndarray) -> tuple[jnp.ndarray, Events]:
+    def step(
+        self,
+        state: jnp.ndarray,
+        action: jnp.ndarray,
+        dock_pose: jnp.ndarray | None = None,
+    ) -> tuple[jnp.ndarray, Events]:
+        """Advance one step. `dock_pose` is a (7,) [position, quaternion] row;
+        omitted, the pose in `DockConfig` is used, which is what the Gymnasium
+        adapters do."""
         s = state.astype(jnp.float32)
         a = action.astype(jnp.float32)
+        target = self._dock_target if dock_pose is None else jnp.asarray(dock_pose, jnp.float32)
 
         q_prev = quat_normalize(s[6:10])
         s = s.at[6:10].set(q_prev)
@@ -191,7 +206,7 @@ class ISSDynamics:
 
         events = Events(
             collision=self._collision(s[0:3], s_next[0:3]),
-            docked=self._docked(s_next[0:3], s_next[3:6], s_next[6:10], s_next[10:13]),
+            docked=self._docked(s_next[0:3], s_next[3:6], s_next[6:10], s_next[10:13], target),
         )
         return s_next, events
 

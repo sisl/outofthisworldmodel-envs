@@ -6,8 +6,9 @@ import pytest
 
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver, _lane_info
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
-from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_target
+from owm_envs.envs.iss.docking_ports import dock_targets
+from owm_envs.envs.iss.policies import DockParams, PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
 from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
@@ -23,9 +24,9 @@ def free_flight_cfg(physics=None, dock=None) -> ISSConfig:
     )
 
 
-def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None):
+def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None, ports=()):
     cfg = free_flight_cfg(physics=physics, dock=dock)
-    policy_cfg = PolicyConfig(type=policy_type)
+    policy_cfg = PolicyConfig(type=policy_type, dock=DockParams(ports=ports))
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
         policy_source=ISSPolicySource(cfg, policy_cfg),
@@ -47,6 +48,7 @@ class _ConstantPolicySource:
     the extensibility claim the driver seam exists to make real."""
 
     records_policy_ids = False
+    records_dock_targets = False
 
     def __init__(self, action: np.ndarray):
         self._action = np.asarray(action, dtype=np.float32)
@@ -66,6 +68,10 @@ class _ConstantPolicySource:
     def policy_id(self, episode_state):
         del episode_state
         return 0
+
+    def dock_target(self, episode_state):
+        del episode_state
+        return np.zeros(7, dtype=np.float32)
 
 
 def test_generates_the_requested_number_of_episodes():
@@ -163,6 +169,26 @@ def test_union_policy_records_policy_ids():
 def test_non_mixture_policy_leaves_policy_ids_none():
     batch = make_driver(policy_type="dock").generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
     assert batch.policy_ids is None
+
+
+def test_port_set_records_the_assigned_dock_target_per_episode():
+    batch = make_driver(policy_type="dock", ports=("all",)).generate(
+        RolloutSpec(num_episodes=8, max_steps=10, seed=0)
+    )
+    assert batch.dock_targets is not None
+    assert batch.dock_targets.shape == (8, 7)
+    table = dock_targets(("all",))
+    for episode in range(batch.num_episodes):
+        matches = np.isclose(table, batch.dock_targets[episode], atol=1e-5).all(axis=1)
+        assert matches.sum() == 1, batch.dock_targets[episode]
+
+
+def test_no_port_set_records_the_config_dock_row():
+    cfg = free_flight_cfg()
+    batch = make_driver(policy_type="dock").generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
+    assert batch.dock_targets is not None
+    for episode in range(batch.num_episodes):
+        np.testing.assert_allclose(batch.dock_targets[episode], dock_target(cfg), atol=1e-6)
 
 
 def test_vector_transitions_target_is_met_with_whole_episodes():
@@ -485,6 +511,7 @@ class _CountingPolicySource:
     lane a call was really for."""
 
     records_policy_ids = False
+    records_dock_targets = False
 
     def __init__(self, env: _AutoresetFakeVectorEnv):
         self._env = env
@@ -512,6 +539,10 @@ class _CountingPolicySource:
     def policy_id(self, episode_state):
         del episode_state
         return 0
+
+    def dock_target(self, episode_state):
+        del episode_state
+        return np.zeros(7, dtype=np.float32)
 
 
 def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
