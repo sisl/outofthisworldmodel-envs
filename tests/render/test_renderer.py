@@ -277,8 +277,10 @@ def test_the_fpv_camera_cannot_see_through_its_own_nose_cone(renderer):
     hull surface in its own frustum, so a near plane pushed much past that
     slices the cone open and the planet shows through the hole. Rather than
     pick a pixel count out of the air, this measures the hull against the same
-    scene rendered with a near plane too small to clip anything: at 0.3 m the
-    camera keeps 98.6% of the hull it should see, at 0.5 m only 63.7%.
+    scene rendered with a near plane too small to clip anything. At this
+    resolution the camera keeps 98.0% of that reference anywhere in
+    0.30-0.40 m -- the residual is mask-threshold noise -- against 87.0% at
+    0.45 m and 65.3% at 0.50 m.
     """
     cfg = RenderConfig(image_width=128, image_height=128, fpv_camera_near_m=0.02)
     unclipped = ISSRenderer(cfg)

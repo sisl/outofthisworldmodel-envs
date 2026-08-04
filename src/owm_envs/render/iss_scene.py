@@ -82,12 +82,16 @@ class RenderConfig(ConfigModel):
     # measured over the limb framing, not derived:
     #
     #   near   limb band lit   hull kept
-    #   0.02       62.1%         100%
-    #   0.30       94.9%        plateau
-    #   0.35       99.95%       plateau
-    #   0.40      100%          plateau
+    #   0.02       62.1%        100%   (reference)
+    #   0.30       94.9%         98.0%
+    #   0.35       99.95%        98.0%
+    #   0.40      100%           98.0%
     #   0.45      100%           87.0%
     #   0.50      100%           65.3%
+    #
+    # (128x128, the limb framing; "hull kept" is measured against the 0.02 m
+    # reference, whose own 98.0% plateau is mask-threshold noise rather than
+    # clipping.)
     #
     # Below ~0.35 m the depth range stops reaching Earth's limb at 2.35e6 m and
     # the planet is cut off just inside it; above ~0.40 m it eats the capsule's
@@ -103,6 +107,10 @@ class RenderConfig(ConfigModel):
     #
     # The STATION is not the binding constraint: the closest an FPV camera came
     # to ISS geometry over a full run of docking episodes was 2.19 m, 6x clear.
+    # This near plane serves ISS_FPV too, which is unaffected either way -- it
+    # is mounted on the zenith side looking away from the station, with no ISS
+    # geometry inside its frustum at all, and its far plane still clears the
+    # limb 2.5x.
     scene_camera_near_m: float = 5.0
     scene_camera_far_m: float = 1_000_000.0
     fpv_camera_near_m: float = 0.35
@@ -248,6 +256,13 @@ def _read_map(path: Path) -> np.ndarray:
 # `(material.render_queue, object.render_order, distance)`; the station and
 # capsule keep pygfx's default queue of 2600 and so paint over the deck
 # normally, using the depth the surface wrote.
+#
+# "Strictly behind the station" is an assumption about this scene rather than
+# something the sort key can check: it holds because the deck tops out at
+# `earth_cloud_altitude_m` (12 km) while everything the simulation flies stays
+# near the station's 420 km. A capsule flown down through the deck, or a config
+# that raised the deck above the station, would be drawn on the wrong side of
+# it -- both are outside what this environment produces.
 _DISTANT_QUEUE = 2000  # Earth's surface, the Sun, the Moon -- all below the deck
 _CLOUD_QUEUE = 2100  # the deck, over them
 
