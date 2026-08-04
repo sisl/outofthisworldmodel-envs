@@ -22,7 +22,7 @@ def render_episode_frames(
     view: str = "DRAGON_FPV",
     renderer: Any | None = None,
 ) -> np.ndarray:
-    """Render one episode's observations to an `(L, H, W, 3)` uint8 clip.
+    """Render one episode's true states to an `(L, H, W, 3)` uint8 clip.
 
     `L` is `batch.lengths[episode_index]` -- only real, non-padded frames are
     rendered. `cfg` is an `owm_envs.render.iss_scene.RenderConfig`.
@@ -42,7 +42,14 @@ def render_episode_frames(
     try:
         frames = np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
         for t in range(length):
-            state = batch.observations[episode_index, t]
+            # The renderer poses the TRUE state, never the observation: the
+            # camera must not shake with navigation error, and an observation
+            # carrying the goal-error block is not renderable geometry. Batches
+            # predating the truth channel fall back to the 13 dynamics dims.
+            if batch.true_observations is not None:
+                state = batch.true_observations[episode_index, t]
+            else:
+                state = batch.observations[episode_index, t][:13]
             action = batch.actions[episode_index, t]
             frames[t] = renderer.render(state, action=action, view=view)
     finally:
