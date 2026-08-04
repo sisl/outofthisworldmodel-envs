@@ -12,6 +12,7 @@ unchanged for a future non-JAX environment.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -365,6 +366,11 @@ def generate(
     typer.echo(f"[done] {out}")
 
 
+def _stdin_is_interactive() -> bool:
+    """Whether a confirmation prompt could actually be answered."""
+    return sys.stdin.isatty()
+
+
 @app.command()
 def push(
     run_dir: Path = typer.Argument(..., help="Finished run directory (must contain summary.json)."),
@@ -376,17 +382,50 @@ def push(
         None, "--private/--public",
         help="Repo visibility. Given neither, a new repo is public and one that "
              "already exists keeps the visibility it has."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Confirm the mirror up front, skipping the prompt. Required when "
+             "stdin is not a terminal."),
 ) -> None:
-    """Upload a run directory to the HuggingFace Hub as a dataset repo."""
-    from .datasets.hub import push_run
+    """Upload a run directory to the HuggingFace Hub as a dataset repo.
+
+    The upload MIRRORS the run onto the repo: everything already there and not
+    in this run is deleted. The repo name is derived from the run's env config
+    alone, so a trial run and the production run generated from the same config
+    target the same repo -- which is why the target and the sizes are printed
+    and confirmed before anything is uploaded.
+    """
+    from .datasets.hub import push_preview, push_run
 
     try:
-        repo_id = push_run(run_dir, name=name, namespace=namespace, private=private)
+        repo_id, counts = push_preview(run_dir, name=name, namespace=namespace)
     except FileNotFoundError as exc:
         # An unfinished run, or one with no LeRobot split: the caller named the
         # wrong directory or generated it wrong, so say so as a usage error
         # rather than as a traceback.
         raise typer.BadParameter(str(exc), param_hint="RUN_DIR") from exc
+
+    typer.echo(f"[push] {run_dir} -> {repo_id}")
+    for split, count in counts.items():
+        typer.echo(f"[push]   {split}: {count['episodes']} episodes, "
+                   f"{count['transitions']} transitions")
+    typer.echo("[push] this MIRRORS the run onto that repo: whatever is there now "
+               "is replaced, and any file this run does not have is deleted")
+    if not yes:
+        if not _stdin_is_interactive():
+            raise typer.BadParameter(
+                f"refusing to mirror over {repo_id} unconfirmed: stdin is not a "
+                "terminal, so the prompt above cannot be answered. Check the repo "
+                "and the sizes, then pass --yes.",
+                param_hint="--yes",
+            )
+        typer.confirm(f"Replace {repo_id} with this run?", abort=True)
+
+    # The confirmed id is handed back rather than left to be derived a second
+    # time, so the repo that is written is the one that was named above.
+    confirmed_namespace, confirmed_name = repo_id.split("/", 1)
+    repo_id = push_run(run_dir, name=confirmed_name, namespace=confirmed_namespace,
+                       private=private)
     typer.echo(f"[push] https://huggingface.co/datasets/{repo_id}")
 
 

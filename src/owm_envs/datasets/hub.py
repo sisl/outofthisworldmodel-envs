@@ -332,6 +332,38 @@ owm-envs generate --out run --config env_config.yaml \\
 """
 
 
+def _summary(run_dir: Path) -> dict:
+    """The run's summary.json, which only a finished run has."""
+    path = run_dir / SUMMARY_FILENAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} missing -- the run did not finish; refusing to push a partial run"
+        )
+    return _read_json(path)
+
+
+def push_preview(
+    run_dir: str | Path,
+    name: str | None = None,
+    namespace: str | None = None,
+) -> tuple[str, dict]:
+    """What a push of `run_dir` would target: its repo id and its split counts.
+
+    Resolved exactly as `push_run` resolves them, and touching nothing: the
+    upload mirrors the run onto the repo, so a caller has to be able to see
+    which repo that is, and how much data would replace what is there, before
+    any of it happens.
+    """
+    run_dir = Path(run_dir)
+    counts = _summary(run_dir)["counts"]
+    env_cfg = ISSConfig.from_yaml(run_dir / "env_config.yaml")
+    if namespace is None:
+        import huggingface_hub
+
+        namespace = huggingface_hub.HfApi().whoami()["name"]
+    return f"{namespace}/{name or dataset_name(env_cfg)}", counts
+
+
 def push_run(
     run_dir: str | Path,
     name: str | None = None,
@@ -350,20 +382,13 @@ def push_run(
     that was deliberately made private nor hide one people are already using.
     """
     run_dir = Path(run_dir)
-    summary_path = run_dir / SUMMARY_FILENAME
-    if not summary_path.exists():
-        raise FileNotFoundError(
-            f"{summary_path} missing -- the run did not finish; refusing to push a "
-            "partial run"
-        )
+    repo_id, _ = push_preview(run_dir, name=name, namespace=namespace)
+    repo_name = repo_id.split("/", 1)[1]
     env_cfg = ISSConfig.from_yaml(run_dir / "env_config.yaml")
 
     import huggingface_hub
 
     api = huggingface_hub.HfApi()
-    namespace = namespace or api.whoami()["name"]
-    repo_name = name or dataset_name(env_cfg)
-    repo_id = f"{namespace}/{repo_name}"
     (run_dir / "README.md").write_text(_dataset_card(repo_name, run_dir, env_cfg))
     api.create_repo(repo_id, repo_type="dataset", private=bool(private), exist_ok=True)
     if private is not None:

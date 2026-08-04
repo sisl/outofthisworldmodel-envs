@@ -867,26 +867,91 @@ def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
-def test_push_reports_the_dataset_url(tmp_path, monkeypatch):
+def _pushable_run(tmp_path):
+    """The two artifacts `owm-envs push` reads before it uploads anything."""
+    run = tmp_path / "run"
+    run.mkdir()
+    ISSConfig(sensor_noise=PRESETS["cooperative"]).to_yaml(run / "env_config.yaml")
+    (run / "summary.json").write_text(json.dumps({"counts": {
+        "train": {"episodes": 96, "transitions": 500_012},
+        "val": {"episodes": 11, "transitions": 50_004},
+    }}))
+    return run
+
+
+@pytest.fixture
+def recorded_push(monkeypatch):
+    """Records what reached push_run; nothing gets near the Hub."""
     pushed = {}
 
     def fake_push(run_dir, name=None, namespace=None, private=False):
         pushed.update(run_dir=run_dir, name=name, namespace=namespace, private=private)
-        return "acct/owm-iss-coop-goal-dt50ms"
+        return f"{namespace}/{name}"
 
     monkeypatch.setattr("owm_envs.datasets.hub.push_run", fake_push)
-    result = runner.invoke(app, ["push", str(tmp_path), "--private"])
+    return pushed
+
+
+def test_push_reports_the_dataset_url(tmp_path, recorded_push):
+    run = _pushable_run(tmp_path)
+    result = runner.invoke(
+        app, ["push", str(run), "--namespace", "acct", "--private", "--yes"]
+    )
 
     assert result.exit_code == 0, result.output
-    assert "https://huggingface.co/datasets/acct/owm-iss-coop-goal-dt50ms" in result.output
-    assert pushed == {"run_dir": tmp_path, "name": None, "namespace": None, "private": True}
+    assert "https://huggingface.co/datasets/acct/owm-iss-coop-nogoal-dt50ms" in result.output
+    # The confirmed repo is passed back explicitly, so the upload cannot land
+    # anywhere other than the target the confirmation named.
+    assert recorded_push == {"run_dir": run, "name": "owm-iss-coop-nogoal-dt50ms",
+                             "namespace": "acct", "private": True}
 
     # Neither flag reaches push_run as None, not as False: "public" is a
     # request to change an existing repo's visibility, "unset" is not.
-    runner.invoke(app, ["push", str(tmp_path)])
-    assert pushed["private"] is None
-    runner.invoke(app, ["push", str(tmp_path), "--public"])
-    assert pushed["private"] is False
+    runner.invoke(app, ["push", str(run), "--namespace", "acct", "--yes"])
+    assert recorded_push["private"] is None
+    runner.invoke(app, ["push", str(run), "--namespace", "acct", "--public", "--yes"])
+    assert recorded_push["private"] is False
+
+
+def test_push_names_the_repo_and_the_split_sizes_before_confirming(
+    tmp_path, monkeypatch, recorded_push
+):
+    # The repo name is derived from the env config alone, so a trial run and
+    # the production run generated from the same variant TOML target the same
+    # repo -- and the upload mirrors, deleting what is there. What is about to
+    # be replaced, and by how much data, has to be on screen before the answer.
+    monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
+    result = runner.invoke(
+        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"], input="y\n"
+    )
+    assert result.exit_code == 0, result.output
+    prompt = result.output.split("Replace")[0]
+    assert "acct/owm-iss-coop-nogoal-dt50ms" in prompt
+    assert "train: 96 episodes, 500012 transitions" in prompt
+    assert "val: 11 episodes, 50004 transitions" in prompt
+    assert "MIRRORS" in prompt
+    assert recorded_push["name"] == "owm-iss-coop-nogoal-dt50ms"
+
+
+def test_push_uploads_nothing_when_the_prompt_is_declined(
+    tmp_path, monkeypatch, recorded_push
+):
+    monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
+    result = runner.invoke(
+        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"], input="n\n"
+    )
+    assert result.exit_code != 0
+    assert recorded_push == {}
+
+
+def test_push_without_a_terminal_refuses_unless_yes_is_given(tmp_path, recorded_push):
+    # A scripted or piped invocation cannot answer a prompt. Prompting anyway
+    # would read EOF and abort obscurely; proceeding would mirror over a
+    # production repo unconfirmed.
+    result = runner.invoke(app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"])
+    assert result.exit_code != 0
+    assert "--yes" in result.output
+    assert recorded_push == {}
 
 
 def test_push_rejects_a_directory_that_is_not_a_finished_run(tmp_path):

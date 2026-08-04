@@ -16,7 +16,7 @@ from pathlib import Path
 import huggingface_hub
 import pytest
 
-from owm_envs.datasets.hub import _dataset_card, dataset_name, push_run
+from owm_envs.datasets.hub import _dataset_card, dataset_name, push_preview, push_run
 from owm_envs.datasets.stats import GenerationConfig
 from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
 from owm_envs.envs.iss.policies import PolicyConfig
@@ -340,6 +340,21 @@ def test_push_leaves_an_existing_repos_visibility_alone_by_default(tmp_path, api
     push_run(_write_run(tmp_path))
     assert "update_repo_settings" not in api.calls
     assert api.create_kwargs["private"] is False
+
+
+def test_push_preview_names_the_repo_and_the_counts_a_push_would_replace(tmp_path, api):
+    # The caller has to be able to see what an upload would mirror over before
+    # it happens; asking must itself change nothing.
+    repo_id, counts = push_preview(_write_run(tmp_path))
+    assert repo_id == "acct/owm-iss-noncoop-goal-dt50ms"
+    assert counts["train"]["episodes"] == 96
+    assert counts["val"]["transitions"] == 50_004
+    assert api.calls == ["whoami"]
+
+
+def test_push_preview_refuses_a_run_that_did_not_finish(tmp_path, api):
+    with pytest.raises(FileNotFoundError, match="did not finish"):
+        push_preview(_write_run(tmp_path, finished=False))
 
 
 def test_push_refuses_a_run_that_did_not_finish(tmp_path, api):
