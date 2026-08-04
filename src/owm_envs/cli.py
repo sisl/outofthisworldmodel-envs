@@ -331,9 +331,9 @@ def generate(
             render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
             total = int(batch.lengths.sum())
             # Frame and worker counts only: per-frame cost moves with
-            # resolution and scene, and workers buy sub-linear speed-up
-            # (measured 1.6-2.6x over 2-8), so any duration printed here would
-            # be a prediction this code cannot make.
+            # resolution and scene, and extra workers scale sub-linearly, so
+            # any duration printed here would be a prediction this code
+            # cannot make. How many workers to spend is the operator's call.
             typer.echo(f"[render] {name}: {total} frames, {render_workers} worker(s)")
             # Lazy: the writer pulls one episode's clip at a time. Rendering
             # a whole split first would need ~98 GB of RAM at 500k frames.
