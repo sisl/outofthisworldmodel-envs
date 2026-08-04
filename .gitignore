@@ -226,3 +226,8 @@ src/owm_envs/render/resources/earth/sources/
 src/owm_envs/render/resources/earth/maps/*_full.*
 # temporaries from an interrupted downsample
 src/owm_envs/render/resources/earth/maps/*.part
+
+# Data Outputs
+logs/
+results/
+outputs/
