@@ -137,10 +137,10 @@ def write_lerobot_split(
         "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
         "dock_target": {"dtype": "float32", "shape": (1, 7), "names": None},
     }
-    if batch.true_observations is not None:
+    if batch.true_state is not None:
         features["state_vector"] = {
             "dtype": "float32",
-            "shape": (batch.true_observations.shape[-1],),
+            "shape": (batch.true_state.shape[-1],),
             "names": None,
         }
     if frames is not None:
@@ -182,9 +182,9 @@ def write_lerobot_split(
                 "dock_target": dock_target,
                 "task": task_name,
             }
-            if batch.true_observations is not None:
+            if batch.true_state is not None:
                 frame["state_vector"] = np.asarray(
-                    batch.true_observations[episode, t], dtype=np.float32
+                    batch.true_state[episode, t], dtype=np.float32
                 )
             if clip is not None:
                 frame["observation.images.fpv"] = np.asarray(clip[t], dtype=np.uint8)

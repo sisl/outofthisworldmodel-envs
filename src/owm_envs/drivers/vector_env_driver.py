@@ -278,7 +278,7 @@ class VectorEnvDriver:
                             "truncated": bool(truncations[lane]) or (horizon_hit and not env_done),
                             "policy_id": self.policy_source.policy_id(lane_episode_state[lane])
                             if records_policy_ids
-                            else 0,
+                            else None,
                             "dock_target": self.policy_source.dock_target(
                                 lane_episode_state[lane]
                             )
@@ -286,7 +286,7 @@ class VectorEnvDriver:
                             else None,
                         }
                         if records_truth:
-                            episode["true_obs"] = np.stack(lane_true[lane])
+                            episode["true_state"] = np.stack(lane_true[lane])
                         finished.append(episode)
                         transitions_collected += len(lane_obs[lane]) - 1
                     lane_act[lane] = []
@@ -346,5 +346,5 @@ class VectorEnvDriver:
             act_dim,
             records_policy_ids,
             records_dock_targets,
-            records_true_observations=records_truth,
+            records_true_state=records_truth,
         )
