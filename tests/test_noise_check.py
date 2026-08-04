@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from check_sensor_noise import expected_sigmas, residual_stats  # noqa: E402
+from check_sensor_noise import expected_sigmas, report_split, residual_stats  # noqa: E402
 
 from owm_envs.envs.iss.config import ISSConfig  # noqa: E402
 from owm_envs.envs.iss.sensing import PRESETS  # noqa: E402
@@ -167,6 +167,57 @@ def test_expected_sigmas_is_zero_when_noise_is_disabled():
         update={"enabled": False}
     ))
     assert set(expected_sigmas(cfg, range_rms=100.0).values()) == {0.0}
+
+
+def _stats(pos=0.05, vel=0.002, att=5e-5, rate=1e-5, by_range=()):
+    """A residual_stats-shaped dict, defaulting to the cooperative sigmas."""
+    return {
+        "pos_rms_m": pos, "vel_rms_m_s": vel, "att_rms_rad": att,
+        "rate_rms_rad_s": rate, "pos_err_by_range": list(by_range),
+        "range_rms_m": 100.0, "count": 1000,
+    }
+
+
+def _coop() -> ISSConfig:
+    return ISSConfig(sensor_noise=PRESETS["cooperative"])
+
+
+def test_report_split_passes_a_run_that_matches_its_config():
+    assert report_split("train", _stats(), _coop(), 0.1) is True
+
+
+@pytest.mark.parametrize(
+    ("channel", "measured"),
+    [("pos", 0.06), ("vel", 0.0024), ("att", 6e-5), ("rate", 1.2e-5)],
+)
+def test_report_split_fails_any_channel_past_the_tolerance(channel, measured):
+    """Every channel has to reach the verdict -- one dropped from the fold
+    would let a whole broken measurement channel through the gate."""
+    assert report_split("train", _stats(**{channel: measured}), _coop(), 0.1) is False
+
+
+def test_report_split_accepts_a_deviation_inside_the_tolerance():
+    assert report_split("train", _stats(pos=0.054), _coop(), 0.1) is True
+    assert report_split("train", _stats(pos=0.056), _coop(), 0.1) is False
+
+
+def test_report_split_holds_a_no_noise_run_to_exact_zeros():
+    cfg = ISSConfig(sensor_noise=PRESETS["off"])
+    assert report_split("train", _stats(0.0, 0.0, 0.0, 0.0), cfg, 0.1) is True
+    # No tolerance covers a channel nothing was injected on, however tiny.
+    assert report_split("train", _stats(1e-12, 0.0, 0.0, 0.0), cfg, 1.0) is False
+
+
+def test_report_split_fails_on_a_range_bin_alone():
+    """The aggregate can sit on its expectation while the range profile is
+    wrong, which is the whole reason the bins are computed."""
+    cfg = ISSConfig(sensor_noise=PRESETS["noncooperative"])
+    bins = [{"range_lo": 0.0, "range_hi": 50.0, "range_rms_m": 40.0,
+             "count": 500, "pos_rms_m": 0.4}]
+    stats = _stats(pos=1.0, vel=0.03, by_range=bins)   # 1% of the 100 m range RMS
+    assert report_split("train", stats, cfg, 0.1) is True
+    bins[0]["pos_rms_m"] = 0.8
+    assert report_split("train", stats, cfg, 0.1) is False
 
 
 def test_expected_sigmas_norms_a_per_axis_sigma():

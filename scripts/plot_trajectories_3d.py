@@ -32,6 +32,11 @@ import pandas as pd
 # the ordinal blue ramp episode colour interpolates along -- the light end is
 # the ramp's step 100, the dark end its step 600, which is the darkest step
 # that still clears 2:1 against this surface.
+# Points drawn per episode. 64 paths at this length is a page of a few
+# megabytes that a browser rotates smoothly; the full 7200-step episodes the
+# datasets hold are not.
+MAX_POINTS = 1000
+
 SURFACE = "#1a1a19"
 TEXT_PRIMARY = "#ffffff"
 TEXT_SECONDARY = "#c3c2b7"
@@ -95,13 +100,25 @@ def dock_positions(frame: pd.DataFrame) -> np.ndarray:
     return np.unique(targets[np.isfinite(targets).all(axis=1)], axis=0)
 
 
-def figure(frame: pd.DataFrame, title: str, source: str):
+def figure(frame: pd.DataFrame, title: str, source: str, max_points: int = MAX_POINTS):
     import plotly.graph_objects as go
 
     groups = list(frame.groupby("episode_index", sort=True))
     starts = []
     fig = go.Figure()
     for i, (episode, rows) in enumerate(groups):
+        # Episodes run to 7200 steps, and every point of every path is written
+        # into the page as text. Thinning by a stride keeps the shape of a
+        # trajectory that a 20 Hz sim oversamples anyway, and the hover keeps
+        # reporting the true step index because frame_index is thinned with it.
+        step = max(1, -(-len(rows) // max_points))
+        keep = np.arange(0, len(rows), step)
+        if keep[-1] != len(rows) - 1:
+            # The last frame is where the episode ended up, which is the
+            # question being asked of a docking approach; a stride that steps
+            # over it is the one point that must not be thinned away.
+            keep = np.append(keep, len(rows) - 1)
+        rows = rows.iloc[keep]
         path = np.stack(rows[source].to_numpy())[:, 0:3]
         starts.append(path[0])
         fig.add_trace(go.Scatter3d(
@@ -171,6 +188,11 @@ def main() -> int:
         help="episodes to draw per split, lowest index first (default 64). A "
              "published split holds thousands, which no browser will open.",
     )
+    parser.add_argument(
+        "--max-points", type=int, default=MAX_POINTS,
+        help=f"points drawn per episode (default {MAX_POINTS}); longer paths are "
+             "thinned by a stride, and the hover still reports the true step index",
+    )
     args = parser.parse_args()
 
     try:
@@ -198,7 +220,7 @@ def main() -> int:
         title = (f"{args.run_dir.name} / {split} -- {shown}, "
                  f"{len(frame)} frames ({source.replace('_', ' ')})")
         path = args.out / f"trajectories_{split}.html"
-        figure(frame, title, source).write_html(path, include_plotlyjs="inline")
+        figure(frame, title, source, args.max_points).write_html(path, include_plotlyjs="inline")
         print(f"wrote {path} ({shown})")
     return 0
 

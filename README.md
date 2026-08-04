@@ -43,8 +43,9 @@ exact zeros.
 `plot_trajectories_3d.py` writes one self-contained plotly page per split for
 the eyeball check: each episode's true path, the dock poses they were flying
 to, and the station origin, on equal-aspect axes. It draws the first 64
-episodes of a split by default (`--max-episodes`), since a published split
-holds far more paths than a browser will open at once.
+episodes of a split by default (`--max-episodes`), thinned to 1000 points each
+(`--max-points`), since a published split holds far more than a browser will
+open at once.
 
 ## Asset acknowledgements
 

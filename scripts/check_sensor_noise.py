@@ -27,6 +27,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.sensing import Sigma
@@ -142,20 +143,28 @@ def load_split(run_dir: Path, split: str) -> tuple[np.ndarray, np.ndarray]:
 
     Globs `**/*.parquet` under the split's data directory so a change in
     lerobot's chunk/file layout does not silently read nothing.
+
+    Only the two columns this compares are read, one file at a time and stacked
+    into dense arrays as they go: a 500k-frame split holds a numpy object per
+    frame per vector column, so reading the actions, rewards, targets and
+    bookkeeping alongside them costs gigabytes to answer a question about two.
     """
     files = sorted((run_dir / split / "data").rglob("*.parquet"))
     if not files:
         raise SystemExit(f"no parquet files under {run_dir / split / 'data'}")
-    frame = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-    if "state_vector" not in frame.columns:
+    if "state_vector" not in pq.ParquetFile(files[0]).schema_arrow.names:
         raise SystemExit(
             f"split '{split}' has no state_vector column: this run predates true-state "
             "recording, so its observations cannot be compared against truth. Regenerate "
             "it with the current owm-envs."
         )
-    obs = np.stack(frame["observation_vector"].to_numpy())
-    truth = np.stack(frame["state_vector"].to_numpy())
-    return obs, truth
+
+    obs, truth = [], []
+    for path in files:
+        frame = pd.read_parquet(path, columns=["observation_vector", "state_vector"])
+        obs.append(np.stack(frame["observation_vector"].to_numpy()))
+        truth.append(np.stack(frame["state_vector"].to_numpy()))
+    return np.concatenate(obs), np.concatenate(truth)
 
 
 def _print_row(label: str, measured: float, target: float, tolerance: float, suffix: str = "") -> bool:
