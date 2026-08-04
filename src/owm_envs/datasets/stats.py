@@ -16,6 +16,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -28,6 +29,7 @@ from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
 from ..envs.iss.config import ISSConfig
 from ..envs.iss.policies import PolicyConfig
+from .video import VIEW_NAMES, parse_view_names
 
 _STD_FLOOR = 1e-6
 
@@ -123,6 +125,27 @@ class GenerationConfig(ConfigModel):
     # would silently disagree with dt for any dt but one.
     fps: int | None = None
     driver: Literal["auto", "scan", "vector"] = "auto"
+    # Which camera views a rendered run writes, by their short names. Part of
+    # the recipe rather than of the environment: this shapes the dataset, not
+    # the physics, and two runs of one environment can legitimately differ
+    # here. Stored resolved rather than as 'all', so the as-run copy names the
+    # views a dataset actually has whatever the default was the day it ran. A
+    # run without --render ignores it.
+    render_views: list[str] = Field(default_factory=lambda: list(VIEW_NAMES))
+
+    @field_validator("render_views", mode="before")
+    @classmethod
+    def _resolve_render_views(cls, v: object) -> object:
+        # Every iterable, not just str/list/tuple: pydantic would coerce a set
+        # or a generator into the list this annotates, and one that slipped
+        # past here would be stored unresolved and unordered -- the two
+        # properties the field exists to guarantee. Anything else is handed
+        # back for pydantic to reject in its own words.
+        if isinstance(v, str):
+            return list(parse_view_names(v))
+        if isinstance(v, Iterable) and not isinstance(v, (bytes, bytearray, Mapping)):
+            return list(parse_view_names(list(v)))
+        return v
 
     @field_validator("splits")
     @classmethod

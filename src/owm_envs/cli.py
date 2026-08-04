@@ -21,7 +21,14 @@ import yaml
 from pydantic import ValidationError
 
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
-from .datasets.video import COMPOSITE_VIEWS, FPV_KEY, OUTPUT_KEYS
+from .datasets.video import (
+    COMPOSITE_VIEWS,
+    FPV_KEY,
+    OUTPUT_KEYS,
+    VIEW_NAMES,
+    keys_for_names,
+    parse_view_names,
+)
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig, ObservationConfig
 from .envs.iss.docking_ports import PORT_NAMES
@@ -54,28 +61,16 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
     return PolicyConfig(type=policy, observe=observe, dock=DockParams(ports=names))
 
 
-def _parse_render_views(spec: str) -> tuple[str, ...]:
-    """`--render-views` -> the video feature keys to write, in a stable order.
+def _parse_render_views(spec: str) -> list[str]:
+    """`--render-views` -> the view names to record in the generation config.
 
-    Names are the short ones the keys end in -- `fpv`, `iss_top`, `composite`
-    -- with `all` for every one of them. Reported in `OUTPUT_KEYS` order rather
-    than the order they were typed, so two runs asking for the same set declare
-    their features identically.
+    The parsing itself belongs to the datasets package, which owns the keys; a
+    bad value is a usage error here rather than the ValueError it is there.
     """
-    short = {key.rsplit(".", 1)[-1]: key for key in OUTPUT_KEYS}
-    names = [name for part in spec.replace("+", ",").split(",") if (name := part.strip().lower())]
-    # Every name is checked even when `all` is among them: `all,typo` is a typo
-    # the caller wants to hear about, and reading `all` first would swallow it.
-    unknown = [name for name in names if name != "all" and name not in short]
-    if unknown:
-        raise typer.BadParameter(
-            f"unknown --render-views value {unknown[0]!r}; expected 'all' (the default) "
-            f"or a comma-joined list of {', '.join(sorted(short))}"
-        )
-    if not names or "all" in names:
-        return OUTPUT_KEYS
-    wanted = {short[name] for name in names}
-    return tuple(key for key in OUTPUT_KEYS if key in wanted)
+    try:
+        return list(parse_view_names(spec))
+    except ValueError as exc:
+        raise typer.BadParameter(f"--render-views: {exc}") from exc
 
 
 def _parse_split_flags(
@@ -209,15 +204,15 @@ def generate(
         "--render/--no-render",
         help="Render an egocentric video feed (slow: ~0.1 s/frame; off by default).",
     ),
-    render_views: str = typer.Option(
-        "all",
-        help="Which video features --render writes: 'all' (default) is every one of "
-             f"the {len(COMPOSITE_VIEWS)} named cameras under its own key, plus the "
-             "composite tiling them into one frame -- "
-             f"{len(OUTPUT_KEYS)} video streams per split. Or a comma-joined list of "
-             f"{', '.join(sorted(key.rsplit('.', 1)[-1] for key in OUTPUT_KEYS))} to "
-             "write fewer. The default costs six draws per frame rather than one, and "
-             f"stores {len(OUTPUT_KEYS)} encoded streams rather than one, so pass "
+    render_views: Optional[str] = typer.Option(
+        None,
+        help="Which video features --render writes; exclusive with --gen-config, which "
+             "carries its own. 'all' (the default) is every one of the "
+             f"{len(COMPOSITE_VIEWS)} named cameras under its own key, plus the "
+             f"composite tiling them into one frame -- {len(OUTPUT_KEYS)} video streams "
+             f"per split. Or a comma-joined list of {', '.join(VIEW_NAMES)} to write "
+             "fewer. The default costs six draws per frame rather than one, and stores "
+             f"{len(OUTPUT_KEYS)} encoded streams rather than one, so pass "
              "'--render-views fpv' for a lean training run: that writes the egocentric "
              f"view alone, under {OUTPUT_KEYS[0]}, which is the key training reads. "
              "Any run that includes fpv also gets a per-episode copy of that clip "
@@ -248,7 +243,18 @@ def generate(
     if render_workers < 1:
         raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
 
-    view_keys = _parse_render_views(render_views)
+    # Both checked before the GPU is touched: a usage error must cost a usage
+    # error, not an adapter probe -- which pins a device for the process --
+    # followed by one.
+    if render_views is not None:
+        _parse_render_views(render_views)
+    if gen_config is not None and any(
+        v is not None for v in (split, steps, num_envs, driver, fps, render_views)
+    ):
+        raise typer.BadParameter(
+            "--gen-config is exclusive with "
+            "--split/--steps/--num-envs/--driver/--fps/--render-views"
+        )
 
     if render:
         from .render.device import check_gpu_index, select_gpu
@@ -285,10 +291,6 @@ def generate(
             ) from exc
 
     if gen_config is not None:
-        if any(v is not None for v in (split, steps, num_envs, driver, fps)):
-            raise typer.BadParameter(
-                "--gen-config is exclusive with --split/--steps/--num-envs/--driver/--fps"
-            )
         try:
             gen = GenerationConfig.from_yaml(gen_config)
         except ValidationError as exc:
@@ -307,12 +309,22 @@ def generate(
                 num_envs=num_envs if num_envs is not None else 8,
                 fps=fps,
                 driver=driver if driver is not None else "auto",
+                render_views=(
+                    _parse_render_views(render_views)
+                    if render_views is not None
+                    else list(VIEW_NAMES)
+                ),
             )
         except ValidationError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
     if gen.num_envs < 1:
         raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
+
+    # From the recipe, not the flag: --gen-config carries its own selection,
+    # and the as-run copy of that recipe is what records which views a dataset
+    # was built with.
+    view_keys = keys_for_names(gen.render_views)
 
     try:
         cfg = ISSConfig.load(config) if config is not None else ISSConfig()

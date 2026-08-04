@@ -182,3 +182,11 @@ splits:
 num_envs: 64
 fps: null
 driver: auto
+render_views:
+- fpv
+- dragon_iso
+- dragon_top
+- iss_fpv
+- iss_iso
+- iss_top
+- composite

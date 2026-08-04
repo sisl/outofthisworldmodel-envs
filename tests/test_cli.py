@@ -1117,6 +1117,77 @@ def test_a_run_without_the_fpv_view_still_completes(tmp_path, monkeypatch):
     assert not (out / "media").exists(), "wrote a media clip for a view it never rendered"
 
 
+def test_the_as_run_config_records_the_views_the_dataset_was_built_with(tmp_path, monkeypatch):
+    """A run directory has to say which cameras its video came from: the same
+    environment and policy can produce datasets with different feature sets,
+    and nothing else in the directory distinguishes them."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from owm_envs.datasets.video import COMPOSITE_KEY, FPV_KEY
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-views", "composite,fpv",
+    ])
+    assert result.exit_code == 0, result.output
+    # The recorded selection and the one actually rendered are the same thing,
+    # which is the property that makes the record worth anything.
+    assert seen["keys"] == (FPV_KEY, COMPOSITE_KEY)
+    recorded = GenerationConfig.from_yaml(out / "generation_config.yaml")
+    assert recorded.render_views == ["fpv", "composite"]
+
+
+def test_a_gen_config_supplies_the_views(tmp_path, monkeypatch):
+    """The recipe is the committed-config path, so the views have to come from
+    it rather than from a flag the operator would have to remember to repeat."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    recipe = tmp_path / "gen.yaml"
+    GenerationConfig(
+        splits={"train": SplitSpec(num_episodes=1, max_steps=4, seed=0)},
+        num_envs=1,
+        render_views="iss_top",
+    ).to_yaml(recipe)
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--gen-config", str(recipe), "--render",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["keys"] == ("observation.images.iss_top",)
+
+
+def test_render_views_is_exclusive_with_a_gen_config(tmp_path, monkeypatch):
+    """The recipe carries its own selection, so a flag beside it would be two
+    answers to one question -- the same rule the other recipe flags follow.
+
+    Rejected before the GPU is touched, with --render passed: selecting an
+    adapter pins one for the whole process, which is real cost to spend on an
+    invocation that was never going to run.
+    """
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    recipe = tmp_path / "gen.yaml"
+    GenerationConfig(
+        splits={"train": SplitSpec(num_episodes=1, max_steps=4, seed=0)}
+    ).to_yaml(recipe)
+
+    probed = []
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: probed.append(index))
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: probed.append(index))
+
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--gen-config", str(recipe),
+        "--render-views", "fpv", "--render",
+    ])
+    assert result.exit_code != 0
+    assert "--render-views" in result.output
+    assert probed == [], "probed the GPU for an invocation that was a usage error"
+
+
 def test_an_unknown_view_is_caught_even_beside_all(tmp_path):
     """'all' must not swallow a typo sitting next to it: the run would silently
     render something other than what was asked for."""
@@ -1152,4 +1223,4 @@ def test_an_unknown_render_view_is_a_usage_error(tmp_path):
         "--render", "--render-views", "DRAGON_FPV",
     ])
     assert result.exit_code != 0
-    assert "unknown --render-views value" in result.output
+    assert "--render-views" in result.output and "dragon_fpv" in result.output

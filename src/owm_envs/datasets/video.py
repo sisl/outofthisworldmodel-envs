@@ -72,6 +72,46 @@ OUTPUT_KEYS: tuple[str, ...] = tuple(VIEW_KEYS[view] for view in COMPOSITE_VIEWS
 )
 
 
+# The short tail of each key -- `fpv`, `iss_top`, `composite` -- which is how
+# a run selects views on the command line and in a generation config. The keys
+# themselves are the dataset's interface; these are the names people type.
+VIEW_NAMES: tuple[str, ...] = tuple(key.rsplit(".", 1)[-1] for key in OUTPUT_KEYS)
+_KEYS_BY_NAME: dict[str, str] = dict(zip(VIEW_NAMES, OUTPUT_KEYS))
+
+
+def parse_view_names(spec: str | Sequence[str]) -> tuple[str, ...]:
+    """A view selection -> the short names it means, canonically ordered.
+
+    Takes either a comma-joined string or a sequence, since the same selection
+    arrives from a command line as one and from a config file as the other.
+    `all` stands for every name, and an empty selection means the same rather
+    than nothing: a run rendering no view would pay the render cost and write
+    no video for it.
+
+    Ordered by `OUTPUT_KEYS` rather than by how it was written, so two runs
+    asking for the same set record and declare it identically.
+    """
+    parts = spec.replace("+", ",").split(",") if isinstance(spec, str) else list(spec)
+    names = [name for part in parts if (name := str(part).strip().lower())]
+    # Checked even when `all` is among them: `all,typo` is a typo the caller
+    # wants to hear about, and reading `all` first would swallow it.
+    unknown = [name for name in names if name != "all" and name not in _KEYS_BY_NAME]
+    if unknown:
+        raise ValueError(
+            f"unknown view {unknown[0]!r}; expected 'all' or a comma-joined list of "
+            f"{', '.join(VIEW_NAMES)}"
+        )
+    if not names or "all" in names:
+        return VIEW_NAMES
+    wanted = set(names)
+    return tuple(name for name in VIEW_NAMES if name in wanted)
+
+
+def keys_for_names(names: str | Sequence[str]) -> tuple[str, ...]:
+    """A view selection -> the dataset feature keys it writes."""
+    return tuple(_KEYS_BY_NAME[name] for name in parse_view_names(names))
+
+
 def views_for(keys: Sequence[str]) -> tuple[str, ...]:
     """Which cameras have to be drawn to produce `keys`.
 
