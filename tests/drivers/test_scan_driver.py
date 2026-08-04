@@ -91,9 +91,12 @@ def test_leaving_the_domain_terminates_episodes_early():
 
 
 def test_max_range_none_lets_a_far_episode_run_to_truncation():
+    # The start sphere sits beyond the 1000 m default deliberately: starting
+    # inside it, this would pass even if None silently fell back to that
+    # default rather than removing the bound.
     cfg = ISSConfig(
         max_range_m=None,
-        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=2000.0),
         dock=DockConfig(enabled=False),
     )
     driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2)

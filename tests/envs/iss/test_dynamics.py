@@ -336,10 +336,12 @@ def test_escape_does_not_fire_inside_the_max_range():
     assert bool(events.escaped) is False
 
 
-@pytest.mark.parametrize("radius, expected", [(999.9, False), (1000.1, True)])
+@pytest.mark.parametrize("radius, expected", [(999.9, False), (1000.0, False), (1000.1, True)])
 def test_escape_turns_on_at_the_boundary(radius, expected):
     # At rest with zero action the post-step position is the given one, so
     # this pins the comparison itself rather than a step's worth of drift.
+    # Exactly max_range_m is still inside the domain: the case that separates
+    # the `>` the dynamics use from a `>=`.
     dyn = ISSDynamics(ISSConfig(
         max_range_m=1000.0,
         physics=PhysicsConfig(collision_boxes_path=None),
