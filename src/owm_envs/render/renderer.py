@@ -91,6 +91,16 @@ def _dragon_fpv_pose_world(cfg: RenderConfig, state: np.ndarray) -> tuple[np.nda
 # Widening `far` past this point is inert: it is the near plane that has to
 # move. (Measured on this scene: near=0.05 m clips at ~1.07e6 m however large
 # `far` is; near=0.5 m at ~1.7e7 m.)
+#
+# This budget is what makes `RenderConfig.fpv_camera_near_m` a knife edge: one
+# camera cannot comfortably hold both a hull 0.4 m away and a limb 2350 km
+# away. The way out is to stop asking it to -- draw the planet and the station
+# in two passes with the depth buffer CLEARED between them, so each gets the
+# whole budget for its own scale. pygfx 0.15 has no public depth-only clear
+# (`renderer.render(clear=True)` takes the colour with it, and the background
+# pass shares this same buffer), so that means compositing the two passes
+# ourselves rather than moving objects between the existing scenes. Worth
+# doing; too structural to fold into a bug fix.
 _MAX_DEPTH_RANGE_RATIO = 2.0**24
 
 

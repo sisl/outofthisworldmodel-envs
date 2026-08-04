@@ -77,13 +77,35 @@ class RenderConfig(ConfigModel):
     sun_angular_diameter_deg: float = 0.53
 
     # Near planes are what bound how far a camera can see, not the far planes:
-    # see `_MAX_DEPTH_RANGE_RATIO` in `owm_envs.render.renderer`. 0.5 m reaches
-    # ~1.7e7 m, comfortably past Earth's limb at 2.35e6 m, and still clears the
-    # station by a wide margin -- the closest an FPV camera came to ISS geometry
-    # over a full run of docking episodes was 2.19 m.
+    # see `_MAX_DEPTH_RANGE_RATIO` in `owm_envs.render.renderer`. The FPV
+    # camera is squeezed hard from both sides, and the window is narrow --
+    # measured over the limb framing, not derived:
+    #
+    #   near   limb band lit   hull kept
+    #   0.02       62.1%         100%
+    #   0.30       94.9%        plateau
+    #   0.35       99.95%       plateau
+    #   0.40      100%          plateau
+    #   0.45      100%           87.0%
+    #   0.50      100%           65.3%
+    #
+    # Below ~0.35 m the depth range stops reaching Earth's limb at 2.35e6 m and
+    # the planet is cut off just inside it; above ~0.40 m it eats the capsule's
+    # own nose cone, whose nearest surface inside this camera's frustum is
+    # 0.4026 m away. 0.35 m is the only real margin available: one pixel short
+    # of the limb, and 13% clear of the hull.
+    #
+    # That this window is barely a factor of 1.15 wide is not a tuning failure,
+    # it is the geometry: a camera 0.4 m from its own hull that must also see
+    # 2350 km spans 6e6:1, against a float32 depth budget of 1.7e7:1. Only
+    # rendering the planet and the station in separately-cleared depth ranges
+    # would retire it; see the note on `_MAX_DEPTH_RANGE_RATIO`.
+    #
+    # The STATION is not the binding constraint: the closest an FPV camera came
+    # to ISS geometry over a full run of docking episodes was 2.19 m, 6x clear.
     scene_camera_near_m: float = 5.0
     scene_camera_far_m: float = 1_000_000.0
-    fpv_camera_near_m: float = 0.5
+    fpv_camera_near_m: float = 0.35
     fpv_camera_far_m: float = 1_000_000.0
 
     dragon_iso_offset_world: tuple[float, float, float] = (31.5, -31.5, 24.5)

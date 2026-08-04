@@ -259,6 +259,40 @@ def test_clouds_are_never_drawn_over_a_clipped_surface():
     assert orphaned < 0.001, f"{orphaned:.2%} of Earth is cloud over a clipped surface"
 
 
+def _hull_mask(renderer, state):
+    """Which pixels the capsule's own body covers, found by toggling it."""
+    dragon = renderer._iss_scene.dragon
+    dragon.visible = True
+    with_hull = renderer.render(state, view="DRAGON_FPV")
+    dragon.visible = False
+    without = renderer.render(state, view="DRAGON_FPV")
+    dragon.visible = True
+    return np.abs(with_hull.astype(np.int16) - without.astype(np.int16)).max(axis=-1) > 16
+
+
+def test_the_fpv_camera_cannot_see_through_its_own_nose_cone(renderer):
+    """The other side of the near plane's squeeze.
+
+    The FPV camera is mounted inside the capsule, 0.4026 m behind the nearest
+    hull surface in its own frustum, so a near plane pushed much past that
+    slices the cone open and the planet shows through the hole. Rather than
+    pick a pixel count out of the air, this measures the hull against the same
+    scene rendered with a near plane too small to clip anything: at 0.3 m the
+    camera keeps 98.6% of the hull it should see, at 0.5 m only 63.7%.
+    """
+    cfg = RenderConfig(image_width=128, image_height=128, fpv_camera_near_m=0.02)
+    unclipped = ISSRenderer(cfg)
+    try:
+        state = _state_pitched(_limb_depression_deg(cfg))
+        reference = _hull_mask(unclipped, state)
+    finally:
+        unclipped.close()
+
+    assert reference.mean() > 0.05, "the cone should cover a real part of this framing"
+    kept = float((_hull_mask(renderer, state) & reference).sum()) / int(reference.sum())
+    assert kept > 0.95, f"the near plane clipped away {1 - kept:.1%} of the capsule's hull"
+
+
 def _cloud_mesh(renderer):
     """The cloud deck, which is the surface group's second and last child."""
     children = renderer._iss_scene._earth_surface_group.children
