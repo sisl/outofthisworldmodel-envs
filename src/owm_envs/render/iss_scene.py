@@ -76,9 +76,14 @@ class RenderConfig(ConfigModel):
     sun_visual_distance_m: float = 1_000_000.0
     sun_angular_diameter_deg: float = 0.53
 
+    # Near planes are what bound how far a camera can see, not the far planes:
+    # see `_MAX_DEPTH_RANGE_RATIO` in `owm_envs.render.renderer`. 0.5 m reaches
+    # ~1.7e7 m, comfortably past Earth's limb at 2.35e6 m, and still clears the
+    # station by a wide margin -- the closest an FPV camera came to ISS geometry
+    # over a full run of docking episodes was 2.19 m.
     scene_camera_near_m: float = 5.0
     scene_camera_far_m: float = 1_000_000.0
-    fpv_camera_near_m: float = 0.05
+    fpv_camera_near_m: float = 0.5
     fpv_camera_far_m: float = 1_000_000.0
 
     dragon_iso_offset_world: tuple[float, float, float] = (31.5, -31.5, 24.5)
