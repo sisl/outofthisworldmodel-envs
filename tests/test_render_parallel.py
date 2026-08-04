@@ -200,8 +200,11 @@ def test_writer_releases_each_clip_before_pulling_the_next(tmp_path):
             yield clip
             del clip
             gc.collect()
-            # Everything but the clip just handed over is finished with.
-            assert [i for i, ref in enumerate(refs[:-1]) if ref() is not None] == []
+            # Every clip handed over so far, including the one for the
+            # episode just written: the writer asks for the next clip only
+            # once it has finished with the last, so peak is one episode of
+            # video, not two.
+            assert [i for i, ref in enumerate(refs) if ref() is not None] == []
 
     write_lerobot_split(tmp_path / "lazy", "iss/lazy", batch, fps=20, frames=clips())
     assert len(refs) == batch.num_episodes

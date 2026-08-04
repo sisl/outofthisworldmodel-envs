@@ -175,38 +175,7 @@ def write_lerobot_split(
     )
 
     for episode in range(batch.num_episodes):
-        length = int(batch.lengths[episode])
-        terminated = bool(batch.terminated[episode])
-        truncated = bool(batch.truncated[episode])
-        policy_id = int(batch.policy_ids[episode]) if batch.policy_ids is not None else 0
-        dock_target = (
-            np.asarray(batch.dock_targets[episode], dtype=np.float32).reshape(1, 7)
-            if batch.dock_targets is not None
-            else np.full((1, 7), np.nan, dtype=np.float32)
-        )
-        clip = _next_clip(clips, episode, length, frame_shape) if clips is not None else None
-        for t in range(length):
-            frame = {
-                "observation_vector": np.asarray(
-                    batch.observations[episode, t], dtype=np.float32
-                ),
-                "action": np.asarray(batch.actions[episode, t], dtype=np.float32),
-                "reward": np.array([[batch.rewards[episode, t]]], dtype=np.float32),
-                "is_last": np.array([t == length - 1]),
-                "terminated": np.array([terminated]),
-                "truncated": np.array([truncated]),
-                "policy_id": np.array([[policy_id]], dtype=np.int64),
-                "dock_target": dock_target,
-                "task": task_name,
-            }
-            if batch.true_state is not None:
-                frame["state_vector"] = np.asarray(
-                    batch.true_state[episode, t], dtype=np.float32
-                )
-            if clip is not None:
-                frame["observation.images.fpv"] = np.asarray(clip[t], dtype=np.uint8)
-            dataset.add_frame(frame)
-        dataset.save_episode()
+        _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
 
     if clips is not None and next(clips, None) is not None:
         raise ValueError(
@@ -214,6 +183,56 @@ def write_lerobot_split(
         )
 
     return root
+
+
+def _write_episode(
+    dataset,
+    batch: TrajectoryBatch,
+    episode: int,
+    clips: Iterator[np.ndarray] | None,
+    frame_shape: tuple[int, ...] | None,
+    task_name: str,
+) -> None:
+    """Add one episode's real frames to `dataset` and save it.
+
+    This episode's clip is pulled here, and both it and the frame dict that
+    holds a VIEW into it (np.asarray of a uint8 slice does not copy) die with
+    this call. That is what bounds the writer at one episode of video: a
+    caller that kept either alive would hold this clip while the next one is
+    produced -- 2.8 GiB rather than 1.4 for a 7200-step episode at 256x256.
+    """
+    length = int(batch.lengths[episode])
+    clip = _next_clip(clips, episode, length, frame_shape) if clips is not None else None
+    terminated = bool(batch.terminated[episode])
+    truncated = bool(batch.truncated[episode])
+    policy_id = int(batch.policy_ids[episode]) if batch.policy_ids is not None else 0
+    dock_target = (
+        np.asarray(batch.dock_targets[episode], dtype=np.float32).reshape(1, 7)
+        if batch.dock_targets is not None
+        else np.full((1, 7), np.nan, dtype=np.float32)
+    )
+    for t in range(length):
+        frame = {
+            "observation_vector": np.asarray(
+                batch.observations[episode, t], dtype=np.float32
+            ),
+            "action": np.asarray(batch.actions[episode, t], dtype=np.float32),
+            "reward": np.array([[batch.rewards[episode, t]]], dtype=np.float32),
+            "is_last": np.array([t == length - 1]),
+            "terminated": np.array([terminated]),
+            "truncated": np.array([truncated]),
+            "policy_id": np.array([[policy_id]], dtype=np.int64),
+            "dock_target": dock_target,
+            "task": task_name,
+        }
+        if batch.true_state is not None:
+            frame["state_vector"] = np.asarray(
+                batch.true_state[episode, t], dtype=np.float32
+            )
+        if clip is not None:
+            frame["observation.images.fpv"] = np.asarray(clip[t], dtype=np.uint8)
+        dataset.add_frame(frame)
+    dataset.save_episode()
 
 
 def _peek_frame_shape(

@@ -225,6 +225,9 @@ def iter_batch_frames(
                 pending.append(executor.submit(_worker_render, payload(i)))
             yield clip
     finally:
-        # cancel_futures so abandoning the iterator drops the episodes that
-        # have not started; the ones already running still have to finish.
+        # Abandoning the iterator costs the window's episodes and no more:
+        # the ones past it were never submitted. It is not less than that --
+        # the executor moves the whole window into its call queue at once,
+        # which marks even the spare that no worker has picked up as
+        # running, so `cancel_futures` usually has nothing left to cancel.
         executor.shutdown(cancel_futures=True)
