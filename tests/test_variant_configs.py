@@ -3,7 +3,7 @@
 The six configs/iss_*.toml files are the cross product of the sensor-noise
 presets and goal-error observation, and the two configs/generation_*.yaml
 files are the shipped docking recipe resized. All eight are written by
-scripts/write_variant_configs.py and nothing regenerates them at run time, so
+scripts/write_iss_variant_configs.py and nothing regenerates them at run time, so
 an edit to iss_default.toml, to PRESETS, or to generation_default.yaml would
 otherwise leave them silently stale -- and a stale file here is a published
 dataset generated under a configuration no longer in the repo.
@@ -33,7 +33,7 @@ CONFIGS = REPO / "configs"
 # the very code that produced them.
 sys.path.insert(0, str(REPO / "scripts"))
 
-import write_variant_configs as wvc  # noqa: E402
+import write_iss_variant_configs as wvc  # noqa: E402
 
 
 @pytest.fixture(scope="module")
