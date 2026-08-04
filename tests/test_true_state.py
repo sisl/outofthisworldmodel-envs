@@ -153,3 +153,41 @@ def test_scan_truth_is_13_dim_with_goal_error():
     assert batch.observations.shape[-1] == 25
     assert batch.true_observations.shape[-1] == 13
     np.testing.assert_array_equal(batch.true_observations, batch.observations[:, :, :13])
+
+
+def test_scan_truth_stays_aligned_across_autoresets():
+    """Truth must be dynamics-consistent for EVERY episode, including the
+    second and third a lane produces after an in-scan autoreset.
+
+    One lane, three episodes, so lane 0 crosses two autoreset boundaries.
+    Replaying the recorded actions from each recorded true state has to
+    reproduce the next one: a truth channel shifted by a timestep, or one
+    that leaked the post-reset state across an episode boundary, would still
+    differ from the noisy observations and so survive the noise test above.
+    """
+    import jax.numpy as jnp
+
+    from owm_envs.drivers.scan_driver import ScanDriver
+    from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.dynamics import ISSDynamics
+    from owm_envs.envs.iss.policies import PolicyConfig
+    from owm_envs.envs.iss.sensing import PRESETS
+
+    cfg = ISSConfig(sensor_noise=PRESETS["noncooperative"])
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=1)
+    batch = driver.generate(RolloutSpec(num_episodes=3, max_steps=10, seed=0))
+    dynamics = ISSDynamics(cfg)
+
+    assert batch.num_episodes == 3
+    for i in range(batch.num_episodes):
+        length = int(batch.lengths[i])
+        assert length > 1
+        true = batch.true_observations[i, :length]
+        for t in range(length - 1):
+            stepped, _ = dynamics.step(
+                jnp.asarray(true[t]),
+                jnp.asarray(batch.actions[i, t]),
+                jnp.asarray(batch.dock_targets[i]),
+            )
+            np.testing.assert_allclose(np.asarray(stepped), true[t + 1], rtol=1e-4, atol=1e-4)
