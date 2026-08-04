@@ -25,14 +25,28 @@ from ...core.quaternion import (
     quat_normalize,
     quat_to_rotmat,
 )
-from .config import ISSConfig
+from .config import ISSConfig, dock_target
+from .docking_ports import PORTS_BY_NAME, port_pose, resolve_port_names
+
+# How far a pinned pose may sit from the one the current PORTS table derives
+# before the config is rejected. Poses are metres and unit quaternions, and
+# both sides come from the same `port_pose` computation, so anything above
+# float round-off means the table actually moved.
+PINNED_POSE_TOLERANCE = 1e-5
 
 PolicyFn = Callable[[jnp.ndarray, jax.Array, jnp.ndarray], jnp.ndarray]
 ExtrasFn = Callable[[jax.Array], jnp.ndarray]
 
 # Width of each policy's extras vector. The rollout driver in plan 2 needs this
 # to allocate the per-env extras buffer before the first reset.
-EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 0, "union": 6}
+#
+# The dock slot holds the index of the port this episode is flying to, sampled
+# at reset. It is present even for a single-port config so that the layout does
+# not depend on how many ports were configured.
+EXTRAS_DIM: dict[str, int] = {"random": 0, "orbit": 5, "dock": 1, "union": 7}
+
+# Where the dock port index sits in each policy's extras vector.
+DOCK_SLOT: dict[str, int] = {"dock": 0, "union": 6}
 
 # Physically meaningful span for a commanded orbit radius around the station:
 # millimetres to 1000 km. See OrbitParams._validate_radius_range_m.
@@ -96,11 +110,105 @@ class OrbitParams(ConfigModel):
         return v
 
 
+class DockPort(ConfigModel):
+    """A port a dock episode may be assigned, carrying the pose it resolves to.
+
+    The pose is stored, not just the name, so a versioned or as-run config
+    reproduces the run it describes even after the `PORTS` table is revised.
+    A name still resolves against the table at load (see
+    `DockParams._resolve_ports`); this is what that resolution produces.
+    """
+
+    name: str
+    position: tuple[float, float, float]
+    quaternion: tuple[float, float, float, float]
+
+
+def _pinned_from_table(name: str) -> DockPort:
+    position, quaternion = port_pose(PORTS_BY_NAME[name])
+    return DockPort(
+        name=name,
+        position=tuple(float(v) for v in position),
+        quaternion=tuple(float(v) for v in quaternion),
+    )
+
+
+def _verify_against_table(port: DockPort) -> None:
+    """Reject a pinned pose that disagrees with the one `PORTS` derives today.
+
+    A name the table no longer knows is left alone: its pinned pose governs,
+    which is how a config outlives a table revision. But a name the table
+    still knows and now places somewhere else is a genuine conflict between
+    two claims about the same port, and silently preferring either one would
+    make the config lie about what it ran.
+    """
+    expected = _pinned_from_table(port.name)
+    for field, pinned, table in (
+        ("position", port.position, expected.position),
+        ("quaternion", port.quaternion, expected.quaternion),
+    ):
+        if max(abs(a - b) for a, b in zip(pinned, table)) > PINNED_POSE_TOLERANCE:
+            raise ValueError(
+                f"pinned {field} for docking port '{port.name}' disagrees with the "
+                f"current port table: config has {tuple(pinned)}, table derives "
+                f"{tuple(table)}. Re-pin the config against the current table, or "
+                f"rename the entry if it is meant to outlive the table's version."
+            )
+
+
 class DockParams(ConfigModel):
     kp_position: float = 1080.0
     kd_velocity: float = 7200.0
     kp_attitude: float = 54_000.0
     kd_attitude: float = 132_000.0
+    # Ports an episode may be assigned, drawn uniformly at reset. Empty keeps
+    # the single pose in ISSConfig.dock, which is what a config that predates
+    # multi-port support means.
+    #
+    # An entry may be written as a bare port name or as a pinned
+    # {name, position, quaternion}; both normalise to the pinned form at load,
+    # so this is always a tuple of DockPort afterwards and every serialised
+    # config carries the poses it used. The keyword "all" expands to every
+    # port in docking_ports.PORTS, here at config-load time, so the as-run
+    # record names the ports a run actually used rather than a keyword whose
+    # meaning could change with the table.
+    ports: tuple[DockPort, ...] = ()
+
+    @field_validator("ports", mode="before")
+    @classmethod
+    def _resolve_ports(cls, v: object) -> object:
+        if not v:
+            return ()
+        entries = list(v)
+        if all(isinstance(entry, str) for entry in entries):
+            # Unchanged path for a name-only config: `resolve_port_names` owns
+            # the "all" expansion and the unknown-name and duplicate errors,
+            # exactly as before.
+            return tuple(_pinned_from_table(name) for name in resolve_port_names(tuple(entries)))
+
+        resolved: list[DockPort] = []
+        for entry in entries:
+            if isinstance(entry, str):
+                if entry == "all":
+                    raise ValueError(
+                        "the keyword 'all' stands for the whole port list and cannot "
+                        "be mixed with other entries"
+                    )
+                resolve_port_names((entry,))
+                resolved.append(_pinned_from_table(entry))
+                continue
+            port = entry if isinstance(entry, DockPort) else DockPort.model_validate(entry)
+            if port.name in PORTS_BY_NAME:
+                _verify_against_table(port)
+            resolved.append(port)
+
+        names = [port.name for port in resolved]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                f"duplicate docking port(s) {duplicates}; name each port at most once"
+            )
+        return tuple(resolved)
 
 
 class PolicyConfig(ConfigModel):
@@ -290,16 +398,57 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
     return policy_fn, extras_fn
 
 
-def _build_dock(cfg: ISSConfig, params: DockParams) -> PolicyFn:
+def dock_target_table(cfg: ISSConfig, params: DockParams) -> jnp.ndarray:
+    """(K, 7) [position, quaternion] rows a dock policy may be assigned.
+
+    One row, the pose in `ISSConfig.dock`, when no ports are configured.
+    Otherwise the rows are the configured entries' own poses, in config order
+    -- read off the entries rather than re-resolved from the table, so a
+    config that pins a port the table no longer knows still flies to it.
+    """
+    if not params.ports:
+        return jnp.asarray(dock_target(cfg), dtype=jnp.float32)[None, :]
+    return jnp.asarray(
+        [[*port.position, *port.quaternion] for port in params.ports], dtype=jnp.float32
+    )
+
+
+def dock_target_selector(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable:
+    """extras -> the (7,) target this episode is docking to.
+
+    The dynamics, the goal-error block and the control law all resolve the
+    episode's target through this one function, so a multi-port run cannot end
+    up regulating to one port while scoring success against another. Policies
+    that never dock -- random and orbit, which have no DOCK_SLOT entry --
+    resolve to the `ISSConfig.dock` pose whatever port set is configured, so
+    `Events.docked` keeps meaning for them exactly what it means with no ports
+    at all. Resolving them to the port table's first row instead would move
+    their success gate onto a port nothing in the episode was flying to.
+    """
+    slot = DOCK_SLOT.get(policy_cfg.type)
+    if slot is None:
+        pose = jnp.asarray(dock_target(cfg), dtype=jnp.float32)
+        return lambda extras: pose
+    targets = dock_target_table(cfg, policy_cfg.dock)
+    return lambda extras: targets[extras[slot].astype(jnp.int32)]
+
+
+def _build_dock(cfg: ISSConfig, params: DockParams) -> tuple[PolicyFn, ExtrasFn]:
     inertia_diag = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
-    dock_pos = jnp.asarray(cfg.dock.position, dtype=jnp.float32)
-    dock_quat = quat_normalize(jnp.asarray(cfg.dock.quaternion, dtype=jnp.float32))
+    targets = dock_target_table(cfg, params)
+    count = int(targets.shape[0])
+
+    def extras_fn(key: jax.Array) -> jnp.ndarray:
+        return jax.random.randint(key, (1,), 0, count).astype(jnp.float32)
 
     def policy_fn(state, key, extras):
-        del key, extras
+        del key
         pos_w, vel_w = state[0:3], state[3:6]
         q_bw = quat_normalize(state[6:10])
         omega_b = state[10:13]
+
+        target = targets[extras[0].astype(jnp.int32)]
+        dock_pos, dock_quat = target[0:3], quat_normalize(target[3:7])
 
         force_world = -params.kp_position * (pos_w - dock_pos) - params.kd_velocity * vel_w
         force_body = quat_to_rotmat(q_bw).T @ force_world
@@ -311,7 +460,7 @@ def _build_dock(cfg: ISSConfig, params: DockParams) -> PolicyFn:
         )
         return jnp.concatenate([force_body, torque_body], axis=0)
 
-    return policy_fn
+    return policy_fn, extras_fn
 
 
 def _build_union(cfg: ISSConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, ExtrasFn]:
@@ -323,14 +472,18 @@ def _build_union(cfg: ISSConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, Ex
 
     random_fn = _build_random(cfg)
     orbit_fn, orbit_extras_fn = _build_orbit(cfg, policy_cfg.orbit)
-    dock_fn = _build_dock(cfg, policy_cfg.dock)
+    dock_fn, dock_extras_fn = _build_dock(cfg, policy_cfg.dock)
 
     def extras_fn(key: jax.Array) -> jnp.ndarray:
-        # Layout: [policy_idx, orbit_axis(3), orbit_radius, orbit_omega] = 6 floats.
-        # The orbit slots are unused when policy_idx selects random or dock.
-        key_idx, key_orbit = jax.random.split(key)
+        # Layout: [policy_idx, orbit_axis(3), orbit_radius, orbit_omega,
+        # dock_port_idx] = 7 floats. Every slot is drawn every episode even
+        # though only one branch reads them, so the port an episode would have
+        # docked to is recorded whichever sub-policy actually ran.
+        key_idx, key_orbit, key_dock = jax.random.split(key, 3)
         policy_idx = jax.random.choice(key_idx, 3, p=weights).astype(jnp.float32)
-        return jnp.concatenate([policy_idx[None], orbit_extras_fn(key_orbit)], axis=0)
+        return jnp.concatenate(
+            [policy_idx[None], orbit_extras_fn(key_orbit), dock_extras_fn(key_dock)], axis=0
+        )
 
     def policy_fn(state, key, extras):
         empty = jnp.zeros((0,), dtype=jnp.float32)
@@ -339,7 +492,7 @@ def _build_union(cfg: ISSConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, Ex
             [
                 lambda: random_fn(state, key, empty),
                 lambda: orbit_fn(state, key, extras[1:6]),
-                lambda: dock_fn(state, key, empty),
+                lambda: dock_fn(state, key, extras[6:7]),
             ],
         )
 
@@ -360,7 +513,7 @@ def make_policy(
     if policy_type == "orbit":
         return _build_orbit(cfg, policy_cfg.orbit)
     if policy_type == "dock":
-        return _build_dock(cfg, policy_cfg.dock), None
+        return _build_dock(cfg, policy_cfg.dock)
     if policy_type == "union":
         return _build_union(cfg, policy_cfg)
     raise ValueError(

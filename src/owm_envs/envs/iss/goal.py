@@ -15,8 +15,9 @@ one control step -- which is also what the orbit control law regulates to
 (see `policies.orbit_reference`, the single function both consume). The
 recorded goal error is therefore exactly the position/velocity/attitude/rate
 residual the controller is driving toward zero, not a synthetic look-ahead
-target it never chases. Dock remains a static final-state target; random
-remains zeros.
+target it never chases. Dock targets whichever port the episode was assigned at reset (see
+`policies.dock_target_selector`), which is a static final-state target within
+an episode; random remains zeros.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ from ...core.quaternion import (
     quat_multiply,
     quat_normalize,
 )
-from .config import ISSConfig
-from .policies import PolicyConfig, orbit_reference
+from .config import ISSConfig, dock_target
+from .policies import PolicyConfig, dock_target_selector, orbit_reference
 
 GOAL_ERROR_DIM = 12
 
@@ -56,10 +57,12 @@ def goal_error(measured, target_pos, target_vel, target_quat, target_rate):
     ])
 
 
-def dock_goal_error(measured, cfg: ISSConfig):
+def dock_goal_error(measured, target):
+    """`target` is a (7,) [position, quaternion] row, from `config.dock_target`
+    for the environment's own dock pose or from `policies.dock_target_selector`
+    for the port an episode was assigned."""
     zeros = jnp.zeros((3,), jnp.float32)
-    return goal_error(measured, jnp.asarray(cfg.dock.position, jnp.float32), zeros,
-                      jnp.asarray(cfg.dock.quaternion, jnp.float32), zeros)
+    return goal_error(measured, target[0:3], zeros, target[3:7], zeros)
 
 
 def _orbit_goal_error(measured, orbit_extras, dt):
@@ -77,8 +80,11 @@ def make_augment(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable | None:
     zeros12 = jnp.zeros((GOAL_ERROR_DIM,), jnp.float32)
     if policy_cfg.type == "random":
         return lambda measured, extras: jnp.concatenate([measured, zeros12])
+    select_target = dock_target_selector(cfg, policy_cfg)
     if policy_cfg.type == "dock":
-        return lambda measured, extras: jnp.concatenate([measured, dock_goal_error(measured, cfg)])
+        return lambda measured, extras: jnp.concatenate(
+            [measured, dock_goal_error(measured, select_target(extras))]
+        )
     if policy_cfg.type == "orbit":
         return lambda measured, extras: jnp.concatenate([measured, _orbit_goal_error(measured, extras, cfg.dt)])
     if policy_cfg.type == "union":
@@ -87,7 +93,7 @@ def make_augment(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable | None:
                 extras[0].astype(jnp.int32),
                 [lambda: zeros12,
                  lambda: _orbit_goal_error(measured, extras[1:6], cfg.dt),
-                 lambda: dock_goal_error(measured, cfg)],
+                 lambda: dock_goal_error(measured, select_target(extras))],
             )
             return jnp.concatenate([measured, block])
         return augment

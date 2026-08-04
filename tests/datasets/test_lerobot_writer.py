@@ -50,6 +50,18 @@ def test_roundtrips_observation_values(tmp_path):
     np.testing.assert_allclose(np.asarray(first), batch.observations[0, 0], rtol=1e-5, atol=1e-5)
 
 
+def test_batch_without_dock_targets_writes_nan_rows(tmp_path):
+    # A source that cannot supply a target still owes every frame a value, and
+    # the feature must stay in the schema so the columns do not vary per run.
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    batch = small_batch()
+    assert batch.dock_targets is None
+    write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=24)
+    ds = LeRobotDataset("iss/train", root=tmp_path / "train")
+    assert np.isnan(np.asarray(ds[0]["dock_target"])).all()
+
+
 def test_rejects_a_batch_that_does_not_validate(tmp_path):
     batch = small_batch()
     bad = TrajectoryBatch(
@@ -66,8 +78,9 @@ def test_rejects_a_batch_that_does_not_validate(tmp_path):
 
 
 def batch_with_metadata():
-    """Two episodes with distinct, non-zero reward/terminated/truncated/policy_id
-    values so a round-trip can be checked for real, not just for shape."""
+    """Two episodes with distinct, non-zero
+    reward/terminated/truncated/policy_id/dock_target values so a round-trip
+    can be checked for real, not just for shape."""
     obs = np.zeros((2, 5, 13), dtype=np.float32)
     act = np.zeros((2, 5, 6), dtype=np.float32)
     obs[0, :, 0] = np.arange(5)
@@ -83,10 +96,14 @@ def batch_with_metadata():
         terminated=np.array([False, True]),  # episode 1 terminated
         truncated=np.array([True, False]),  # episode 0 truncated
         policy_ids=np.array([2, 0], dtype=np.int32),
+        dock_targets=np.array(
+            [[1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0],
+             [-4.5, 0.25, 9.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32
+        ),
     )
 
 
-def test_roundtrips_reward_terminated_truncated_policy_id(tmp_path):
+def test_roundtrips_reward_terminated_truncated_policy_id_and_dock_target(tmp_path):
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     batch = batch_with_metadata()
@@ -102,6 +119,9 @@ def test_roundtrips_reward_terminated_truncated_policy_id(tmp_path):
             assert bool(row["terminated"]) == bool(batch.terminated[episode])
             assert bool(row["truncated"]) == bool(batch.truncated[episode])
             assert int(row["policy_id"].reshape(())) == int(batch.policy_ids[episode])
+            np.testing.assert_allclose(
+                np.asarray(row["dock_target"]).reshape(7), batch.dock_targets[episode], atol=1e-6
+            )
             frame += 1
 
 

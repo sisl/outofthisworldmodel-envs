@@ -108,6 +108,7 @@ class VectorEnvDriver:
         num_envs = env.num_envs
         act_dim = env.single_action_space.shape[0]
         records_policy_ids = self.policy_source.records_policy_ids
+        records_dock_targets = self.policy_source.records_dock_targets
 
         # Salted in transitions mode so its stream doesn't collide with the
         # episodes-mode stream at the same spec.seed (see TRANSITIONS_STREAM).
@@ -250,6 +251,11 @@ class VectorEnvDriver:
                                 "policy_id": self.policy_source.policy_id(lane_episode_state[lane])
                                 if records_policy_ids
                                 else 0,
+                                "dock_target": self.policy_source.dock_target(
+                                    lane_episode_state[lane]
+                                )
+                                if records_dock_targets
+                                else None,
                             }
                         )
                         transitions_collected += len(lane_obs[lane]) - 1
@@ -300,4 +306,4 @@ class VectorEnvDriver:
         # above already stops recording at quota in both modes, so `finished`
         # never actually exceeds spec.num_episodes by the time we get here.
         episodes = finished if spec.num_episodes is None else finished[: spec.num_episodes]
-        return pack_episodes(episodes, obs_dim, act_dim, records_policy_ids)
+        return pack_episodes(episodes, obs_dim, act_dim, records_policy_ids, records_dock_targets)

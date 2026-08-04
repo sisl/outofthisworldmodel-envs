@@ -20,7 +20,7 @@ import numpy as np
 from ..envs.iss.config import ISSConfig
 from ..envs.iss.dynamics import ISSDynamics
 from ..envs.iss.goal import make_augment
-from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, make_policy
+from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
 from ..envs.iss.reward import iss_reward
 from ..envs.iss.sensing import NOISE_STREAM, apply_sensor_noise
 from .types import TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
@@ -105,6 +105,7 @@ class ScanDriver:
             obs_dim=obs_dim,
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
+            records_dock_targets=True,
         )
 
     def _generate_transitions(
@@ -163,6 +164,7 @@ class ScanDriver:
             obs_dim=obs_dim,
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
+            records_dock_targets=True,
         )
 
     def _build_runner(self, max_steps: int, horizon: int):
@@ -183,6 +185,11 @@ class ScanDriver:
         """
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
         augment = make_augment(self.cfg, self.policy_cfg)
+        # The episode's assigned port, resolved from the same extras the
+        # control law and the goal-error block read, so both dock success and
+        # the reward are scored against the port the episode was actually
+        # flying to.
+        select_dock_target = dock_target_selector(self.cfg, self.policy_cfg)
         extras_width = EXTRAS_DIM[self.policy_cfg.type]
         dynamics, cfg = self.dynamics, self.cfg
         noise = cfg.sensor_noise
@@ -217,8 +224,9 @@ class ScanDriver:
 
             policy_input = measured if observe_measurement else state
             action = jnp.clip(policy_fn(policy_input, act_key, extras), ctrl_low, ctrl_high)
-            next_state, events = dynamics.step(state, action)
-            reward = iss_reward(next_state, action, events, cfg)
+            dock_pose = select_dock_target(extras)
+            next_state, events = dynamics.step(state, action, dock_pose)
+            reward = iss_reward(next_state, action, events, cfg, dock_pose[0:3])
 
             # `measured_next` is its own draw (`next_meas_key`) because the
             # terminal observation on the `done` iteration is `next_state`,
@@ -254,7 +262,8 @@ class ScanDriver:
                 obs_out, obs_next_out = augment(measured, extras), augment(measured_next, extras)
             else:
                 obs_out, obs_next_out = measured, measured_next
-            emitted = (obs_out, obs_next_out, action, reward, terminated, truncated, done, extras)
+            emitted = (obs_out, obs_next_out, action, reward, terminated, truncated, done,
+                       extras, dock_pose)
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
             # iteration, with newly sampled extras.
@@ -334,7 +343,7 @@ class ScanDriver:
         Each dict also carries "lane", the lane it was cut from. pack_episodes
         ignores unknown keys; tests use it to check lane coverage.
         """
-        states, next_states, actions, rewards, terminated, truncated, done, extras = (
+        states, next_states, actions, rewards, terminated, truncated, done, extras, dock_poses = (
             np.asarray(x) for x in emitted
         )
         act_dim = actions.shape[-1]
@@ -371,6 +380,12 @@ class ScanDriver:
                         "policy_id": int(extras[lane, start, _UNION_POLICY_IDX])
                         if records_policy_ids
                         else 0,
+                        # The row the scan itself resolved and handed to
+                        # `dynamics.step`, taken at `start` (the episode's
+                        # first emitted step) -- not reconstructed from the
+                        # extras here, so the record cannot drift from the
+                        # target the episode actually regulated toward.
+                        "dock_target": dock_poses[lane, start],
                         "lane": lane,
                     }
                 )
