@@ -12,6 +12,7 @@ import itertools
 import multiprocessing as mp
 import os
 from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Iterator
 
 import numpy as np
@@ -158,7 +159,9 @@ def iter_batch_frames(
     be spawn: a forked child inherits the parent's wgpu device and JAX state,
     neither of which survives a fork. Clips still come back in episode order,
     and at most one episode per worker is in flight, so peak memory stays
-    bounded by the pool rather than by the split.
+    bounded by the pool rather than by the split. A worker that cannot start
+    or dies mid-episode raises `BrokenProcessPool` here, with its own
+    traceback on stderr naming the real cause.
 
     The truth-vs-observation source choice matches `render_episode_frames` --
     see its docstring for why a batch without a truth channel is rendered
@@ -191,23 +194,37 @@ def iter_batch_frames(
             renderer.close()
         return
 
-    ctx = mp.get_context("spawn")
-    with ctx.Pool(
-        workers, initializer=_worker_init, initargs=(cfg.model_dump_json(), view, gpu_index)
-    ) as pool:
+    # ProcessPoolExecutor rather than multiprocessing.Pool: a Pool silently
+    # respawns a worker whose initializer raised, for ever, while the parent
+    # blocks on a result that never arrives -- a mistyped gpu index would
+    # hang a ten-hour render rather than fail it. The executor marks itself
+    # broken instead, and every pending clip raises. The same applies to a
+    # renderer that dies mid-episode.
+    executor = ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=mp.get_context("spawn"),
+        initializer=_worker_init,
+        initargs=(cfg.model_dump_json(), view, gpu_index),
+    )
+    try:
         episodes = iter(range(batch.num_episodes))
-        # Submitted through a bounded window rather than `imap`: imap's
-        # result handler buffers every clip that has completed but not yet
-        # been consumed, so a writer slower than the renderers would rebuild
-        # the whole split in RAM -- the very thing this streams to avoid. One
-        # spare episode beyond the worker count keeps the pool busy across a
+        # Submitted through a bounded window, not all at once: results are
+        # whole clips, and every clip that has been rendered but not yet
+        # consumed sits in the parent's memory. Submitting the batch would
+        # rebuild the whole split in RAM whenever the writer is slower than
+        # the renderers -- the very thing this streams to avoid. One spare
+        # episode beyond the worker count keeps every worker fed across a
         # hand-over without buffering more than that.
         pending = deque(
-            pool.apply_async(_worker_render, (payload(i),))
+            executor.submit(_worker_render, payload(i))
             for i in itertools.islice(episodes, workers + 1)
         )
         while pending:
-            clip = pending.popleft().get()
+            clip = pending.popleft().result()
             for i in itertools.islice(episodes, 1):
-                pending.append(pool.apply_async(_worker_render, (payload(i),)))
+                pending.append(executor.submit(_worker_render, payload(i)))
             yield clip
+    finally:
+        # cancel_futures so abandoning the iterator drops the episodes that
+        # have not started; the ones already running still have to finish.
+        executor.shutdown(cancel_futures=True)

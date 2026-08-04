@@ -2,6 +2,10 @@
 must accept a lazy clip iterator."""
 
 import gc
+import subprocess
+import sys
+import textwrap
+import time
 import weakref
 
 import numpy as np
@@ -103,6 +107,56 @@ def test_parallel_matches_sequential():
     assert len(parallel) == len(sequential)
     for seq, par in zip(sequential, parallel):
         np.testing.assert_array_equal(seq, par)
+
+
+def test_abandoning_a_pool_iterator_returns_promptly():
+    """The writer can raise part-way through the clips. Shutting the pool
+    down then waits only for the episodes already running, never for the
+    ones still queued."""
+    batch = _scan_batch("off", goal_error=False)
+    from owm_envs.render.iss_scene import RenderConfig
+
+    clips = iter_batch_frames(batch, RenderConfig(image_width=64, image_height=64), workers=2)
+    next(clips)
+    start = time.perf_counter()
+    clips.close()
+    assert time.perf_counter() - start < 60
+
+
+def test_a_worker_that_cannot_start_fails_instead_of_hanging():
+    """A worker whose start-up raises -- a mistyped --gpu-index, a card with
+    no VRAM left -- must end the render. `multiprocessing.Pool` respawns such
+    a worker for ever while the parent blocks on a result that never comes,
+    which would hang a ten-hour render instead of failing it.
+
+    Run in a subprocess so a regression here cannot leave this suite behind a
+    process-spawning loop.
+    """
+    script = textwrap.dedent(
+        """
+        import numpy as np
+        from owm_envs.datasets.video import iter_batch_frames
+        from owm_envs.drivers.types import TrajectoryBatch
+        from owm_envs.render.iss_scene import RenderConfig
+
+        batch = TrajectoryBatch(
+            observations=np.zeros((2, 2, 13), dtype=np.float32),
+            actions=np.zeros((2, 2, 6), dtype=np.float32),
+            rewards=np.zeros((2, 2), dtype=np.float32),
+            lengths=np.array([2, 2], dtype=np.int32),
+            terminated=np.array([True, False]),
+            truncated=np.array([False, True]),
+            policy_ids=None,
+        )
+        cfg = RenderConfig(image_width=64, image_height=64)
+        list(iter_batch_frames(batch, cfg, workers=2, gpu_index=9999))
+        """
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode != 0
+    assert "gpu index 9999" in done.stdout + done.stderr
 
 
 def _writer():
