@@ -449,6 +449,12 @@ def test_the_atmosphere_is_a_limb_not_a_wash_over_the_planet(renderer):
     stop the far shells being clipped and the effect inverts into a blue wash
     over the whole disc -- measured, +7.2 levels over the disc interior where
     it should be adding nothing.
+
+    The opposite failure is the shells being clipped rather than occluded: on
+    a `<` compare their far fragments saturate to a depth of exactly 1.0 and
+    lose to the cleared buffer, which thins the limb from +32.7 levels to
+    +11.2. Both directions are pinned here, so neither can be traded for the
+    other.
     """
     cfg = RenderConfig(image_width=160, image_height=160)
     state = _state_pitched(_limb_depression_deg(cfg) + 25.0)
@@ -474,7 +480,8 @@ def test_the_atmosphere_is_a_limb_not_a_wash_over_the_planet(renderer):
     interior = _erode(on_earth, 12)
     assert interior.any(), "the framing must show a solid piece of the disc"
     assert added[interior].mean() < 0.5, "the atmosphere is washing over the planet"
-    assert added[~on_earth].mean() > 5.0, "the atmosphere should light the limb"
+    limb = added[~on_earth].mean()
+    assert limb > 20.0, f"the limb is only lit to +{limb:.1f}; clipped shells?"
 
 
 def _sky_only(renderer, state):
