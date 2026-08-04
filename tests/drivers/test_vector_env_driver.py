@@ -361,6 +361,18 @@ def test_env_is_closed_after_a_successful_generate():
     assert env.close_calls == 1
 
 
+def test_truth_is_none_for_a_backend_that_supplies_no_state():
+    # A foreign Gymnasium backend has no reason to publish the true dynamics
+    # state in its info dict; the driver must record no truth channel rather
+    # than fail or invent one.
+    driver = VectorEnvDriver(
+        env_factory=_FakeVectorEnv, policy_source=_ConstantPolicySource(np.array([0.0]))
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
+    batch.validate()
+    assert batch.true_observations is None
+
+
 def test_env_is_closed_when_the_rollout_raises():
     env = _FakeVectorEnv(fail_on_step=True)
     driver = VectorEnvDriver(
