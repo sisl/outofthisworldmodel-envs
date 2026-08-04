@@ -3,10 +3,17 @@
 Every lerobot call in this package lives in this file, so a version bump of a
 library whose API drifts across releases touches one place.
 
-Targets the lerobot 0.4.4 API:
+Targets the lerobot 0.4.x API:
   LeRobotDataset.create(repo_id, fps, root, features, use_videos)
   .add_frame(frame)   # frame dict carries "task"
   .save_episode()
+  .finalize()         # writes the parquet footers and meta/episodes
+
+`finalize` is the one call here that is not optional bookkeeping: without it
+the split on disk has no episode metadata and is not a loadable dataset. It
+takes no arguments and means the same thing in every lerobot the dependency
+floor admits (checked against 0.4.4, 0.5.1 and 0.6.1), so it needs no
+version gate.
 
 lerobot is an optional extra. The import is function-local so the rest of the
 package imports and tests without it.
@@ -133,6 +140,9 @@ def write_lerobot_split(
     clips: Iterator[np.ndarray] | None = None
     frame_shape: tuple[int, ...] | None = None
     root = Path(root)
+    # Bound before the try so the failure path can tell "the dataset exists and
+    # needs finalizing" from "we never got as far as creating one".
+    dataset = None
     # The caller's own iterator, held apart from the peeked-and-handed-back
     # view of it below. This is the one that owns the render pool, and so the
     # one that has to be closed however this call ends -- closing the hand-back
@@ -206,6 +216,16 @@ def write_lerobot_split(
         for episode in range(batch.num_episodes):
             _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
 
+        # lerobot writes the parquet footers and meta/episodes only here, so a
+        # split that is never finalized is not a loadable dataset -- loading it
+        # finds no episode metadata and falls through to the Hub. lerobot's own
+        # writer finalizes from `__del__` as a safety net, which is why dropping
+        # the dataset appears to work; that makes a split's validity a question
+        # of when the object was collected, so it is done explicitly.
+        # Before the surplus check below, so the split that check leaves on
+        # disk is the complete, loadable one its comment describes.
+        dataset.finalize()
+
         # A surplus clip cannot be seen without pulling one past the last
         # episode, and pulling it earlier would hold two clips at once -- the
         # peak this writer exists to avoid. So it is found with the split
@@ -221,10 +241,23 @@ def write_lerobot_split(
         # for as long as the exception is held. Closing it here runs its
         # cleanup at the failure rather than whenever the traceback is dropped.
         #
-        # Suppressed, and only on this path: a source that also fails on the
-        # way down must not replace the error that says what actually went
-        # wrong. On the path below there is no such error to protect, so a
-        # failed shutdown is itself the news and propagates.
+        # The split this call leaves behind gets finalized for the same reason:
+        # unfinalized, it is only readable once lerobot's `__del__` reaches it,
+        # so whether a failed run left a loadable split would come down to when
+        # the dataset was collected. Finalizing decides it instead. It closes
+        # the writers over whatever was saved; it does not roll anything back,
+        # and an episode that was only buffered is not among them -- a failure
+        # inside `save_episode` itself can still leave that episode's frames
+        # written without its metadata, so the split is "what got saved", not
+        # a transaction boundary.
+        #
+        # Suppressed, and only on this path: neither a source nor a writer that
+        # also fails on the way down must replace the error that says what
+        # actually went wrong. On the path below there is no such error to
+        # protect, so a failed shutdown is itself the news and propagates.
+        if dataset is not None:
+            with contextlib.suppress(Exception):
+                dataset.finalize()
         with contextlib.suppress(Exception):
             _close(source)
         raise
