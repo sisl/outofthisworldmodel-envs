@@ -218,3 +218,33 @@ def test_observation_and_action_schema_unchanged(tmp_path):
     assert ds.features["observation_vector"]["shape"] == (13,)
     assert ds.features["action"]["dtype"] == "float32"
     assert ds.features["action"]["shape"] == (6,)
+
+
+def test_finalizes_the_dataset_without_relying_on_garbage_collection(tmp_path, monkeypatch):
+    """The writer must call `finalize()` itself.
+
+    lerobot only writes the parquet footer metadata when the writer is
+    finalized; without it the split on disk is not a loadable dataset. A
+    dataset that is merely dropped happens to finalize through the writer's
+    `__del__`, so a split written this way looks fine as long as nothing keeps
+    the object alive -- and stops being written the moment something does
+    (a reference held by a caller, a traceback, a delayed collection).
+    Holding that reference here is what tells the two apart.
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    created = []
+    real_create = LeRobotDataset.create
+
+    def capturing_create(*args, **kwargs):
+        dataset = real_create(*args, **kwargs)
+        created.append(dataset)
+        return dataset
+
+    monkeypatch.setattr(LeRobotDataset, "create", capturing_create)
+    write_lerobot_split(tmp_path / "train", "iss/train", small_batch(), fps=24)
+    assert created, "writer did not create a dataset"
+
+    reloaded = LeRobotDataset("iss/train", root=tmp_path / "train")
+    assert reloaded.num_frames == 8
+    assert reloaded.num_episodes == 2

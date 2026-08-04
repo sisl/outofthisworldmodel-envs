@@ -3,10 +3,17 @@
 Every lerobot call in this package lives in this file, so a version bump of a
 library whose API drifts across releases touches one place.
 
-Targets the lerobot 0.4.4 API:
+Targets the lerobot 0.6.1 API:
   LeRobotDataset.create(repo_id, fps, root, features, use_videos)
   .add_frame(frame)   # frame dict carries "task"
   .save_episode()
+  .finalize()         # writes the parquet footers and meta/episodes
+
+The version is pinned exactly (see pyproject) rather than ranged. lerobot's
+on-disk layout carries its own `codebase_version`, which moves independently
+of the Python API, so a consumer resolving a different release can find a
+dataset layout it does not read. quickdraw, which trains on these datasets,
+pins the same version.
 
 lerobot is an optional extra. The import is function-local so the rest of the
 package imports and tests without it.
@@ -61,7 +68,7 @@ lerobot episode's length equals that episode's `TrajectoryBatch.lengths`
 entry.
 
 `reward` and `policy_id` use shape (1, 1), not the seemingly more natural
-scalar shape (1,). This is not a style choice: lerobot 0.4.4's schema-to-HF
+scalar shape (1,). This is not a style choice: lerobot's schema-to-HF
 conversion (`get_hf_features_from_features`) special-cases any feature whose
 shape is exactly `(1,)` into a plain HuggingFace `datasets.Value`, whose
 `encode_example` calls Python's `float()`/`int()` on the stored array. Under
@@ -205,6 +212,16 @@ def write_lerobot_split(
 
         for episode in range(batch.num_episodes):
             _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
+
+        # lerobot writes the parquet footers and meta/episodes only here, so a
+        # split that is never finalized is not a loadable dataset -- loading it
+        # fails to find any episode metadata and falls through to the Hub.
+        # lerobot's own writer finalizes from `__del__` as a safety net, which
+        # is why dropping the dataset appears to work; that makes validity
+        # depend on when the object is collected, so it is done explicitly.
+        # Before the surplus check below, so the split that check leaves on
+        # disk is the complete, loadable one its comment describes.
+        dataset.finalize()
 
         # A surplus clip cannot be seen without pulling one past the last
         # episode, and pulling it earlier would hold two clips at once -- the
