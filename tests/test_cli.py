@@ -1004,6 +1004,7 @@ def test_push_does_not_blame_the_run_for_a_failed_hub_call(tmp_path, monkeypatch
 @pytest.mark.parametrize("filename, text", [
     ("summary.json", "{not json"),
     ("summary.json", '{"dataset_root": "x"}'),
+    ("summary.json", "null"),
     ("env_config.yaml", "dt: sometimes\n"),
 ])
 def test_push_rejects_a_run_whose_own_artifacts_do_not_read(

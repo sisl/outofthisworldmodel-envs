@@ -340,7 +340,9 @@ def _summary(run_dir: Path) -> dict:
             f"{path} missing -- the run did not finish; refusing to push a partial run"
         )
     summary = _read_json(path)
-    if "counts" not in summary:
+    # `null`, a bare number and a string are all valid JSON, and each of them
+    # would raise a TypeError out of the membership test or the lookup below.
+    if not isinstance(summary, dict) or "counts" not in summary:
         raise ValueError(f"{path} holds no split counts; it is not a run summary")
     return summary
 
