@@ -27,6 +27,12 @@ def render_episode_frames(
     `L` is `batch.lengths[episode_index]` -- only real, non-padded frames are
     rendered. `cfg` is an `owm_envs.render.iss_scene.RenderConfig`.
 
+    A batch whose source cannot supply truth -- a foreign env that emits no
+    `info["state"]`, or a batch built before the truth channel existed -- is
+    rendered from its first 13 observation dims instead. That is the MEASURED
+    state, so such a clip does shake with navigation error; it is the best
+    available for that batch, not an equivalent substitute.
+
     `renderer`, when given, is a live `ISSRenderer` to render into -- reused
     across episodes so a multi-episode batch pays the cost of loading the
     scene's GLBs, cubemap and Earth textures once, not once per episode. The
@@ -42,10 +48,11 @@ def render_episode_frames(
     try:
         frames = np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
         for t in range(length):
-            # The renderer poses the TRUE state, never the observation: the
-            # camera must not shake with navigation error, and an observation
-            # carrying the goal-error block is not renderable geometry. Batches
-            # predating the truth channel fall back to the 13 dynamics dims.
+            # Pose the TRUE state whenever the batch carries one: the camera
+            # must not shake with navigation error, and an observation
+            # carrying the goal-error block is not renderable geometry (25
+            # dims into a renderer that poses 13). The fallback is measured,
+            # not true -- see this function's docstring.
             if batch.true_observations is not None:
                 state = batch.true_observations[episode_index, t]
             else:
