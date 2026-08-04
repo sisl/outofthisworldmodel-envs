@@ -983,8 +983,27 @@ def test_push_rejects_a_directory_that_is_not_a_finished_run(tmp_path):
     assert not isinstance(result.exception, FileNotFoundError)
 
 
+def test_push_does_not_blame_the_run_for_a_failed_hub_call(tmp_path, monkeypatch,
+                                                           recorded_push):
+    # HfHubHTTPError descends from OSError, so a handler wide enough for a
+    # truncated summary.json also catches a failed login -- and would report a
+    # perfectly good run directory as unreadable.
+    import huggingface_hub
+
+    class _Unauthorized:
+        def whoami(self):
+            raise OSError("401 Client Error: Unauthorized for url: .../whoami-v2")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Unauthorized())
+    result = runner.invoke(app, ["push", str(_pushable_run(tmp_path)), "--yes"])
+    assert result.exit_code != 0
+    assert "cannot read the run" not in result.output
+    assert recorded_push == {}
+
+
 @pytest.mark.parametrize("filename, text", [
     ("summary.json", "{not json"),
+    ("summary.json", '{"dataset_root": "x"}'),
     ("env_config.yaml", "dt: sometimes\n"),
 ])
 def test_push_rejects_a_run_whose_own_artifacts_do_not_read(

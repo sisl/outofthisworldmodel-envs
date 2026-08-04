@@ -16,7 +16,13 @@ from pathlib import Path
 import huggingface_hub
 import pytest
 
-from owm_envs.datasets.hub import _dataset_card, dataset_name, push_preview, push_run
+from owm_envs.datasets.hub import (
+    _dataset_card,
+    dataset_name,
+    hub_namespace,
+    push_preview,
+    push_run,
+)
 from owm_envs.datasets.stats import GenerationConfig
 from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
 from owm_envs.envs.iss.policies import PolicyConfig
@@ -344,17 +350,35 @@ def test_push_leaves_an_existing_repos_visibility_alone_by_default(tmp_path, api
 
 def test_push_preview_names_the_repo_and_the_counts_a_push_would_replace(tmp_path, api):
     # The caller has to be able to see what an upload would mirror over before
-    # it happens; asking must itself change nothing.
-    repo_id, counts = push_preview(_write_run(tmp_path))
-    assert repo_id == "acct/owm-iss-noncoop-goal-dt50ms"
+    # it happens; asking must itself touch nothing, the Hub included -- a run
+    # that cannot be read has to be distinguishable from a login that failed.
+    repo_name, counts = push_preview(_write_run(tmp_path))
+    assert repo_name == "owm-iss-noncoop-goal-dt50ms"
     assert counts["train"]["episodes"] == 96
     assert counts["val"]["transitions"] == 50_004
-    assert api.calls == ["whoami"]
+    assert api.calls == []
 
 
 def test_push_preview_refuses_a_run_that_did_not_finish(tmp_path, api):
     with pytest.raises(FileNotFoundError, match="did not finish"):
         push_preview(_write_run(tmp_path, finished=False))
+
+
+def test_push_preview_refuses_a_summary_holding_no_counts(tmp_path, api):
+    # A summary.json that parses but carries no counts is not one this version
+    # wrote; indexing it blind would raise a bare KeyError.
+    run = _write_run(tmp_path)
+    (run / "summary.json").write_text(json.dumps({"dataset_root": str(run)}))
+    with pytest.raises(ValueError, match="no split counts"):
+        push_preview(run)
+
+
+def test_the_namespace_defaults_to_the_token_account(api):
+    assert hub_namespace() == "acct"
+    assert api.calls == ["whoami"]
+    # A namespace that was given costs no round-trip at all.
+    assert hub_namespace("org") == "org"
+    assert api.calls == ["whoami"]
 
 
 def test_push_refuses_a_run_that_did_not_finish(tmp_path, api):

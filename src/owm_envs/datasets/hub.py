@@ -339,29 +339,37 @@ def _summary(run_dir: Path) -> dict:
         raise FileNotFoundError(
             f"{path} missing -- the run did not finish; refusing to push a partial run"
         )
-    return _read_json(path)
+    summary = _read_json(path)
+    if "counts" not in summary:
+        raise ValueError(f"{path} holds no split counts; it is not a run summary")
+    return summary
 
 
-def push_preview(
-    run_dir: str | Path,
-    name: str | None = None,
-    namespace: str | None = None,
-) -> tuple[str, dict]:
-    """What a push of `run_dir` would target: its repo id and its split counts.
+def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dict]:
+    """What a push of `run_dir` would write: its repo name and its split counts.
 
-    Resolved exactly as `push_run` resolves them, and touching nothing: the
-    upload mirrors the run onto the repo, so a caller has to be able to see
-    which repo that is, and how much data would replace what is there, before
-    any of it happens.
+    Derived the same way `push_run` derives them, and reading nothing but the
+    run's own files: the upload mirrors the run onto the repo, so a caller has
+    to be able to see which repo that is, and how much data would replace what
+    is there, before any of it happens. The namespace is deliberately not
+    resolved here -- that is a Hub round-trip, and a caller reporting an
+    unreadable run must not have to tell a broken summary.json apart from a
+    failed login.
     """
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
     env_cfg = ISSConfig.from_yaml(run_dir / "env_config.yaml")
-    if namespace is None:
-        import huggingface_hub
+    return name or dataset_name(env_cfg), counts
 
-        namespace = huggingface_hub.HfApi().whoami()["name"]
-    return f"{namespace}/{name or dataset_name(env_cfg)}", counts
+
+def hub_namespace(namespace: str | None = None) -> str:
+    """The Hub account a push writes into: `namespace`, or the token's own."""
+    if namespace is not None:
+        return namespace
+
+    import huggingface_hub
+
+    return huggingface_hub.HfApi().whoami()["name"]
 
 
 def push_run(
@@ -382,8 +390,8 @@ def push_run(
     that was deliberately made private nor hide one people are already using.
     """
     run_dir = Path(run_dir)
-    repo_id, _ = push_preview(run_dir, name=name, namespace=namespace)
-    repo_name = repo_id.split("/", 1)[1]
+    repo_name, _ = push_preview(run_dir, name=name)
+    repo_id = f"{hub_namespace(namespace)}/{repo_name}"
     env_cfg = ISSConfig.from_yaml(run_dir / "env_config.yaml")
 
     import huggingface_hub
