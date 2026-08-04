@@ -2,6 +2,7 @@
 
     owm-envs generate --out logs/run1 --split train:100000t:0 --split val:20000t:1
     owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
+    owm-envs push logs/run1
     owm-envs list
 
 `--driver auto` selects the fused JAX path when the backend supports it and
@@ -11,6 +12,7 @@ unchanged for a future non-JAX environment.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -272,7 +274,15 @@ def generate(
     if gen.num_envs < 1:
         raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
 
-    cfg = ISSConfig.load(config) if config is not None else ISSConfig()
+    try:
+        cfg = ISSConfig.load(config) if config is not None else ISSConfig()
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # A missing file, a suffix load() does not dispatch on, unparseable
+        # text, or a field the schema rejects -- all of them are the caller
+        # naming the wrong file, not a bug to show a traceback for.
+        raise typer.BadParameter(
+            f"cannot read --config {config}: {exc}", param_hint="--config"
+        ) from exc
     if noise is not None:
         if noise not in PRESETS:
             raise typer.BadParameter(
@@ -322,6 +332,18 @@ def generate(
         cfg=cfg, policy_cfg=policy_cfg, gen_cfg=gen, batches=batches, fps=resolved_fps
     )
 
+    if render:
+        # Every renderer resolves these three itself, and a miss downloads and
+        # bakes a full map from a multi-gigabyte source. Done once here, the
+        # render workers each find a finished file: N concurrent bakes cannot
+        # exhaust memory, and no two workers can settle on different tiers and
+        # mix Earth resolutions within one dataset. Resolution touches no wgpu
+        # device, so this process still takes none.
+        from .render.earth import earth_texture_path
+
+        for kind in ("color", "clouds", "bump"):
+            earth_texture_path(kind, allow_download=True)
+
     for name, batch in batches.items():
         frames = None
         if render:
@@ -350,6 +372,75 @@ def generate(
 
     metadata.write(out)
     typer.echo(f"[done] {out}")
+
+
+def _stdin_is_interactive() -> bool:
+    """Whether a confirmation prompt could actually be answered."""
+    return sys.stdin.isatty()
+
+
+@app.command()
+def push(
+    run_dir: Path = typer.Argument(..., help="Finished run directory (must contain summary.json)."),
+    name: Optional[str] = typer.Option(
+        None, help="Repo name (default: derived owm-{env}-{noise}-{goal}-dt{ms}ms)."),
+    namespace: Optional[str] = typer.Option(
+        None, help="Hub namespace (default: the HF_TOKEN account)."),
+    private: Optional[bool] = typer.Option(
+        None, "--private/--public",
+        help="Repo visibility. Given neither, a new repo is public and one that "
+             "already exists keeps the visibility it has."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Confirm the mirror up front, skipping the prompt. Required when "
+             "stdin is not a terminal."),
+) -> None:
+    """Upload a run directory to the HuggingFace Hub as a dataset repo.
+
+    The upload MIRRORS the run onto the repo: everything already there and not
+    in this run is deleted. The repo name is derived from the run's env config
+    alone, so a trial run and the production run generated from the same config
+    target the same repo -- which is why the target and the sizes are printed
+    and confirmed before anything is uploaded.
+    """
+    from .datasets.hub import hub_namespace, push_preview, push_run
+
+    try:
+        repo_name, counts = push_preview(run_dir, name=name)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # An unfinished run, one with no LeRobot split, or one whose own
+        # summary or env config cannot be read: the caller named the wrong
+        # directory or generated it wrong, so say so as a usage error rather
+        # than as a traceback. Only the run's own files are read under this
+        # handler -- a Hub failure is not the run's fault and must not be
+        # reported as one.
+        raise typer.BadParameter(
+            f"cannot read the run in {run_dir}: {exc}", param_hint="RUN_DIR"
+        ) from exc
+    namespace = hub_namespace(namespace)
+    repo_id = f"{namespace}/{repo_name}"
+
+    typer.echo(f"[push] {run_dir} -> {repo_id}")
+    for split, count in counts.items():
+        typer.echo(f"[push]   {split}: {count['episodes']} episodes, "
+                   f"{count['transitions']} transitions")
+    typer.echo("[push] this MIRRORS the run onto that repo: whatever is there now "
+               "is replaced, and any file this run does not have is deleted")
+    if not yes:
+        if not _stdin_is_interactive():
+            raise typer.BadParameter(
+                f"refusing to mirror over {repo_id} unconfirmed: stdin is not a "
+                "terminal, so the prompt above cannot be answered. Check the repo "
+                "and the sizes, then pass --yes.",
+                param_hint="--yes",
+            )
+        typer.confirm(f"Replace {repo_id} with this run?", abort=True)
+
+    # The confirmed name and namespace are handed back rather than left to be
+    # derived a second time, so the repo that is written is the one that was
+    # named above.
+    repo_id = push_run(run_dir, name=repo_name, namespace=namespace, private=private)
+    typer.echo(f"[push] https://huggingface.co/datasets/{repo_id}")
 
 
 def _simulation_fps(dt: float) -> int | None:

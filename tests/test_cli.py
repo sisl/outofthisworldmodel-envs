@@ -124,6 +124,28 @@ def test_a_toml_config_file_is_loaded_too(tmp_path):
     assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
 
 
+@pytest.mark.parametrize("filename, text, expected", [
+    ("env.txt", "dt: 0.05\n", "suffix"),
+    ("missing.yaml", None, "not found"),
+    ("env.yaml", "dt: sometimes\n", "dt"),
+])
+def test_an_unreadable_config_is_a_usage_error_not_a_traceback(
+    tmp_path, filename, text, expected
+):
+    # The wrong extension, the wrong path and a value the schema rejects are
+    # all the caller naming the wrong file.
+    path = tmp_path / filename
+    if text is not None:
+        path.write_text(text)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4",
+        "--split", "train:1:0", "--config", str(path), "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, (OSError, ValueError))
+    assert "--config" in result.output and expected in result.output
+
+
 def test_summary_reports_the_episode_count_requested(tmp_path):
     out = tmp_path / "run"
     runner.invoke(
@@ -721,6 +743,39 @@ def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkey
     assert seen == {"workers": 4, "gpu_index": 1}
 
 
+def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
+    tmp_path, monkeypatch
+):
+    """Every worker's scene resolves the Earth textures itself, and a miss
+    downloads and bakes a full map from a 9.6 GB source. Resolving them once
+    here leaves the workers three finished files to open: N concurrent decodes
+    cannot exhaust memory, and no two workers can settle on different tiers and
+    mix resolutions within one dataset."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    import owm_envs.datasets.video as video
+
+    order = []
+
+    def fake_resolve(kind, *, allow_download=False):
+        order.append((kind, allow_download))
+        return tmp_path / f"earth_{kind}"
+
+    def fake_iter(batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None):
+        order.append(("iter_batch_frames", workers))
+        raise RuntimeError("stop-after-fan-out")
+
+    monkeypatch.setattr("owm_envs.render.earth.earth_texture_path", fake_resolve)
+    monkeypatch.setattr(video, "iter_batch_frames", fake_iter)
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: None)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-workers", "4",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
+    assert order == [("color", True), ("clouds", True), ("bump", True),
+                     ("iter_batch_frames", 4)]
+
+
 def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
     """The writer has to receive a lazy iterator: a list of every clip in a
     500k-frame split is ~98 GB."""
@@ -832,3 +887,136 @@ def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
         "--split", "train:1:0", "--no-lerobot",
     ])
     assert result.exit_code == 0, result.output
+
+
+def _pushable_run(tmp_path):
+    """The two artifacts `owm-envs push` reads before it uploads anything."""
+    run = tmp_path / "run"
+    run.mkdir()
+    ISSConfig(sensor_noise=PRESETS["cooperative"]).to_yaml(run / "env_config.yaml")
+    (run / "summary.json").write_text(json.dumps({"counts": {
+        "train": {"episodes": 96, "transitions": 500_012},
+        "val": {"episodes": 11, "transitions": 50_004},
+    }}))
+    return run
+
+
+@pytest.fixture
+def recorded_push(monkeypatch):
+    """Records what reached push_run; nothing gets near the Hub."""
+    pushed = {}
+
+    def fake_push(run_dir, name=None, namespace=None, private=False):
+        pushed.update(run_dir=run_dir, name=name, namespace=namespace, private=private)
+        return f"{namespace}/{name}"
+
+    monkeypatch.setattr("owm_envs.datasets.hub.push_run", fake_push)
+    return pushed
+
+
+def test_push_reports_the_dataset_url(tmp_path, recorded_push):
+    run = _pushable_run(tmp_path)
+    result = runner.invoke(
+        app, ["push", str(run), "--namespace", "acct", "--private", "--yes"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "https://huggingface.co/datasets/acct/owm-iss-coop-nogoal-dt50ms" in result.output
+    # The confirmed repo is passed back explicitly, so the upload cannot land
+    # anywhere other than the target the confirmation named.
+    assert recorded_push == {"run_dir": run, "name": "owm-iss-coop-nogoal-dt50ms",
+                             "namespace": "acct", "private": True}
+
+    # Neither flag reaches push_run as None, not as False: "public" is a
+    # request to change an existing repo's visibility, "unset" is not.
+    runner.invoke(app, ["push", str(run), "--namespace", "acct", "--yes"])
+    assert recorded_push["private"] is None
+    runner.invoke(app, ["push", str(run), "--namespace", "acct", "--public", "--yes"])
+    assert recorded_push["private"] is False
+
+
+def test_push_names_the_repo_and_the_split_sizes_before_confirming(
+    tmp_path, monkeypatch, recorded_push
+):
+    # The repo name is derived from the env config alone, so a trial run and
+    # the production run generated from the same variant TOML target the same
+    # repo -- and the upload mirrors, deleting what is there. What is about to
+    # be replaced, and by how much data, has to be on screen before the answer.
+    monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
+    result = runner.invoke(
+        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"], input="y\n"
+    )
+    assert result.exit_code == 0, result.output
+    prompt = result.output.split("Replace")[0]
+    assert "acct/owm-iss-coop-nogoal-dt50ms" in prompt
+    assert "train: 96 episodes, 500012 transitions" in prompt
+    assert "val: 11 episodes, 50004 transitions" in prompt
+    assert "MIRRORS" in prompt
+    assert recorded_push["name"] == "owm-iss-coop-nogoal-dt50ms"
+
+
+def test_push_uploads_nothing_when_the_prompt_is_declined(
+    tmp_path, monkeypatch, recorded_push
+):
+    monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
+    result = runner.invoke(
+        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"], input="n\n"
+    )
+    assert result.exit_code != 0
+    assert recorded_push == {}
+
+
+def test_push_without_a_terminal_refuses_unless_yes_is_given(tmp_path, recorded_push):
+    # A scripted or piped invocation cannot answer a prompt. Prompting anyway
+    # would read EOF and abort obscurely; proceeding would mirror over a
+    # production repo unconfirmed.
+    result = runner.invoke(app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"])
+    assert result.exit_code != 0
+    assert "--yes" in result.output
+    assert recorded_push == {}
+
+
+def test_push_rejects_a_directory_that_is_not_a_finished_run(tmp_path):
+    result = runner.invoke(app, ["push", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "did not finish" in result.output
+    assert not isinstance(result.exception, FileNotFoundError)
+
+
+def test_push_does_not_blame_the_run_for_a_failed_hub_call(tmp_path, monkeypatch,
+                                                           recorded_push):
+    # HfHubHTTPError descends from OSError, so a handler wide enough for a
+    # truncated summary.json also catches a failed login -- and would report a
+    # perfectly good run directory as unreadable.
+    import huggingface_hub
+
+    class _Unauthorized:
+        def whoami(self):
+            raise OSError("401 Client Error: Unauthorized for url: .../whoami-v2")
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Unauthorized())
+    result = runner.invoke(app, ["push", str(_pushable_run(tmp_path)), "--yes"])
+    assert result.exit_code != 0
+    assert "cannot read the run" not in result.output
+    assert recorded_push == {}
+
+
+@pytest.mark.parametrize("filename, text", [
+    ("summary.json", "{not json"),
+    ("summary.json", '{"dataset_root": "x"}'),
+    ("summary.json", "null"),
+    ("env_config.yaml", "dt: sometimes\n"),
+])
+def test_push_rejects_a_run_whose_own_artifacts_do_not_read(
+    tmp_path, filename, text, recorded_push
+):
+    # A truncated summary or a hand-edited env config is the same class of
+    # mistake as naming an unfinished run, and it is read before anything is
+    # uploaded -- so it must read as a usage error, not a traceback.
+    run = _pushable_run(tmp_path)
+    (run / filename).write_text(text)
+    result = runner.invoke(app, ["push", str(run), "--namespace", "acct", "--yes"])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, (OSError, ValueError))
+    assert "cannot read the run" in result.output
+    assert recorded_push == {}
