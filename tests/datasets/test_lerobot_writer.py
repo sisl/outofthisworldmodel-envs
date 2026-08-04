@@ -218,3 +218,85 @@ def test_observation_and_action_schema_unchanged(tmp_path):
     assert ds.features["observation_vector"]["shape"] == (13,)
     assert ds.features["action"]["dtype"] == "float32"
     assert ds.features["action"]["shape"] == (6,)
+
+
+def test_finalizes_the_dataset_without_relying_on_garbage_collection(tmp_path, monkeypatch):
+    """The writer must call `finalize()` itself.
+
+    lerobot only writes the parquet footer metadata and meta/episodes when the
+    writer is finalized; without it the split on disk is not a loadable
+    dataset. A dataset that is merely dropped happens to finalize through
+    lerobot's own `__del__`, so a split written this way looks fine as long as
+    nothing keeps the object alive -- and stops being written the moment
+    something does (a reference held by a caller, a traceback, a delayed
+    collection). Holding that reference here is what tells the two apart.
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    created = []
+    real_create = LeRobotDataset.create
+
+    def capturing_create(*args, **kwargs):
+        dataset = real_create(*args, **kwargs)
+        created.append(dataset)
+        return dataset
+
+    monkeypatch.setattr(LeRobotDataset, "create", capturing_create)
+    out = write_lerobot_split(tmp_path / "train", "iss/train", small_batch(), fps=24)
+    assert created, "writer did not create a dataset"
+
+    # The episode metadata is what a never-finalized split is missing.
+    assert list((out / "meta" / "episodes").rglob("*.parquet"))
+
+    reloaded = LeRobotDataset("iss/train", root=out)
+    assert reloaded.num_episodes == 2
+    assert reloaded.num_frames == 8
+
+
+def test_finalizes_the_split_it_leaves_behind_when_an_episode_write_fails(tmp_path, monkeypatch):
+    """A write that dies part-way must still leave a decided split on disk.
+
+    The writer already documents that a failure surfaces with the earlier
+    episodes on disk. Without finalizing on that path those episodes are only
+    a loadable dataset once lerobot's `__del__` gets round to it, so whether
+    the run left a readable split or an unreadable one comes down to when the
+    dataset was collected. Finalizing decides it either way.
+
+    The failure lands mid-episode, with a frame of episode 1 already buffered
+    and `save_episode` not yet called for it, because that is the case where
+    finalizing could plausibly do harm: an episode that was only ever buffered
+    must not be committed as if it had been saved.
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    created = []
+    real_create = LeRobotDataset.create
+
+    def capturing_create(*args, **kwargs):
+        dataset = real_create(*args, **kwargs)
+        created.append(dataset)
+        return dataset
+
+    # Episode 0 is 5 frames, so the 7th add_frame is episode 1's second: it
+    # fails with one of that episode's frames buffered and unsaved.
+    real_add_frame = LeRobotDataset.add_frame
+    calls = []
+
+    def failing_add_frame(self, frame, *args, **kwargs):
+        calls.append(frame)
+        if len(calls) == 7:
+            raise RuntimeError("simulated failure part-way through episode 1")
+        return real_add_frame(self, frame, *args, **kwargs)
+
+    monkeypatch.setattr(LeRobotDataset, "create", capturing_create)
+    monkeypatch.setattr(LeRobotDataset, "add_frame", failing_add_frame)
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        write_lerobot_split(tmp_path / "train", "iss/train", small_batch(), fps=24)
+    assert created, "writer did not create a dataset"
+
+    # Episode 0 (5 frames) was saved; episode 1 was only ever buffered, so the
+    # split holds episode 0 alone -- not a torn episode 1.
+    reloaded = LeRobotDataset("iss/train", root=tmp_path / "train")
+    assert reloaded.num_episodes == 1
+    assert reloaded.num_frames == 5
