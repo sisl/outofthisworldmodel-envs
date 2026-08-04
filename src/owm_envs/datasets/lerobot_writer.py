@@ -132,54 +132,77 @@ def write_lerobot_split(
     batch.validate()
     clips: Iterator[np.ndarray] | None = None
     frame_shape: tuple[int, ...] | None = None
-    if frames is not None:
-        if isinstance(frames, Sequence):
-            _validate_frames(frames, batch)
-            # Derived from the actual clip, not assumed square: the renderer
-            # returns (H, W, 3), and H need not equal W.
-            frame_shape = np.asarray(frames[0]).shape[1:]
-            clips = iter(frames)
-        else:
-            frame_shape, clips = _peek_frame_shape(iter(frames))
-
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-
     root = Path(root)
-    features = {
-        "observation_vector": {
-            "dtype": "float32",
-            "shape": (batch.observations.shape[-1],),
-            "names": None,
-        },
-        "action": {"dtype": "float32", "shape": (batch.actions.shape[-1],), "names": None},
-        # (1, 1), not (1,): see the module docstring for why the scalar shape
-        # is unwritable for non-boolean features on this lerobot version.
-        "reward": {"dtype": "float32", "shape": (1, 1), "names": None},
-        "is_last": {"dtype": "bool", "shape": (1,), "names": None},
-        "terminated": {"dtype": "bool", "shape": (1,), "names": None},
-        "truncated": {"dtype": "bool", "shape": (1,), "names": None},
-        "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
-        "dock_target": {"dtype": "float32", "shape": (1, 7), "names": None},
-    }
-    if batch.true_state is not None:
-        features["state_vector"] = {
-            "dtype": "float32",
-            "shape": (batch.true_state.shape[-1],),
-            "names": None,
-        }
-    if frame_shape is not None:
-        height, width, channels = frame_shape
-        features["observation.images.fpv"] = {
-            "dtype": "video",
-            "shape": (int(height), int(width), int(channels)),
-            "names": ["height", "width", "channels"],
-        }
-
-    dataset = LeRobotDataset.create(
-        repo_id=repo_id, fps=fps, root=root, features=features, use_videos=frames is not None
+    # The caller's own iterator, held apart from the peeked-and-handed-back
+    # view of it below. This is the one that owns the render pool, and so the
+    # one that has to be closed however this call ends -- closing the hand-back
+    # would not do: a generator that has never been started runs no code when
+    # it is closed, which is exactly its state if set-up fails.
+    source: Iterator[np.ndarray] | None = (
+        iter(frames) if frames is not None and not isinstance(frames, Sequence) else None
     )
 
+    # Everything from here on can be holding that source open -- peeking a clip
+    # to declare the video feature is what starts the pool -- so every step of
+    # it has to be able to hand the source back. Set-up fails as readily as the
+    # write itself: an unwritable root, a split directory already there, a clip
+    # whose frames are not (H, W, C).
     try:
+        if frames is not None:
+            if isinstance(frames, Sequence):
+                _validate_frames(frames, batch)
+                # Derived from the actual clip, not assumed square: the
+                # renderer returns (H, W, 3), and H need not equal W.
+                frame_shape = np.asarray(frames[0]).shape[1:]
+                clips = iter(frames)
+            else:
+                frame_shape, clips = _peek_frame_shape(source)
+
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+        features = {
+            "observation_vector": {
+                "dtype": "float32",
+                "shape": (batch.observations.shape[-1],),
+                "names": None,
+            },
+            "action": {
+                "dtype": "float32",
+                "shape": (batch.actions.shape[-1],),
+                "names": None,
+            },
+            # (1, 1), not (1,): see the module docstring for why the scalar
+            # shape is unwritable for non-boolean features on this lerobot
+            # version.
+            "reward": {"dtype": "float32", "shape": (1, 1), "names": None},
+            "is_last": {"dtype": "bool", "shape": (1,), "names": None},
+            "terminated": {"dtype": "bool", "shape": (1,), "names": None},
+            "truncated": {"dtype": "bool", "shape": (1,), "names": None},
+            "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
+            "dock_target": {"dtype": "float32", "shape": (1, 7), "names": None},
+        }
+        if batch.true_state is not None:
+            features["state_vector"] = {
+                "dtype": "float32",
+                "shape": (batch.true_state.shape[-1],),
+                "names": None,
+            }
+        if frame_shape is not None:
+            height, width, channels = frame_shape
+            features["observation.images.fpv"] = {
+                "dtype": "video",
+                "shape": (int(height), int(width), int(channels)),
+                "names": ["height", "width", "channels"],
+            }
+
+        dataset = LeRobotDataset.create(
+            repo_id=repo_id,
+            fps=fps,
+            root=root,
+            features=features,
+            use_videos=frames is not None,
+        )
+
         for episode in range(batch.num_episodes):
             _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
 
@@ -193,9 +216,9 @@ def write_lerobot_split(
                 f"frames has more clips than the batch's {batch.num_episodes} episodes"
             )
     except BaseException:
-        # A write that dies part-way leaves the source suspended, and the
-        # raised exception's traceback keeps this frame -- and so the source --
-        # alive for as long as the exception is held. Closing it here runs its
+        # A call that dies part-way leaves the source suspended, and the raised
+        # exception's traceback keeps this frame -- and so the source -- alive
+        # for as long as the exception is held. Closing it here runs its
         # cleanup at the failure rather than whenever the traceback is dropped.
         #
         # Suppressed, and only on this path: a source that also fails on the
@@ -203,17 +226,17 @@ def write_lerobot_split(
         # wrong. On the path below there is no such error to protect, so a
         # failed shutdown is itself the news and propagates.
         with contextlib.suppress(Exception):
-            _close(clips)
+            _close(source)
         raise
-    _close(clips)
+    _close(source)
 
     return root
 
 
-def _close(clips: Iterator[np.ndarray] | None) -> None:
-    """Close `clips` if it is the kind of iterator that can be closed."""
-    if clips is not None and hasattr(clips, "close"):
-        clips.close()
+def _close(source: Iterator[np.ndarray] | None) -> None:
+    """Close `source` if it is the kind of iterator that can be closed."""
+    if source is not None and hasattr(source, "close"):
+        source.close()
 
 
 def _write_episode(
@@ -289,19 +312,12 @@ def _hand_back(head: np.ndarray, clips: Iterator[np.ndarray]) -> Iterator[np.nda
     its argument tuple for the whole write, pinning one episode of video --
     on a 7200-step episode at 256x256 that is 1.4 GiB held for nothing.
 
-    Closing this before it reaches `yield from` -- which is where a failure on
-    episode 0 leaves it -- would otherwise close only this wrapper, and the
-    caller still holds the source (the CLI keeps its `iter_batch_frames(...)`
-    binding for the whole split), so nothing would collect it. Past that
-    point `yield from` propagates the close on its own and the `finally` is a
-    no-op.
+    This owns nothing but `head`; `clips` is closed by the caller, which holds
+    it directly for exactly that reason.
     """
-    try:
-        yield head
-        del head
-        yield from clips
-    finally:
-        _close(clips)
+    yield head
+    del head
+    yield from clips
 
 
 def _next_clip(

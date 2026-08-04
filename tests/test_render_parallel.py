@@ -299,6 +299,56 @@ def test_writer_closes_the_clip_source_when_the_first_episode_fails(tmp_path):
     assert closed == [True]
 
 
+def test_writer_closes_the_clip_source_when_the_dataset_cannot_be_created(
+    tmp_path, monkeypatch
+):
+    """Declaring the video feature needs a real clip, so by the time the
+    dataset is created the pool is already up and holding every renderer it
+    will ever hold. A create that fails -- unwritable root, a directory
+    already there -- must not leave them running."""
+    write_lerobot_split = _writer()
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    batch = _fake_batch()
+    closed = []
+
+    def clips():
+        try:
+            yield from _clips(batch.lengths)
+        finally:
+            closed.append(True)
+
+    def refuse(*args, **kwargs):
+        raise OSError("root is not writable")
+
+    monkeypatch.setattr(LeRobotDataset, "create", refuse)
+    source = clips()
+    with pytest.raises(OSError):
+        write_lerobot_split(tmp_path / "nope", "iss/nope", batch, fps=20, frames=source)
+    assert closed == [True]
+
+
+def test_writer_closes_the_clip_source_when_the_feature_cannot_be_declared(tmp_path):
+    """The same window, reached without patching anything: a clip whose frames
+    are not (H, W, C) fails the feature unpack, which is after the peek has
+    started the pool and before any dataset exists."""
+    write_lerobot_split = _writer()
+
+    batch = _fake_batch()
+    closed = []
+
+    def clips():
+        try:
+            yield np.zeros((int(batch.lengths[0]), 32, 32), dtype=np.uint8)
+        finally:
+            closed.append(True)
+
+    source = clips()
+    with pytest.raises(ValueError):
+        write_lerobot_split(tmp_path / "flat", "iss/flat", batch, fps=20, frames=source)
+    assert closed == [True]
+
+
 def test_a_clip_source_that_fails_to_close_does_not_mask_the_write_error(tmp_path):
     """Cleanup must not replace the failure being reported. The write error is
     what names the real fault; a pool that also fails on the way down must not
