@@ -653,3 +653,51 @@ def test_goal_error_flag_defaults_to_config(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is False
+
+
+def test_gpu_index_is_resolved_before_any_rollout_or_render(tmp_path, monkeypatch):
+    """Adapter choice must land before pygfx pins its one shared device."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    seen = {}
+
+    def fake_select(index):
+        seen["index"] = index
+        raise RuntimeError("stop-after-select")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", fake_select)
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:1:0",
+        "--render", "--gpu-index", "1",
+    ])
+    assert seen["index"] == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert not out.exists(), "selection must precede the rollout, render and writer"
+
+
+def test_invalid_gpu_index_is_a_usage_error_not_a_traceback(tmp_path, monkeypatch):
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    def refuse(index):
+        raise ValueError("gpu index 9 out of range; available adapters: 0: NVIDIA A100")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", refuse)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "8",
+        "--split", "train:1:0", "--render", "--gpu-index", "9",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, ValueError)
+    assert "out of range" in result.output and "NVIDIA A100" in result.output
+
+
+def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "owm_envs.render.device.select_gpu",
+        lambda index: pytest.fail("must not select a GPU without --render"),
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "8",
+        "--split", "train:1:0", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output

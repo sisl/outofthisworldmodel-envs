@@ -205,7 +205,10 @@ def generate(
         # here also rejects a bad index before the rollout burns an hour.
         from .render.device import select_gpu
 
-        select_gpu(gpu_index)
+        try:
+            select_gpu(gpu_index)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
 
     if lerobot:
         # lerobot is declared only in the optional 'datasets' extra, so a

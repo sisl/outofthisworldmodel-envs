@@ -9,6 +9,13 @@ Must run before the first renderer or scene is built: pygfx creates one shared
 wgpu device per process on first use and refuses to rebuild it, so
 `select_adapter` raises RuntimeError once that device exists.
 
+pygfx does not promise that enumeration order matches nvidia-smi order, and
+wgpu exposes no PCI/bus id to check it against -- both cards report the same
+vendor_id and device_id, which is why the index is the only discriminator. On
+this host it was verified to match: rendering with index 0 and then index 1
+put ~1.9 GiB on nvidia-smi GPU 0 and GPU 1 respectively, each leaving the
+other card idle. Re-check that on any new host before trusting the mapping.
+
 Against wgpu-py 0.27.0 / pygfx 0.15.2 the API is
 `wgpu.gpu.enumerate_adapters_sync()` and
 `pygfx.renderers.wgpu.select_adapter(adapter)`, and `AdapterInfo["adapter_type"]`
@@ -36,12 +43,22 @@ def _is_discrete(adapter) -> bool:
 def _pick_adapter(adapters: list, index: int):
     """Return the index-th discrete GPU, counting only discrete adapters.
 
-    Enumeration interleaves the CPU rasteriser and duplicate OpenGL views of
-    the same cards, so indexing raw enumeration order would not line up with
-    the physical GPUs a caller means.
+    Enumeration lists the CPU rasteriser and a second, OpenGL view of each
+    card alongside the Vulkan ones, so raw enumeration order would not line up
+    with the physical GPUs a caller means. Keeping a single backend is what
+    makes the count physical: wgpu emits Vulkan first, then Metal, D3D12 and
+    OpenGL, so the first discrete adapter's backend is the primary one, and
+    restricting to it drops the duplicate views of cards already counted.
     """
     discrete = [a for a in adapters if _is_discrete(a)]
-    pool = discrete or list(adapters)
+    if not discrete:
+        seen = ", ".join(a.summary for a in adapters) or "none"
+        raise ValueError(
+            f"gpu index {index} requested but no discrete GPU adapter is available; "
+            f"enumerated adapters: {seen}"
+        )
+    backend = discrete[0].info.get("backend_type")
+    pool = [a for a in discrete if a.info.get("backend_type") == backend]
     if not 0 <= index < len(pool):
         names = ", ".join(f"{i}: {a.summary}" for i, a in enumerate(pool))
         raise ValueError(f"gpu index {index} out of range; available adapters: {names}")

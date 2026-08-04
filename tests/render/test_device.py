@@ -1,8 +1,13 @@
 """GPU adapter selection for multi-GPU hosts.
 
 Adapter selection itself needs a GPU and mutates process-global pygfx state,
-so only the pure picking logic is unit tested here; the selection call is
-covered by a smoke check against real hardware.
+so only the pure picking logic is unit tested here. That the index maps to the
+physical card is a hardware property no fake can establish; it was verified on
+the dual-A100 host with nvidia-smi and is recorded in the module docstring of
+`owm_envs.render.device`.
+
+The fakes mirror a real enumeration on that host: Vulkan adapters first, then
+the OpenGL views of the same cards.
 """
 
 import pytest
@@ -11,9 +16,9 @@ from owm_envs.render.device import _pick_adapter, select_gpu
 
 
 class _Fake:
-    def __init__(self, summary, adapter_type="DiscreteGPU"):
+    def __init__(self, summary, adapter_type="DiscreteGPU", backend_type="Vulkan"):
         self.summary = summary
-        self.info = {"adapter_type": adapter_type}
+        self.info = {"adapter_type": adapter_type, "backend_type": backend_type}
 
 
 def _dual_a100():
@@ -21,7 +26,7 @@ def _dual_a100():
         _Fake("NVIDIA A100 #0"),
         _Fake("NVIDIA A100 #1"),
         _Fake("llvmpipe (CPU)", adapter_type="CPU"),
-        _Fake("NVIDIA A100 via OpenGL", adapter_type="Unknown"),
+        _Fake("NVIDIA A100 OpenGL", adapter_type="Unknown", backend_type="OpenGL"),
     ]
 
 
@@ -35,15 +40,30 @@ def test_index_counts_only_discrete_adapters():
         _pick_adapter(_dual_a100(), 2)
 
 
+def test_duplicate_opengl_views_do_not_shift_the_index():
+    """A driver reporting the OpenGL view as discrete must not add a slot."""
+    adapters = [
+        _Fake("A100 #0"),
+        _Fake("A100 #1"),
+        _Fake("A100 #0 OpenGL", backend_type="OpenGL"),
+        _Fake("A100 #1 OpenGL", backend_type="OpenGL"),
+    ]
+    assert _pick_adapter(adapters, 1).summary == "A100 #1"
+    with pytest.raises(ValueError, match="out of range"):
+        _pick_adapter(adapters, 2)
+
+
 def test_hyphenated_adapter_type_is_also_discrete():
     adapters = [_Fake("llvmpipe (CPU)", adapter_type="CPU"),
                 _Fake("A100", adapter_type="discrete-gpu")]
     assert _pick_adapter(adapters, 0).summary == "A100"
 
 
-def test_falls_back_to_all_adapters_when_none_are_discrete():
+def test_no_discrete_gpu_is_an_error_not_a_cpu_fallback():
+    """Silently rendering a dataset on llvmpipe would cost hours, not minutes."""
     adapters = [_Fake("llvmpipe (CPU)", adapter_type="CPU")]
-    assert _pick_adapter(adapters, 0).summary == "llvmpipe (CPU)"
+    with pytest.raises(ValueError, match="no discrete GPU adapter"):
+        _pick_adapter(adapters, 0)
 
 
 def test_out_of_range_names_adapters():
