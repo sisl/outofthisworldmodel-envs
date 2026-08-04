@@ -22,6 +22,7 @@ from __future__ import annotations
 import itertools
 import multiprocessing as mp
 import os
+import warnings
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Iterator
@@ -364,16 +365,27 @@ def tee_episode_clips(
                 clips = next(source)
             except StopIteration:
                 return
-            iio.imwrite(
-                media_dir / f"ep_{episode:04d}.mp4",
-                clips[key],
-                fps=fps,
-                codec="libx264",
-                # yuv420p and even dimensions: the default yuv444p is rejected
-                # by most players, and libx264 cannot subsample an odd frame.
-                pixelformat="yuv420p",
-                macro_block_size=2,
-            )
+            path = media_dir / f"ep_{episode:04d}.mp4"
+            try:
+                iio.imwrite(
+                    path,
+                    clips[key],
+                    fps=fps,
+                    codec="libx264",
+                    # yuv420p and even dimensions: the default yuv444p is rejected
+                    # by most players, and libx264 cannot subsample an odd frame.
+                    pixelformat="yuv420p",
+                    macro_block_size=2,
+                )
+            except Exception as error:
+                # These clips are auxiliary, so failing to write one must never
+                # take down the dataset write running downstream of this -- that
+                # would strand the episodes already on disk. Per episode rather
+                # than latching off, since whatever failed here may not recur.
+                warnings.warn(
+                    f"could not write debug clip {path}: {error!r}",
+                    stacklevel=2,
+                )
             yield clips
             # Before pulling the next episode, not after: `for clips in source`
             # would keep this one bound across that call and hold two at once.

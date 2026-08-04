@@ -218,3 +218,59 @@ def test_closing_the_media_tee_closes_the_render_pool_behind_it(tmp_path):
     next(tee)
     tee.close()
     assert closed == [True], "the tee did not close the iterator behind it"
+
+
+def test_a_failing_debug_clip_does_not_abort_the_dataset_write(tmp_path, monkeypatch):
+    """The per-episode mp4 is auxiliary -- nothing reads it back -- so letting
+    an encoder or filesystem failure on one out of the tee would abort the
+    split write and strand the episodes already on disk, spending the dataset
+    on a debug convenience.
+
+    Driven through the real writer because that is what the failure would take
+    down. The boundary is per episode rather than a switch thrown on the first
+    failure: the clips after the bad one are still worth having.
+    """
+    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+
+    import imageio.v3 as iio
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    from owm_envs.datasets.lerobot_writer import write_lerobot_split
+    from owm_envs.datasets.video import tee_episode_clips
+
+    encode = iio.imwrite
+
+    def failing_encode(path, *args, **kwargs):
+        if str(path).endswith("ep_0001.mp4"):
+            raise OSError("encoder went away")
+        return encode(path, *args, **kwargs)
+
+    monkeypatch.setattr("imageio.v3.imwrite", failing_encode)
+
+    lengths = (3, 2, 4)
+    media = tmp_path / "media"
+    clips = ({FPV_KEY: np.zeros((length, 32, 32, 3), dtype=np.uint8)} for length in lengths)
+    with pytest.warns(UserWarning, match=r"ep_0001\.mp4.*encoder went away"):
+        write_lerobot_split(
+            tmp_path / "split",
+            "iss/split",
+            small_batch(lengths),
+            fps=20,
+            frames=tee_episode_clips(clips, media, fps=20),
+        )
+
+    ds = LeRobotDataset("iss/split", root=tmp_path / "split")
+    assert ds.num_episodes == len(lengths), "the failed clip took an episode out of the dataset"
+    assert ds.num_frames == sum(lengths)
+    # Read back rather than trust the counts: the episode whose debug clip
+    # failed still has to decode from the dataset's own video, and so does the
+    # one written after it.
+    starts = [sum(lengths[:i]) for i in range(len(lengths))]
+    for episode, start in enumerate(starts):
+        frame = ds[start][FPV_KEY]
+        assert frame.shape[-2:] == (32, 32), f"episode {episode} did not decode"
+
+    assert sorted(path.name for path in media.glob("*.mp4")) == [
+        "ep_0000.mp4",
+        "ep_0002.mp4",
+    ], "the clip after the failure was not written"
