@@ -1,5 +1,6 @@
 import builtins
 import json
+import re
 
 import pytest
 import typer
@@ -316,7 +317,7 @@ def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("gpu unavailable")
 
-    monkeypatch.setattr(video, "render_batch_frames", boom)
+    monkeypatch.setattr(video, "iter_batch_frames", boom)
 
     out = tmp_path / "run"
     result = runner.invoke(
@@ -653,3 +654,181 @@ def test_goal_error_flag_defaults_to_config(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is False
+
+
+def test_gpu_index_is_resolved_before_any_rollout_or_render(tmp_path, monkeypatch):
+    """Adapter choice must land before pygfx pins its one shared device."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    seen = {}
+
+    def fake_select(index):
+        seen["index"] = index
+        raise RuntimeError("stop-after-select")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", fake_select)
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:1:0",
+        "--render", "--gpu-index", "1",
+    ])
+    assert seen["index"] == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert not out.exists(), "selection must precede the rollout, render and writer"
+
+
+def test_invalid_gpu_index_is_a_usage_error_not_a_traceback(tmp_path, monkeypatch):
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    def refuse(index):
+        raise ValueError("gpu index 9 out of range; available adapters: 0: NVIDIA A100")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", refuse)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "8",
+        "--split", "train:1:0", "--render", "--gpu-index", "9",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, ValueError)
+    assert "out of range" in result.output and "NVIDIA A100" in result.output
+
+
+def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkeypatch):
+    """With a pool, every renderer lives in a worker: this process must not
+    select an adapter, or it would hold a device the workers cannot use."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    import owm_envs.datasets.video as video
+
+    seen = {}
+
+    def fake_iter(batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None):
+        seen["workers"] = workers
+        seen["gpu_index"] = gpu_index
+        raise RuntimeError("stop-after-fan-out")
+
+    monkeypatch.setattr(video, "iter_batch_frames", fake_iter)
+    monkeypatch.setattr(
+        "owm_envs.render.device.select_gpu",
+        lambda index: pytest.fail("the parent must not select a GPU with a worker pool"),
+    )
+    # The parent's bounds check is real and enumerates adapters; that it
+    # rejects a bad index is tested below, and this test is about selection.
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: None)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-workers", "4", "--gpu-index", "1",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
+    assert seen == {"workers": 4, "gpu_index": 1}
+
+
+def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
+    """The writer has to receive a lazy iterator: a list of every clip in a
+    500k-frame split is ~98 GB."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from collections.abc import Sequence
+
+    import owm_envs.datasets.lerobot_writer as writer
+
+    seen = {}
+
+    def fake_write(root, repo_id, batch, fps, task_name="iss_docking", frames=None):
+        seen["is_sequence"] = isinstance(frames, Sequence)
+        seen["pulled"] = sum(1 for _ in frames)
+        return root
+
+    monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
+    monkeypatch.setattr(
+        "owm_envs.datasets.video.iter_batch_frames",
+        lambda batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None: iter(
+            [None] * batch.num_episodes
+        ),
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:2:0",
+        "--num-envs", "1", "--render",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["is_sequence"] is False
+    assert seen["pulled"] == 2
+
+
+@pytest.mark.parametrize("render_flag", ["--render", "--no-render"])
+def test_zero_render_workers_is_a_usage_error(tmp_path, render_flag):
+    """Nonsense is nonsense whether or not the run renders: a value that can
+    never be valid must be rejected, not quietly ignored on the path that
+    happens not to read it."""
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        render_flag, "--render-workers", "0",
+    ])
+    assert result.exit_code != 0
+    assert "--render-workers must be >= 1" in result.output
+
+
+def test_render_line_names_frames_and_workers_without_a_time_estimate(
+    tmp_path, monkeypatch
+):
+    """The line must not predict a duration. Measured throughput scales
+    1.6-2.6x over 2-8 workers rather than linearly, and per-frame cost moves
+    with resolution and scene, so any minutes figure would be wrong by more
+    than it is worth."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    import owm_envs.datasets.lerobot_writer as writer
+
+    def fake_write(root, repo_id, batch, fps, task_name="iss_docking", frames=None):
+        for _ in frames:
+            pass
+        return root
+
+    monkeypatch.delenv("OWM_ENVS_GPU_INDEX", raising=False)
+    monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
+    monkeypatch.setattr(
+        "owm_envs.datasets.video.iter_batch_frames",
+        lambda batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None: iter(
+            [None] * batch.num_episodes
+        ),
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:2:0",
+        "--num-envs", "1", "--render", "--render-workers", "2",
+    ])
+    assert result.exit_code == 0, result.output
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("[render]"))
+    assert re.fullmatch(r"\[render\] train: \d+ frames, 2 worker\(s\)", line), line
+
+
+def test_bad_gpu_index_fails_before_the_rollout_with_a_worker_pool(tmp_path, monkeypatch):
+    """A pool's workers select their adapter after the rollout has already
+    run, so the parent bounds-checks the index up front -- a typo must cost
+    seconds, not an hour of rollout followed by a broken pool."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    def refuse(index):
+        raise ValueError("gpu index 9 out of range; available adapters: 0: NVIDIA A100")
+
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", refuse)
+    monkeypatch.setattr(
+        "owm_envs.render.device.select_gpu",
+        lambda index: pytest.fail("the parent must not select a GPU with a worker pool"),
+    )
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "8", "--split", "train:1:0",
+        "--render", "--render-workers", "4", "--gpu-index", "9",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, ValueError)
+    assert "out of range" in result.output and "NVIDIA A100" in result.output
+    assert not out.exists(), "the check must precede the rollout"
+
+
+def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "owm_envs.render.device.select_gpu",
+        lambda index: pytest.fail("must not select a GPU without --render"),
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "8",
+        "--split", "train:1:0", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
