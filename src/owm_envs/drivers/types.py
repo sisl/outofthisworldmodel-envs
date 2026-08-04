@@ -110,6 +110,12 @@ class TrajectoryBatch:
     # supply one -- every ISS driver can, recording the `DockConfig` pose for
     # a run with no port set.
     dock_targets: np.ndarray | None = None
+    # (E, T, 13) float32, zero-padded past `lengths[e]` on the same episode and
+    # time layout as `observations`: the 13-dim TRUE dynamics state behind each
+    # stored observation -- identical to `observations[..., :13]` when sensor
+    # noise is off, and untouched by the goal-error augmentation that widens
+    # `observations`. None when the source cannot supply truth.
+    true_state: np.ndarray | None = None
 
     @property
     def num_episodes(self) -> int:
@@ -151,6 +157,16 @@ class TrajectoryBatch:
                 raise ValueError(
                     f"dock_targets rows must be (7,) [position, quaternion], got {self.dock_targets.shape[1:]}"
                 )
+        if self.true_state is not None:
+            if self.true_state.shape[0] != n:
+                raise ValueError(
+                    f"episode count mismatch: true_state has {self.true_state.shape[0]}, expected {n}"
+                )
+            if self.true_state.shape[1:] != (t, 13):
+                raise ValueError(
+                    f"true_state rows must be ({t}, 13) dynamics states, "
+                    f"got {self.true_state.shape[1:]}"
+                )
 
         if self.actions.shape[1] != t or self.rewards.shape[1] != t:
             raise ValueError("time dimension mismatch between observations, actions and rewards")
@@ -164,7 +180,10 @@ class TrajectoryBatch:
         if np.any(both):
             raise ValueError(f"episodes {np.flatnonzero(both).tolist()} are flagged both terminated and truncated")
 
-        for name, arr in (("observations", self.observations), ("actions", self.actions), ("rewards", self.rewards)):
+        padded = [("observations", self.observations), ("actions", self.actions), ("rewards", self.rewards)]
+        if self.true_state is not None:
+            padded.append(("true_state", self.true_state))
+        for name, arr in padded:
             for i, length in enumerate(self.lengths):
                 if length < t and np.any(arr[i, length:] != 0):
                     raise ValueError(f"{name} episode {i} has non-zero padding past length {length}")
@@ -222,6 +241,7 @@ def pack_episodes(
     act_dim: int,
     records_policy_ids: bool,
     records_dock_targets: bool = False,
+    records_true_state: bool = False,
 ) -> TrajectoryBatch:
     """Pad a list of variable-length episodes into a TrajectoryBatch.
 
@@ -230,8 +250,11 @@ def pack_episodes(
     there is only one.
 
     Each episode dict carries `obs` (L, obs_dim), `act` (L, act_dim), `rew` (L,),
-    `terminated` bool, `truncated` bool, `policy_id` int, and, when
-    `records_dock_targets`, `dock_target` (7,).
+    `terminated` bool and `truncated` bool. The remaining entries are read only
+    under their own flag: `policy_id` int when `records_policy_ids`,
+    `dock_target` (7,) when `records_dock_targets`, and `true_state` (L, 13)
+    when `records_true_state`. A driver that has no value for an unread entry
+    may leave it None -- an entry the flag switches off is never looked at.
     """
     n = len(episodes)
     if n == 0:
@@ -246,6 +269,9 @@ def pack_episodes(
     truncated = np.zeros(n, dtype=bool)
     policy_ids = np.zeros(n, dtype=np.int32) if records_policy_ids else None
     dock_targets = np.zeros((n, 7), dtype=np.float32) if records_dock_targets else None
+    true_state = (
+        np.zeros((n, max_len, 13), dtype=np.float32) if records_true_state else None
+    )
 
     for i, episode in enumerate(episodes):
         length = int(episode["obs"].shape[0])
@@ -259,6 +285,16 @@ def pack_episodes(
             policy_ids[i] = episode["policy_id"]
         if dock_targets is not None:
             dock_targets[i] = episode["dock_target"]
+        if true_state is not None:
+            # Checked rather than assigned blind: a (13,) or (1, 13) true_state
+            # broadcasts silently across all `length` timesteps, and the result
+            # survives `validate` because duplicated rows look like real data.
+            episode_true_state = episode["true_state"]
+            if episode_true_state.shape != (length, 13):
+                raise ValueError(
+                    f"episode {i} true_state must be ({length}, 13), got {episode_true_state.shape}"
+                )
+            true_state[i, :length] = episode_true_state
 
     batch = TrajectoryBatch(
         observations=observations,
@@ -269,6 +305,7 @@ def pack_episodes(
         truncated=truncated,
         policy_ids=policy_ids,
         dock_targets=dock_targets,
+        true_state=true_state,
     )
     batch.validate()
     return batch

@@ -22,10 +22,16 @@ def render_episode_frames(
     view: str = "DRAGON_FPV",
     renderer: Any | None = None,
 ) -> np.ndarray:
-    """Render one episode's observations to an `(L, H, W, 3)` uint8 clip.
+    """Render one episode's true states to an `(L, H, W, 3)` uint8 clip.
 
     `L` is `batch.lengths[episode_index]` -- only real, non-padded frames are
     rendered. `cfg` is an `owm_envs.render.iss_scene.RenderConfig`.
+
+    A batch whose source cannot supply truth -- a foreign env that emits no
+    `info["state"]`, or a batch built before the truth channel existed -- is
+    rendered from its first 13 observation dims instead. That is the MEASURED
+    state, so such a clip does shake with navigation error; it is the best
+    available for that batch, not an equivalent substitute.
 
     `renderer`, when given, is a live `ISSRenderer` to render into -- reused
     across episodes so a multi-episode batch pays the cost of loading the
@@ -42,7 +48,15 @@ def render_episode_frames(
     try:
         frames = np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
         for t in range(length):
-            state = batch.observations[episode_index, t]
+            # Pose the TRUE state whenever the batch carries one: the camera
+            # must not shake with navigation error, and an observation
+            # carrying the goal-error block is not renderable geometry (25
+            # dims into a renderer that poses 13). The fallback is measured,
+            # not true -- see this function's docstring.
+            if batch.true_state is not None:
+                state = batch.true_state[episode_index, t]
+            else:
+                state = batch.observations[episode_index, t][:13]
             action = batch.actions[episode_index, t]
             frames[t] = renderer.render(state, action=action, view=view)
     finally:

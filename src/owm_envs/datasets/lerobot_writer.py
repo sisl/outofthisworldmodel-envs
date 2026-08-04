@@ -11,12 +11,13 @@ Targets the lerobot 0.4.4 API:
 lerobot is an optional extra. The import is function-local so the rest of the
 package imports and tests without it.
 
-Schema: `observation_vector` (float32, obs_dim) and `action` (float32,
-act_dim) carry the trajectory itself. Six more features carry outcome
-metadata that would otherwise be lost once a TrajectoryBatch is discarded:
-`reward` (the per-frame reward; zero on an episode's final frame, whose
-action slot is a zero pad rather than a real action), `is_last`,
-`terminated`, `truncated`, `policy_id`, and `dock_target`.
+Schema: `observation_vector` (float32, obs_dim), `state_vector` (float32,
+13) and `action` (float32, act_dim) carry the trajectory itself. Six more
+features carry outcome metadata that would otherwise be lost once a
+TrajectoryBatch is discarded: `reward` (the per-frame reward; zero on an
+episode's final frame, whose action slot is a zero pad rather than a real
+action), `is_last`, `terminated`, `truncated`, `policy_id`, and
+`dock_target`.
 
 `is_last` is per-FRAME and true only on an episode's final frame. It marks
 both the terminal observation and the one frame whose action is the zero pad,
@@ -36,6 +37,22 @@ so a stored index stops reproducing the episode as soon as the table changes;
 a pose is self-contained and stays comparable across table versions. A batch
 whose `dock_targets` is None -- a driver whose policy source cannot supply one
 -- writes all-NaN rows, which no real pose can collide with.
+
+`state_vector` is the TRUE dynamics state at that frame -- what the
+simulator actually held, before the sensor model corrupted it into
+`observation_vector`. Where both exist,
+`observation_vector[..., :13] - state_vector` is exactly the realized
+sensor-noise draw for that frame, so a noise model can be measured back off
+a written dataset rather than trusted from the config that produced it, and
+a policy can be trained on the noisy channel while being scored against
+truth. The first 13 dims of `observation_vector` are the corresponding
+measured state; any dims past them (the goal-error block) have no
+`state_vector` counterpart, which is why the two can differ in width.
+Unlike `dock_target`, a batch with no truth channel omits the feature
+entirely rather than writing NaN rows: NaN marks a value that is genuinely
+missing for one episode, whereas a driver that cannot record truth has no
+frames to fill, and a whole column of stand-ins would only invite a
+consumer to average over them.
 
 Episode boundaries are recoverable from lerobot's own bookkeeping too --
 `meta.episodes["length"]`, and `frame_index` restarting at 0 -- and that
@@ -120,6 +137,12 @@ def write_lerobot_split(
         "policy_id": {"dtype": "int64", "shape": (1, 1), "names": None},
         "dock_target": {"dtype": "float32", "shape": (1, 7), "names": None},
     }
+    if batch.true_state is not None:
+        features["state_vector"] = {
+            "dtype": "float32",
+            "shape": (batch.true_state.shape[-1],),
+            "names": None,
+        }
     if frames is not None:
         # Derived from the actual clip, not assumed square: the renderer
         # returns (H, W, 3), and H need not equal W.
@@ -159,6 +182,10 @@ def write_lerobot_split(
                 "dock_target": dock_target,
                 "task": task_name,
             }
+            if batch.true_state is not None:
+                frame["state_vector"] = np.asarray(
+                    batch.true_state[episode, t], dtype=np.float32
+                )
             if clip is not None:
                 frame["observation.images.fpv"] = np.asarray(clip[t], dtype=np.uint8)
             dataset.add_frame(frame)

@@ -103,6 +103,9 @@ def test_both_drivers_agree_on_free_flight_trajectories():
     np.testing.assert_allclose(a.observations, b.observations, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(a.actions, b.actions, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(a.rewards, b.rewards, rtol=1e-3, atol=1e-2)
+    np.testing.assert_allclose(a.true_state, b.true_state, rtol=1e-4, atol=1e-4)
+    _assert_truth_recorded(a)
+    _assert_truth_recorded(b)
 
 
 def test_scan_and_vector_agree_on_goal_blocks_for_dock():
@@ -127,6 +130,11 @@ def test_scan_and_vector_agree_on_goal_blocks_for_dock():
 
     np.testing.assert_allclose(scan.observations, vector.observations, atol=1e-5)
     np.testing.assert_array_equal(scan.lengths, vector.lengths)
+    # Truth is the un-augmented 13-dim state on both sides: the goal block
+    # widens `observations` only, so the two channels must still agree.
+    np.testing.assert_allclose(scan.true_state, vector.true_state, atol=1e-5)
+    _assert_truth_recorded(scan)
+    _assert_truth_recorded(vector)
 
 
 def test_scan_and_vector_agree_structurally_on_goal_blocks_for_union():
@@ -187,6 +195,23 @@ def _assert_terminal_convention(batch):
             assert not np.array_equal(batch.observations[i, 0], batch.observations[i, length - 1])
 
 
+def _assert_truth_recorded(batch):
+    """Both drivers must record the 13-dim true dynamics state on the same
+    episode/time layout as the observations -- ScanDriver from the un-noised
+    scan carry, VectorEnvDriver from the env's info["state"], the same
+    two-implementations-of-one-rule drift risk as everything else here.
+
+    Every config in this module runs with sensor noise off, so truth and the
+    stored observation are the same numbers; asserting that pins the
+    alignment, which a shape check alone would not.
+    """
+    assert batch.true_state is not None
+    assert batch.true_state.shape == batch.observations.shape[:2] + (13,)
+    np.testing.assert_allclose(
+        batch.true_state, batch.observations[..., :13], rtol=1e-5, atol=1e-5
+    )
+
+
 def _assert_every_episode_starts_from_a_reset(batch):
     """Every episode's first observation must lie on the start sphere.
 
@@ -222,6 +247,8 @@ def test_both_drivers_agree_structurally_with_many_episodes_per_lane():
     _assert_terminal_convention(b)
     _assert_every_episode_starts_from_a_reset(a)
     _assert_every_episode_starts_from_a_reset(b)
+    _assert_truth_recorded(a)
+    _assert_truth_recorded(b)
 
 
 def test_both_drivers_start_every_episode_from_an_independent_reset():
@@ -273,6 +300,8 @@ def test_both_drivers_agree_structurally_when_episodes_terminate_early():
     b.validate()
     _assert_terminal_convention(a)
     _assert_terminal_convention(b)
+    _assert_truth_recorded(a)
+    _assert_truth_recorded(b)
 
 
 def test_both_drivers_agree_on_episode_length_distribution_for_a_stochastic_policy():
@@ -312,6 +341,7 @@ def _assert_batches_equal(a, b):
     np.testing.assert_array_equal(a.observations, b.observations)
     np.testing.assert_array_equal(a.actions, b.actions)
     np.testing.assert_array_equal(a.lengths, b.lengths)
+    np.testing.assert_array_equal(a.true_state, b.true_state)
 
 
 # Multi-split runs call generate() repeatedly (the CLI builds a driver per

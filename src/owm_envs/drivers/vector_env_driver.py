@@ -60,6 +60,15 @@ def _lane_info(info: dict, lane: int) -> dict:
     }
 
 
+def _lane_state(info: dict, lane: int) -> np.ndarray:
+    """One lane's true dynamics state out of a vector info dict.
+
+    Copied because the env owns that array and is free to overwrite it in
+    place on the next step, exactly as the recorded observations are copied.
+    """
+    return np.array(info["state"][lane], dtype=np.float32)
+
+
 class VectorEnvDriver:
     """See module docstring.
 
@@ -120,6 +129,14 @@ class VectorEnvDriver:
 
         obs, info = env.reset(seed=int(rng.integers(0, 2**31 - 1)))
 
+        # The ISS Gym adapters publish the 13-dim true dynamics state as
+        # info["state"] at reset and on every step; a foreign backend has no
+        # reason to, and then no truth channel is recorded at all. Decided
+        # once, off the first reset info -- an env either supplies it on every
+        # observation or on none, and the vector info is a dict of per-lane
+        # arrays, so the key being present means every lane has it.
+        records_truth = "state" in info
+
         # Episode state is created before `lane_obs` below (rather than after,
         # as the accumulator list order might suggest) purely so the initial
         # observations can be augmented against it -- it draws from `rng` no
@@ -146,6 +163,14 @@ class VectorEnvDriver:
             [self._augment(o, lane_episode_state[lane])] for lane, o in enumerate(obs)
         ]
         obs_dim = lane_obs[0][0].shape[0]
+        # Truth accumulates in lockstep with `lane_obs` -- same seeding, same
+        # appends, same clears -- so `lane_true[lane][i]` is the un-noised
+        # state behind `lane_obs[lane][i]`, terminal observation included. It
+        # stays 13-dim: the goal-error augmentation widens the observation
+        # only. Left empty (never indexed) when the backend supplies no truth.
+        lane_true: list[list[np.ndarray]] = (
+            [[_lane_state(info, lane)] for lane in range(num_envs)] if records_truth else []
+        )
         lane_act: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
         lane_rew: list[list[float]] = [[] for _ in range(num_envs)]
         lane_step = [0] * num_envs
@@ -218,6 +243,8 @@ class VectorEnvDriver:
                     # one was finalized below), so it's the right state to
                     # augment against.
                     lane_obs[lane] = [self._augment(next_obs[lane], lane_episode_state[lane])]
+                    if records_truth:
+                        lane_true[lane] = [_lane_state(next_info, lane)]
                     lane_awaiting_reset[lane] = False
                     lane_step[lane] = 0
                     continue
@@ -225,6 +252,8 @@ class VectorEnvDriver:
                 lane_act[lane].append(actions[lane].copy())
                 lane_rew[lane].append(float(rewards[lane]))
                 lane_obs[lane].append(self._augment(next_obs[lane], lane_episode_state[lane]))
+                if records_truth:
+                    lane_true[lane].append(_lane_state(next_info, lane))
                 lane_step[lane] += 1
 
                 # The env's own truncation is driven by its own config, which
@@ -241,23 +270,24 @@ class VectorEnvDriver:
                         # several lanes can finish within the same step()
                         # call -- once the quota is met mid-loop, later lanes
                         # in this same pass must NOT be recorded too.
-                        finished.append(
-                            {
-                                "obs": np.stack(lane_obs[lane]),
-                                "act": np.stack(lane_act[lane]),
-                                "rew": np.asarray(lane_rew[lane], dtype=np.float32),
-                                "terminated": bool(terminations[lane]),
-                                "truncated": bool(truncations[lane]) or (horizon_hit and not env_done),
-                                "policy_id": self.policy_source.policy_id(lane_episode_state[lane])
-                                if records_policy_ids
-                                else 0,
-                                "dock_target": self.policy_source.dock_target(
-                                    lane_episode_state[lane]
-                                )
-                                if records_dock_targets
-                                else None,
-                            }
-                        )
+                        episode = {
+                            "obs": np.stack(lane_obs[lane]),
+                            "act": np.stack(lane_act[lane]),
+                            "rew": np.asarray(lane_rew[lane], dtype=np.float32),
+                            "terminated": bool(terminations[lane]),
+                            "truncated": bool(truncations[lane]) or (horizon_hit and not env_done),
+                            "policy_id": self.policy_source.policy_id(lane_episode_state[lane])
+                            if records_policy_ids
+                            else None,
+                            "dock_target": self.policy_source.dock_target(
+                                lane_episode_state[lane]
+                            )
+                            if records_dock_targets
+                            else None,
+                        }
+                        if records_truth:
+                            episode["true_state"] = np.stack(lane_true[lane])
+                        finished.append(episode)
                         transitions_collected += len(lane_obs[lane]) - 1
                     lane_act[lane] = []
                     lane_rew[lane] = []
@@ -266,6 +296,8 @@ class VectorEnvDriver:
                     )
                     if env_done:
                         lane_obs[lane] = []
+                        if records_truth:
+                            lane_true[lane] = []
                         lane_awaiting_reset[lane] = True
                     else:
                         # spec.max_steps reached before the env itself was
@@ -296,6 +328,8 @@ class VectorEnvDriver:
                 lane_obs = [
                     [self._augment(o, lane_episode_state[lane])] for lane, o in enumerate(obs)
                 ]
+                if records_truth:
+                    lane_true = [[_lane_state(info, lane)] for lane in range(num_envs)]
                 lane_act = [[] for _ in range(num_envs)]
                 lane_rew = [[] for _ in range(num_envs)]
                 lane_step = [0] * num_envs
@@ -306,4 +340,11 @@ class VectorEnvDriver:
         # above already stops recording at quota in both modes, so `finished`
         # never actually exceeds spec.num_episodes by the time we get here.
         episodes = finished if spec.num_episodes is None else finished[: spec.num_episodes]
-        return pack_episodes(episodes, obs_dim, act_dim, records_policy_ids, records_dock_targets)
+        return pack_episodes(
+            episodes,
+            obs_dim,
+            act_dim,
+            records_policy_ids,
+            records_dock_targets,
+            records_true_state=records_truth,
+        )
