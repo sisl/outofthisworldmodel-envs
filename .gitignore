@@ -219,3 +219,6 @@ __marimo__/
 
 # uncommitted proof-of-concept scripts
 pocs/
+
+# multi-gigabyte Earth texture sources; baked patches are committed instead
+src/owm_envs/render/resources/earth/sources/
