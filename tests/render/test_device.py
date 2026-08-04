@@ -15,6 +15,12 @@ import pytest
 from owm_envs.render.device import _pick_adapter, select_gpu
 
 
+@pytest.fixture(autouse=True)
+def _forget_selection(monkeypatch):
+    """Which GPU is pinned is process-global; each test starts unpinned."""
+    monkeypatch.setattr("owm_envs.render.device._SELECTED", None)
+
+
 class _Fake:
     def __init__(self, summary, adapter_type="DiscreteGPU", backend_type="Vulkan"):
         self.summary = summary
@@ -98,6 +104,26 @@ def test_explicit_index_overrides_env_var(monkeypatch):
     monkeypatch.setattr("owm_envs.render.device._select", seen.append)
     select_gpu(0)
     assert seen == [0]
+
+
+def test_reselecting_the_same_gpu_is_a_noop(monkeypatch):
+    """A run rendering several splits asks once per split, and by the second
+    one a renderer exists -- which is exactly when pygfx refuses to select."""
+    seen = []
+    monkeypatch.setattr("owm_envs.render.device._select", seen.append)
+    select_gpu(1)
+    select_gpu(1)
+    assert seen == [1]
+
+
+def test_selecting_a_different_gpu_is_not_suppressed(monkeypatch):
+    # Switching cards mid-process must reach pygfx and raise there, not be
+    # silently swallowed into rendering on the first card.
+    seen = []
+    monkeypatch.setattr("owm_envs.render.device._select", seen.append)
+    select_gpu(0)
+    select_gpu(1)
+    assert seen == [0, 1]
 
 
 def test_unparseable_env_var_names_the_variable(monkeypatch):

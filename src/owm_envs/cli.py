@@ -183,6 +183,12 @@ def generate(
         help="Render an egocentric video feed (slow: ~0.1 s/frame; off by default).",
     ),
     render_view: str = typer.Option("DRAGON_FPV", help="Camera view to render, when --render is set."),
+    render_workers: int = typer.Option(
+        1,
+        help="Parallel render worker processes (episodes fan out across them). "
+             "Each worker owns a renderer costing ~1.9 GiB of VRAM on the "
+             "--gpu-index card.",
+    ),
     gpu_index: Optional[int] = typer.Option(
         None,
         help="GPU adapter index for rendering (default: wgpu's own choice). "
@@ -199,10 +205,18 @@ def generate(
             "drop --no-lerobot so the frames are written."
         )
 
-    if render:
+    if render and render_workers < 1:
+        raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
+
+    if render and render_workers == 1:
         # pygfx pins one shared wgpu device per process the first time a scene
         # is built, so the adapter has to be chosen up front -- and choosing it
         # here also rejects a bad index before the rollout burns an hour.
+        #
+        # Only for the single-worker path, which renders in THIS process. With
+        # a pool, every renderer lives in a worker and this process must not
+        # touch the GPU at all; each worker selects the adapter itself, and a
+        # bad index surfaces when the pool starts instead of here.
         from .render.device import select_gpu
 
         try:
@@ -307,14 +321,20 @@ def generate(
     for name, batch in batches.items():
         frames = None
         if render:
-            from .datasets.video import render_batch_frames
+            from .datasets.video import iter_batch_frames
             from .render.iss_scene import RenderConfig
 
             render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
             total = int(batch.lengths.sum())
-            typer.echo(f"[render] {name}: {total} frames at ~0.1 s/frame "
-                       f"-> roughly {total * 0.1 / 60:.1f} min")
-            frames = render_batch_frames(batch, render_cfg, view=render_view)
+            typer.echo(f"[render] {name}: {total} frames at ~0.1 s/frame across "
+                       f"{render_workers} worker(s) "
+                       f"-> roughly {total * 0.1 / 60 / render_workers:.1f} min")
+            # Lazy: the writer pulls one episode's clip at a time. Rendering
+            # a whole split first would need ~98 GB of RAM at 500k frames.
+            frames = iter_batch_frames(
+                batch, render_cfg, view=render_view,
+                workers=render_workers, gpu_index=gpu_index,
+            )
         if lerobot:
             from .datasets.lerobot_writer import write_lerobot_split
 

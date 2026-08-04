@@ -29,6 +29,11 @@ import os
 
 ENV_VAR = "OWM_ENVS_GPU_INDEX"
 
+# Which GPU this process is already pinned to, so a repeat request for the
+# same one can be skipped -- pygfx refuses `select_adapter` once a renderer
+# exists, and a run that renders several splits asks once per split.
+_SELECTED: int | None = None
+
 
 def _is_discrete(adapter) -> bool:
     """Whether an adapter is a real GPU, spelling-insensitively.
@@ -75,8 +80,15 @@ def _select(index: int) -> None:
 def select_gpu(index: int | None = None) -> None:
     """Pin rendering to one GPU, from `index` or `OWM_ENVS_GPU_INDEX`.
 
-    A no-op when neither is set, which leaves wgpu its own default choice.
+    A no-op when neither is set, which leaves wgpu its own default choice,
+    and a no-op when this process is already pinned to that same GPU: a
+    caller rendering several splits in a row asks once per split, and by the
+    second one a renderer exists, which is exactly what pygfx refuses to
+    re-select under. Asking for a DIFFERENT GPU still goes through, so
+    switching cards mid-process raises pygfx's error rather than silently
+    rendering on the first one.
     """
+    global _SELECTED
     if index is None:
         raw = os.environ.get(ENV_VAR)
         if raw is None:
@@ -85,4 +97,7 @@ def select_gpu(index: int | None = None) -> None:
             index = int(raw)
         except ValueError:
             raise ValueError(f"{ENV_VAR} must be an integer, got {raw!r}") from None
+    if index == _SELECTED:
+        return
     _select(index)
+    _SELECTED = index

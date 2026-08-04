@@ -316,7 +316,7 @@ def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("gpu unavailable")
 
-    monkeypatch.setattr(video, "render_batch_frames", boom)
+    monkeypatch.setattr(video, "iter_batch_frames", boom)
 
     out = tmp_path / "run"
     result = runner.invoke(
@@ -689,6 +689,72 @@ def test_invalid_gpu_index_is_a_usage_error_not_a_traceback(tmp_path, monkeypatc
     assert result.exit_code != 0
     assert not isinstance(result.exception, ValueError)
     assert "out of range" in result.output and "NVIDIA A100" in result.output
+
+
+def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkeypatch):
+    """With a pool, every renderer lives in a worker: this process must not
+    select an adapter, or it would hold a device the workers cannot use."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    import owm_envs.datasets.video as video
+
+    seen = {}
+
+    def fake_iter(batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None):
+        seen["workers"] = workers
+        seen["gpu_index"] = gpu_index
+        raise RuntimeError("stop-after-fan-out")
+
+    monkeypatch.setattr(video, "iter_batch_frames", fake_iter)
+    monkeypatch.setattr(
+        "owm_envs.render.device.select_gpu",
+        lambda index: pytest.fail("the parent must not select a GPU with a worker pool"),
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-workers", "4", "--gpu-index", "1",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
+    assert seen == {"workers": 4, "gpu_index": 1}
+
+
+def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
+    """The writer has to receive a lazy iterator: a list of every clip in a
+    500k-frame split is ~98 GB."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from collections.abc import Sequence
+
+    import owm_envs.datasets.lerobot_writer as writer
+
+    seen = {}
+
+    def fake_write(root, repo_id, batch, fps, task_name="iss_docking", frames=None):
+        seen["is_sequence"] = isinstance(frames, Sequence)
+        seen["pulled"] = sum(1 for _ in frames)
+        return root
+
+    monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
+    monkeypatch.setattr(
+        "owm_envs.datasets.video.iter_batch_frames",
+        lambda batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None: iter(
+            [None] * batch.num_episodes
+        ),
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:2:0",
+        "--num-envs", "1", "--render",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["is_sequence"] is False
+    assert seen["pulled"] == 2
+
+
+def test_zero_render_workers_is_a_usage_error(tmp_path):
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--render", "--render-workers", "0",
+    ])
+    assert result.exit_code != 0
+    assert "--render-workers must be >= 1" in result.output
 
 
 def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
