@@ -981,3 +981,22 @@ def test_push_rejects_a_directory_that_is_not_a_finished_run(tmp_path):
     assert result.exit_code != 0
     assert "did not finish" in result.output
     assert not isinstance(result.exception, FileNotFoundError)
+
+
+@pytest.mark.parametrize("filename, text", [
+    ("summary.json", "{not json"),
+    ("env_config.yaml", "dt: sometimes\n"),
+])
+def test_push_rejects_a_run_whose_own_artifacts_do_not_read(
+    tmp_path, filename, text, recorded_push
+):
+    # A truncated summary or a hand-edited env config is the same class of
+    # mistake as naming an unfinished run, and it is read before anything is
+    # uploaded -- so it must read as a usage error, not a traceback.
+    run = _pushable_run(tmp_path)
+    (run / filename).write_text(text)
+    result = runner.invoke(app, ["push", str(run), "--namespace", "acct", "--yes"])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, (OSError, ValueError))
+    assert "cannot read the run" in result.output
+    assert recorded_push == {}

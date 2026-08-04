@@ -407,11 +407,14 @@ def push(
 
     try:
         repo_id, counts = push_preview(run_dir, name=name, namespace=namespace)
-    except FileNotFoundError as exc:
-        # An unfinished run, or one with no LeRobot split: the caller named the
-        # wrong directory or generated it wrong, so say so as a usage error
-        # rather than as a traceback.
-        raise typer.BadParameter(str(exc), param_hint="RUN_DIR") from exc
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # An unfinished run, one with no LeRobot split, or one whose own
+        # summary or env config cannot be read: the caller named the wrong
+        # directory or generated it wrong, so say so as a usage error rather
+        # than as a traceback.
+        raise typer.BadParameter(
+            f"cannot read the run in {run_dir}: {exc}", param_hint="RUN_DIR"
+        ) from exc
 
     typer.echo(f"[push] {run_dir} -> {repo_id}")
     for split, count in counts.items():
