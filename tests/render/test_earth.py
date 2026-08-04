@@ -1,4 +1,4 @@
-"""Earth full-map texture resolution: three tiers, artifact names, bake shapes."""
+"""Earth full-map texture resolution: three tiers, artifact names, map shapes."""
 
 from pathlib import Path
 
@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from owm_envs.render import earth, resources_dir
-from owm_envs.render.earth import _bake_map, _ensure_earth_source, earth_texture_path
+from owm_envs.render.earth import _downsample_map, _ensure_earth_source, earth_texture_path
 
 KINDS = ["color", "clouds", "bump"]
 
@@ -49,7 +49,7 @@ def network_calls(monkeypatch):
     return calls
 
 
-def test_bump_bakes_grayscale_png_from_source(fake_resources):
+def test_bump_downsamples_grayscale_png_from_source(fake_resources):
     _write_source(fake_resources / "earth" / "sources" / "Earth-40K-Bump.tif", "L")
     path = earth_texture_path("bump")
     assert path.name == "earth_bump_full.png"
@@ -59,7 +59,7 @@ def test_bump_bakes_grayscale_png_from_source(fake_resources):
     assert img.size == (32, 16)  # full equirect, 2:1
 
 
-def test_color_bakes_full_jpg(fake_resources):
+def test_color_downsamples_full_jpg(fake_resources):
     _write_source(fake_resources / "earth" / "sources" / "EarthColorMap-80k.tif", "RGB")
     path = earth_texture_path("color")
     assert path.name == "earth_color_full.jpg"
@@ -74,26 +74,26 @@ def test_color_bakes_full_jpg(fake_resources):
         ("bump", "Earth-40K-Bump.tif", "earth_bump_full.png", "L"),
     ],
 )
-def test_every_kind_bakes_its_own_source_to_its_own_artifact(
+def test_every_kind_downsamples_its_own_source_to_its_own_artifact(
     fake_resources, kind, source_name, map_name, mode
 ):
     # Pins the whole per-kind table: a source renamed in one dict and not the
-    # others resolves to the wrong file, or bakes in the wrong colour mode.
+    # others resolves to the wrong file, or writes the wrong colour mode.
     _write_source(fake_resources / "earth" / "sources" / source_name, mode)
     path = earth_texture_path(kind)
     assert path == fake_resources / "earth" / "maps" / map_name
     assert Image.open(path).mode == mode
 
 
-def test_production_bake_targets_are_pinned():
-    # Re-baking at a different size silently changes every rendered frame's
+def test_production_downsample_targets_are_pinned():
+    # Re-downsampling at a different size silently changes every rendered frame's
     # ground texel density, so the shipped widths are part of the contract.
     assert earth.MAP_WIDTHS == {"color": 16384, "clouds": 16384, "bump": 8192}
     assert earth.FALLBACK_WIDTHS == {"color": 8192, "clouds": 4096, "bump": 2048}
     kinds = set(earth._SOURCE_NAMES)
     assert set(earth.MAP_WIDTHS) == kinds
     assert set(earth._MAP_NAMES) == kinds
-    assert set(earth._BAKE_MODE) == kinds
+    assert set(earth._MAP_MODES) == kinds
     assert set(earth.FALLBACK_WIDTHS) == kinds
     assert set(earth._FALLBACK_NAMES) == kinds
 
@@ -105,11 +105,11 @@ def test_full_map_wins_over_both_the_source_and_the_fallback(fake_resources, net
     _write_fallback(fake_resources, "color")
 
     assert earth_texture_path("color", allow_download=True) == full
-    assert Image.open(full).size == (8, 4)  # untouched: no re-bake over a present map
+    assert Image.open(full).size == (8, 4)  # untouched: no re-downsample over a present map
     assert network_calls == []
 
 
-def test_a_source_bakes_the_full_map_in_preference_to_the_fallback(fake_resources):
+def test_a_source_downsamples_the_full_map_in_preference_to_the_fallback(fake_resources):
     _write_source(fake_resources / "earth" / "sources" / "EarthColorMap-80k.tif", "RGB")
     _write_fallback(fake_resources, "color")
     path = earth_texture_path("color")
@@ -163,7 +163,7 @@ def test_download_failure_falls_back_to_the_committed_fallback(fake_resources, m
     assert path == fallback
 
 
-def test_a_downloaded_source_is_baked_into_the_full_map(fake_resources, monkeypatch):
+def test_a_downloaded_source_is_downsampled_into_the_full_map(fake_resources, monkeypatch):
     def fetch(url, filename):
         # urlretrieve writes to a `.part` name, so the encoder is explicit here.
         assert url.endswith("EarthColorMap-80k.tif")
@@ -245,12 +245,12 @@ def test_tier2_miss_warns_when_source_dir_has_unmatched_files(fake_resources):
     # A source directory that exists but contains no matching file warns
     # rather than silently falling through to the fallback map.
     (fake_resources / "earth" / "sources" / "some_other_file.tif").write_bytes(b"wrong name")
-    with pytest.warns(UserWarning, match="tier-2 bake"):
-        assert _bake_map("clouds") is None
+    with pytest.warns(UserWarning, match="tier-2 downsample"):
+        assert _downsample_map("clouds") is None
 
 
 def test_tier2_miss_is_silent_when_source_dir_is_empty(fake_resources, recwarn):
     # An empty (or absent) sources/ directory is the common case -- no
     # high-res source was ever provided, so there is nothing to warn about.
-    assert _bake_map("clouds") is None
+    assert _downsample_map("clouds") is None
     assert len(recwarn) == 0

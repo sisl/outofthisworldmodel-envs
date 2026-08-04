@@ -218,7 +218,7 @@ def _load_rgb_texture(path: Path) -> gfx.Texture:
 
 
 def _load_cloud_texture(path: Path, *, opacity: float) -> gfx.Texture:
-    """The cloud map is baked as plain RGB; its brightness is coverage, so
+    """The cloud map is stored as plain RGB; its brightness is coverage, so
     turn that into the alpha channel of a white RGBA texture."""
     arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
     brightness = arr[..., :3].astype(np.float32).mean(axis=-1) if arr.ndim == 3 else arr.astype(np.float32)
@@ -333,7 +333,7 @@ class ISSScene:
         )
         self._earth_spin_angle_rad = 0.0
 
-        # Resolved once and held: these calls may fetch and bake a
+        # Resolved once and held: these calls may fetch and downsample a
         # multi-gigabyte source, and a per-frame lookup would also repeat a
         # failed network round-trip on every frame.
         self._earth_color_path = earth_texture_path("color", allow_download=True)

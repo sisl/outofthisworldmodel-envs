@@ -221,8 +221,8 @@ __marimo__/
 pocs/
 
 # multi-gigabyte Earth texture sources and the ~46 MB full-resolution maps
-# baked from them; reduced-resolution fallback maps are committed instead
+# downsampled from them; reduced-resolution fallback maps are committed instead
 src/owm_envs/render/resources/earth/sources/
 src/owm_envs/render/resources/earth/maps/*_full.*
-# temporaries from an interrupted bake
+# temporaries from an interrupted downsample
 src/owm_envs/render/resources/earth/maps/*.part

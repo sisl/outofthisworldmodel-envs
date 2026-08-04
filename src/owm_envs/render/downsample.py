@@ -1,7 +1,7 @@
-"""Bake full-globe equirectangular Earth maps from high-resolution sources.
+"""Downsample full-globe equirectangular Earth maps from high-resolution sources.
 
-Used by `owm_envs.render.earth` for tier-2 baking, and by
-`scripts/bake_earth_maps.py` as a standalone CLI. The high-resolution
+Used by `owm_envs.render.earth` for tier-2 downsampling, and by
+`scripts/downsample_earth_maps.py` as a standalone CLI. The high-resolution
 sources are large (gigabytes) and are not committed to this repository.
 
 Requires the `render` extra (Pillow) -- import this module lazily from
@@ -17,7 +17,7 @@ from uuid import uuid4
 JPEG_QUALITY = 92
 
 
-def bake_full_map(source: Path, output: Path, max_width: int, mode: str = "RGB") -> None:
+def downsample_full_map(source: Path, output: Path, max_width: int, mode: str = "RGB") -> None:
     from PIL import Image
 
     # Pillow refuses to open gigapixel images without this.
@@ -31,10 +31,10 @@ def bake_full_map(source: Path, output: Path, max_width: int, mode: str = "RGB")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     is_jpeg = output.suffix.lower() in (".jpg", ".jpeg")
-    # Write beside the target and rename: a 16384px bake takes minutes, and
-    # parallel render workers must never observe a half-written map. The name
-    # is per-writer, so two workers baking at once cannot corrupt or delete
-    # each other's temporary.
+    # Write beside the target and rename: a 16384px downsample takes minutes,
+    # and parallel render workers must never observe a half-written map. The
+    # name is per-writer, so two workers downsampling at once cannot corrupt or
+    # delete each other's temporary.
     tmp = output.with_suffix(f"{output.suffix}.{uuid4().hex}.part")
     try:
         if is_jpeg:

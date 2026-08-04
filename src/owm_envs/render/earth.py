@@ -1,13 +1,13 @@
-"""Earth texture resolution: locally-baked full maps, re-baking, committed fallbacks.
+"""Earth texture resolution: local full maps, downsampling, committed fallbacks.
 
 Three-tier strategy:
-1. A locally-baked full-resolution map exists -- return it. These are too
-   large to commit, so they are gitignored and only present on a machine
-   that has baked them.
-2. A high-resolution source is present on disk -- bake the full map from it
-   (via `owm_envs.render.bake`). When `allow_download` is set and the source
-   is missing, fetch it from the mirror first; any failure warns and falls
-   through.
+1. A locally-downsampled full-resolution map exists -- return it. These are
+   too large to commit, so they are gitignored and only present on a machine
+   that has downsampled them.
+2. A high-resolution source is present on disk -- downsample the full map
+   from it (via `owm_envs.render.downsample`). When `allow_download` is set
+   and the source is missing, fetch it from the mirror first; any failure
+   warns and falls through.
 3. The committed reasonable-resolution fallback map. Always present in a
    clone, so rendering works offline out of the box.
 """
@@ -33,7 +33,7 @@ _SOURCE_NAMES = {
     "bump": "Earth-40K-Bump.tif",
 }
 
-# Full-globe equirectangular bake targets (width; height is width/2).
+# Full-globe equirectangular downsample targets (width; height is width/2).
 # color/clouds at 16384 keep ~2.4 km/texel at the equator; bump stays at
 # 8192 because relief is low-frequency and the normal map is computed
 # from gradients, not displayed directly.
@@ -47,7 +47,7 @@ _MAP_NAMES = {
     "clouds": "earth_clouds_full.jpg",
     "bump": "earth_bump_full.png",
 }
-_BAKE_MODE = {"color": "RGB", "clouds": "RGB", "bump": "L"}
+_MAP_MODES = {"color": "RGB", "clouds": "RGB", "bump": "L"}
 
 # Committed fallbacks: the full maps above total ~46 MB, too much for git.
 # These are the same globes at half (color) or a quarter (clouds, bump) the
@@ -69,8 +69,8 @@ def _source_dir() -> Path:
     return resources_dir() / "earth" / "sources"
 
 
-def _bake_map(kind: TextureKind) -> Path | None:
-    """Tier 2: bake a fresh map from a high-resolution source on disk, if present."""
+def _downsample_map(kind: TextureKind) -> Path | None:
+    """Tier 2: downsample a fresh map from a high-resolution source on disk, if present."""
     source_dir = _source_dir()
     source = source_dir / _SOURCE_NAMES[kind]
     if not source.exists():
@@ -80,14 +80,14 @@ def _bake_map(kind: TextureKind) -> Path | None:
             # maintainer's dropped-in file never picked up, with no clue why.
             warnings.warn(
                 f"{source_dir} has files but none named {_SOURCE_NAMES[kind]!r}; "
-                f"tier-2 bake for {kind!r} skipped"
+                f"tier-2 downsample for {kind!r} skipped"
             )
         return None
 
-    from owm_envs.render.bake import bake_full_map
+    from owm_envs.render.downsample import downsample_full_map
 
     output = _maps_dir() / _MAP_NAMES[kind]
-    bake_full_map(source, output, MAP_WIDTHS[kind], mode=_BAKE_MODE[kind])
+    downsample_full_map(source, output, MAP_WIDTHS[kind], mode=_MAP_MODES[kind])
     return output
 
 
@@ -132,9 +132,9 @@ def earth_texture_path(kind: TextureKind, *, allow_download: bool = False) -> Pa
     if allow_download and not (_source_dir() / _SOURCE_NAMES[kind]).exists():
         _ensure_earth_source(_SOURCE_NAMES[kind])  # warns and returns None on failure
 
-    baked = _bake_map(kind)
-    if baked is not None:
-        return baked
+    downsampled = _downsample_map(kind)
+    if downsampled is not None:
+        return downsampled
 
     fallback = _maps_dir() / _FALLBACK_NAMES[kind]
     if not fallback.exists():
