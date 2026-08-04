@@ -323,6 +323,18 @@ def generate(
         cfg=cfg, policy_cfg=policy_cfg, gen_cfg=gen, batches=batches, fps=resolved_fps
     )
 
+    if render:
+        # Every renderer resolves these three itself, and a miss downloads and
+        # bakes a full map from a multi-gigabyte source. Done once here, the
+        # render workers each find a finished file: N concurrent bakes cannot
+        # exhaust memory, and no two workers can settle on different tiers and
+        # mix Earth resolutions within one dataset. Resolution touches no wgpu
+        # device, so this process still takes none.
+        from .render.earth import earth_texture_path
+
+        for kind in ("color", "clouds", "bump"):
+            earth_texture_path(kind, allow_download=True)
+
     for name, batch in batches.items():
         frames = None
         if render:

@@ -721,6 +721,39 @@ def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkey
     assert seen == {"workers": 4, "gpu_index": 1}
 
 
+def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
+    tmp_path, monkeypatch
+):
+    """Every worker's scene resolves the Earth textures itself, and a miss
+    downloads and bakes a full map from a 9.6 GB source. Resolving them once
+    here leaves the workers three finished files to open: N concurrent decodes
+    cannot exhaust memory, and no two workers can settle on different tiers and
+    mix resolutions within one dataset."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    import owm_envs.datasets.video as video
+
+    order = []
+
+    def fake_resolve(kind, *, allow_download=False):
+        order.append((kind, allow_download))
+        return tmp_path / f"earth_{kind}"
+
+    def fake_iter(batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None):
+        order.append(("iter_batch_frames", workers))
+        raise RuntimeError("stop-after-fan-out")
+
+    monkeypatch.setattr("owm_envs.render.earth.earth_texture_path", fake_resolve)
+    monkeypatch.setattr(video, "iter_batch_frames", fake_iter)
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: None)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-workers", "4",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
+    assert order == [("color", True), ("clouds", True), ("bump", True),
+                     ("iter_batch_frames", 4)]
+
+
 def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
     """The writer has to receive a lazy iterator: a list of every clip in a
     500k-frame split is ~98 GB."""
