@@ -160,11 +160,9 @@ class ISSConfig(ConfigModel):
     # and settle, and the fastest holdable orbit there has a ~148 s period, so
     # anything shorter ends before a revolution completes.
     #
-    # The renderer's Earth patch spans 50 deg and its rotation is currently
-    # static (applied once at scene build), so this is safe today. Once
-    # epoch-driven Earth rotation lands, the along-track ground-track motion
-    # over 360 s is ~23 deg against a +/-25 deg patch -- close enough to the
-    # edge that the patch width has to be revisited alongside it.
+    # The renderer draws Earth as a full textured globe, so however far the
+    # ground track runs there is always surface under it; episode length is
+    # bounded by the control problem alone, not by the map.
     max_steps: int = 7200
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)

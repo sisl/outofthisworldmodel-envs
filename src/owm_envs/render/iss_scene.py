@@ -17,6 +17,7 @@ configuration.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import imageio.v3 as iio
@@ -24,6 +25,8 @@ import jax.numpy as jnp
 import numpy as np
 import pygfx as gfx
 import pylinalg as la
+from PIL import Image
+from pygfx.renderers.wgpu import get_shared
 
 from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
@@ -47,16 +50,21 @@ class RenderConfig(ConfigModel):
 
     earth_radius_m: float = 6_378_137.0
     iss_altitude_m: float = 420_000.0
-    # Geographic lon/lat placed directly under the ISS on the Earth patch.
-    earth_patch_center_lon_deg: float = -122.1697
-    earth_patch_center_lat_deg: float = 37.4275
-    # Full angular width/height of the cropped Earth patch, in degrees.
-    earth_patch_full_angle_deg: float = 50.0
+    # Geographic lon/lat of the sub-satellite point: the globe is oriented so
+    # this surface point lies directly under the scene origin.
+    earth_subpoint_lon_deg: float = -122.1697
+    earth_subpoint_lat_deg: float = 37.4275
     show_earth_glow: bool = True
     earth_glow_strength: float = 1.2
     show_earth_clouds: bool = True
     earth_cloud_altitude_m: float = 12_000.0
     earth_cloud_opacity: float = 0.8
+    # Relief shading. `earth_bump_strength` scales the height gradients the
+    # normal map is built from; `earth_normal_scale` scales its effect in the
+    # shader, so terrain relief can be tuned without re-deriving the map.
+    show_earth_bump: bool = True
+    earth_bump_strength: float = 8.0
+    earth_normal_scale: float = 2.5
 
     moon_radius_m: float = 1_737_400.0
     moon_asset_radius_units: float = 1.2718640565872192
@@ -173,8 +181,36 @@ def _visible_geometry_center(obj: gfx.WorldObject) -> np.ndarray | None:
     return (total / count).astype(np.float32)
 
 
+def _max_texture_size() -> int:
+    return int(get_shared().device.limits["max-texture-dimension-2d"])
+
+
+def _fit_to_device_limit(arr: np.ndarray, path: Path) -> np.ndarray:
+    """Halve an image until it fits the adapter's 2D texture limit.
+
+    The full-globe maps are 16384 px wide, which plenty of adapters refuse:
+    8192 is a common `max-texture-dimension-2d`. Creating the texture anyway
+    fails at draw time with a wgpu validation error rather than anything a
+    caller can act on, so shrink here and say so.
+    """
+    limit = _max_texture_size()
+    height, width = arr.shape[:2]
+    if max(width, height) <= limit:
+        return arr
+
+    factor = 2
+    while max(width // factor, height // factor) > limit:
+        factor *= 2
+    size = (max(width // factor, 1), max(height // factor, 1))
+    warnings.warn(
+        f"{path.name} is {width}x{height}, above this device's {limit} px texture limit; "
+        f"downscaled to {size[0]}x{size[1]}"
+    )
+    return np.asarray(Image.fromarray(arr).resize(size, Image.LANCZOS))
+
+
 def _load_rgb_texture(path: Path) -> gfx.Texture:
-    arr = np.asarray(iio.imread(path))
+    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
     if arr.ndim == 2:
         arr = np.repeat(arr[..., None], 3, axis=2)
     arr = np.ascontiguousarray(arr[..., :3].astype(np.uint8))
@@ -182,9 +218,9 @@ def _load_rgb_texture(path: Path) -> gfx.Texture:
 
 
 def _load_cloud_texture(path: Path, *, opacity: float) -> gfx.Texture:
-    """Cloud patches are baked as plain RGB; their brightness is coverage, so
+    """The cloud map is baked as plain RGB; its brightness is coverage, so
     turn that into the alpha channel of a white RGBA texture."""
-    arr = np.asarray(iio.imread(path))
+    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
     brightness = arr[..., :3].astype(np.float32).mean(axis=-1) if arr.ndim == 3 else arr.astype(np.float32)
     alpha = np.clip(np.rint(brightness * float(opacity)), 0.0, 255.0).astype(np.uint8)
     rgb = np.full(alpha.shape + (3,), 255, dtype=np.uint8)
@@ -192,40 +228,86 @@ def _load_cloud_texture(path: Path, *, opacity: float) -> gfx.Texture:
     return gfx.Texture(rgba, dim=2, colorspace="srgb", generate_mipmaps=True)
 
 
+def _normal_map_from_height(height: np.ndarray, strength: float) -> np.ndarray:
+    """Equirectangular height field (H, W) in [0, 1] -> tangent-space normals
+    (H, W, 3) in [-1, 1].
+
+    Longitude is periodic: the first and last columns are the same meridian,
+    so the x-gradient is taken across the wrap. Letting `np.gradient` fall back
+    to a one-sided difference there tilts the antimeridian's normals by up to
+    48 degrees wherever it crosses relief, which lights as a seam.
+    """
+    h = np.asarray(height, dtype=np.float32)
+    dy = np.gradient(h, axis=0)
+    dx = np.gradient(np.pad(h, ((0, 0), (1, 1)), mode="wrap"), axis=1)[:, 1:-1]
+    normals = np.dstack([-dx * strength, -dy * strength, np.ones_like(h)])
+    normals /= np.linalg.norm(normals, axis=-1, keepdims=True)
+    return normals.astype(np.float32)
+
+
+def _earth_normal_map(path: Path, *, show: bool, strength: float) -> gfx.TextureMap | None:
+    """Earth's bump map as a shader-ready tangent-space normal map.
+
+    Returns None when relief shading is off or the map is absent -- a missing
+    texture costs some surface detail, which is no reason to refuse to render.
+    """
+    if not show:
+        return None
+    if not path.exists():
+        warnings.warn(f"earth bump map missing at {path}; rendering without a normal map")
+        return None
+
+    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    if arr.ndim == 3:
+        arr = arr[..., 0]
+    normals = _normal_map_from_height(arr.astype(np.float32) / 255.0, strength)
+    # mesh.wgsl decodes the sample as `2 * s - 1`, so encode the other way and
+    # keep the texture linear: an sRGB transfer curve would bend every normal.
+    encoded = np.rint((normals * 0.5 + 0.5) * 255.0).astype(np.uint8)
+    return _texture_map(gfx.Texture(encoded, dim=2, colorspace="physical", generate_mipmaps=True))
+
+
 def _texture_map(texture: gfx.Texture) -> gfx.TextureMap:
     return gfx.TextureMap(texture, filter="linear", wrap="repeat")
 
 
-def _earth_patch_geometry(*, radius: float, full_angle_deg: float, segments: int = 256) -> gfx.Geometry:
-    """A curved rectangular patch of a sphere -- only the small region of
-    Earth's surface visible from ISS altitude needs geometry, not a globe."""
-    full_angle_rad = np.deg2rad(float(full_angle_deg))
-    u = np.linspace(0.0, 1.0, segments + 1, dtype=np.float32)
-    v = np.linspace(0.0, 1.0, segments + 1, dtype=np.float32)
+def _earth_globe_geometry(
+    *,
+    radius: float,
+    subpoint_lon_deg: float,
+    subpoint_lat_deg: float,
+    width_segments: int = 512,
+    height_segments: int = 256,
+) -> gfx.Geometry:
+    """A full sphere carrying equirectangular UVs, rotated so the geographic
+    point `(subpoint_lon_deg, subpoint_lat_deg)` sits on local +Z with north
+    at +Y -- the axis the scene places directly under its origin."""
+    u = np.linspace(0.0, 1.0, width_segments + 1, dtype=np.float32)
+    v = np.linspace(0.0, 1.0, height_segments + 1, dtype=np.float32)
     uu, vv = np.meshgrid(u, v)
 
-    lon = (uu - 0.5) * full_angle_rad
-    lat = (0.5 - vv) * full_angle_rad
+    lon = (uu - 0.5) * (2.0 * np.pi)
+    lat = (0.5 - vv) * np.pi
     cos_lat, sin_lat = np.cos(lat), np.sin(lat)
-    sin_lon, cos_lon = np.sin(lon), np.cos(lon)
+    unit = np.stack([cos_lat * np.sin(lon), sin_lat, cos_lat * np.cos(lon)], axis=-1).reshape(-1, 3)
 
-    x = float(radius) * cos_lat * sin_lon
-    y = float(radius) * sin_lat
-    z = float(radius) * cos_lat * cos_lon
-    positions = np.stack([x, y, z], axis=-1).reshape(-1, 3).astype(np.float32)
-    normals = positions / max(float(radius), 1e-6)
+    # Spin the subpoint's meridian onto lon 0 (about +Y), then its parallel
+    # down to the equator (about +X); +Z then points at the subpoint.
+    cos_lon0, sin_lon0 = np.cos(np.deg2rad(subpoint_lon_deg)), np.sin(np.deg2rad(subpoint_lon_deg))
+    cos_lat0, sin_lat0 = np.cos(np.deg2rad(subpoint_lat_deg)), np.sin(np.deg2rad(subpoint_lat_deg))
+    about_y = np.array([[cos_lon0, 0.0, -sin_lon0], [0.0, 1.0, 0.0], [sin_lon0, 0.0, cos_lon0]])
+    about_x = np.array([[1.0, 0.0, 0.0], [0.0, cos_lat0, -sin_lat0], [0.0, sin_lat0, cos_lat0]])
+
+    normals = (unit @ (about_x @ about_y).T).astype(np.float32)
+    positions = (float(radius) * normals).astype(np.float32)
     texcoords = np.stack([uu, vv], axis=-1).reshape(-1, 2).astype(np.float32)
 
-    cols = segments + 1
-    indices = np.empty((segments * segments * 2, 3), dtype=np.uint32)
-    tri = 0
-    for j in range(segments):
-        row, next_row = j * cols, (j + 1) * cols
-        for i in range(segments):
-            a, b, c, d = row + i, row + i + 1, next_row + i, next_row + i + 1
-            indices[tri] = (a, c, b)
-            indices[tri + 1] = (b, c, d)
-            tri += 2
+    cols = width_segments + 1
+    rows = np.arange(height_segments, dtype=np.uint32)[:, None] * cols
+    columns = np.arange(width_segments, dtype=np.uint32)[None, :]
+    a = rows + columns
+    b, c, d = a + 1, a + cols, a + cols + 1
+    indices = np.stack([a, c, b, b, c, d], axis=-1).reshape(-1, 3)
 
     return gfx.Geometry(positions=positions, normals=normals, texcoords=texcoords, indices=indices)
 
@@ -237,10 +319,11 @@ class ISSScene:
     def __init__(self, cfg: RenderConfig) -> None:
         self.cfg = cfg
 
-        # Earth patch local axes are east (+X), north (+Y), up (+Z); express
-        # the planetary spin axis in that frame so the patch can be rotated
-        # about Earth's true axis while staying anchored to its lon/lat.
-        lat_rad = np.deg2rad(cfg.earth_patch_center_lat_deg)
+        # At the subpoint the globe's local axes are east (+X), north (+Y),
+        # up (+Z); express the planetary spin axis in that frame so the globe
+        # can be rotated about Earth's true axis while staying anchored to the
+        # configured lon/lat.
+        lat_rad = np.deg2rad(cfg.earth_subpoint_lat_deg)
         self._earth_spin_axis_local = _unit(
             np.array([0.0, np.cos(lat_rad), np.sin(lat_rad)], dtype=np.float32)
         )
@@ -251,6 +334,7 @@ class ISSScene:
         # network round-trip on every frame.
         self._earth_color_path = earth_texture_path("color")
         self._earth_clouds_path = earth_texture_path("clouds")
+        self._earth_bump_path = earth_texture_path("bump")
 
         # Loaded assets face +Y; rotate them onto this environment's body +Z
         # so the capsule's nose and the station's long axis agree with the
@@ -312,9 +396,17 @@ class ISSScene:
         earth_group.add(self._earth_surface_group)
 
         earth_tex = _load_rgb_texture(self._earth_color_path)
-        earth_geom = _earth_patch_geometry(radius=cfg.earth_radius_m, full_angle_deg=cfg.earth_patch_full_angle_deg)
+        earth_geom = _earth_globe_geometry(
+            radius=cfg.earth_radius_m,
+            subpoint_lon_deg=cfg.earth_subpoint_lon_deg,
+            subpoint_lat_deg=cfg.earth_subpoint_lat_deg,
+        )
         earth_mat = gfx.MeshStandardMaterial(
             map=_texture_map(earth_tex),
+            normal_map=_earth_normal_map(
+                self._earth_bump_path, show=cfg.show_earth_bump, strength=cfg.earth_bump_strength
+            ),
+            normal_scale=(cfg.earth_normal_scale, cfg.earth_normal_scale),
             roughness=1.0,
             metalness=0.0,
             emissive=(0.06, 0.06, 0.08),
@@ -328,9 +420,10 @@ class ISSScene:
 
         if cfg.show_earth_clouds:
             cloud_tex = _load_cloud_texture(self._earth_clouds_path, opacity=cfg.earth_cloud_opacity)
-            cloud_geom = _earth_patch_geometry(
+            cloud_geom = _earth_globe_geometry(
                 radius=cfg.earth_radius_m + cfg.earth_cloud_altitude_m,
-                full_angle_deg=cfg.earth_patch_full_angle_deg,
+                subpoint_lon_deg=cfg.earth_subpoint_lon_deg,
+                subpoint_lat_deg=cfg.earth_subpoint_lat_deg,
             )
             cloud_mat = gfx.MeshBasicMaterial(map=_texture_map(cloud_tex))
             cloud_mat.alpha_mode = "blend"
