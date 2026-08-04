@@ -585,6 +585,108 @@ def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
         )
 
 
+class _CodedStateVectorEnv:
+    """Two-lane fake env whose observation AND info["state"] both encode
+    (lane, episode, step-within-episode), truth being the observation plus a
+    fixed offset -- so every recorded truth row can be matched to the exact
+    observation it must sit against, with no physics involved.
+
+    Lane 0 terminates every `terminate_every` steps while lane 1 never does,
+    so a rollout horizon between the two desynchronizes the cohort: lane 1
+    freezes at the horizon while lane 0 keeps cycling through env-driven
+    autoresets, and the two then go through the same whole-vector reset from
+    different states. No JAX, no ISS type -- this must stay importable by
+    test_module_does_not_import_jax.
+    """
+
+    num_envs = 2
+    state_offset = 0.5
+
+    class _ActionSpace:
+        shape = (1,)
+        low = np.array([-1.0], dtype=np.float32)
+        high = np.array([1.0], dtype=np.float32)
+
+    single_action_space = _ActionSpace()
+
+    def __init__(self, terminate_every: int = 3):
+        self._terminate_every = terminate_every
+        self._episode = [0] * self.num_envs
+        self._step = [0] * self.num_envs
+        self._pending_reset = [False] * self.num_envs
+
+    def _obs_and_info(self):
+        codes = np.array(
+            [
+                [lane * 100_000 + self._episode[lane] * 100 + self._step[lane]] * 13
+                for lane in range(self.num_envs)
+            ],
+            dtype=np.float32,
+        )
+        return codes, {"state": codes + self.state_offset}
+
+    def reset(self, seed=None):
+        del seed
+        for lane in range(self.num_envs):
+            self._episode[lane] += 1
+            self._step[lane] = 0
+        self._pending_reset = [False] * self.num_envs
+        return self._obs_and_info()
+
+    def step(self, actions):
+        del actions
+        terminations = np.zeros((self.num_envs,), dtype=bool)
+        for lane in range(self.num_envs):
+            if self._pending_reset[lane]:
+                self._pending_reset[lane] = False
+                self._episode[lane] += 1
+                self._step[lane] = 0
+                continue
+            self._step[lane] += 1
+            if lane == 0 and self._step[lane] >= self._terminate_every:
+                terminations[lane] = True
+                self._pending_reset[lane] = True
+        obs, info = self._obs_and_info()
+        return (
+            obs,
+            np.zeros((self.num_envs,), dtype=np.float32),
+            terminations,
+            np.zeros((self.num_envs,), dtype=bool),
+            info,
+        )
+
+    def close(self):
+        pass
+
+
+def test_truth_stays_aligned_when_lanes_desynchronize():
+    # The one episode-boundary path the ISS truth tests cannot reach: a cohort
+    # where one lane sits FROZEN at the rollout horizon while the other is
+    # still finishing env-terminated episodes, both then going through the
+    # same whole-vector reset. A truth entry left stale on the frozen lane, or
+    # rebuilt for only one of them, shows up here and nowhere else.
+    env = _CodedStateVectorEnv(terminate_every=3)
+    driver = VectorEnvDriver(
+        env_factory=lambda: env, policy_source=_ConstantPolicySource(np.zeros(1))
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=5, max_steps=5, seed=0))
+    batch.validate()
+
+    # Lane 0's episodes are 3 steps (4 observations), lane 1's run to the
+    # 5-step horizon (6) -- proof the cohort really did desynchronize rather
+    # than the lanes staying in lockstep, in which case this test would be
+    # checking nothing the others don't.
+    assert sorted(batch.lengths.tolist()) == [4, 4, 4, 6, 6]
+
+    assert batch.true_observations is not None
+    for i in range(batch.num_episodes):
+        length = int(batch.lengths[i])
+        np.testing.assert_array_equal(
+            batch.true_observations[i, :length],
+            batch.observations[i, :length] + _CodedStateVectorEnv.state_offset,
+        )
+
+
 def test_vector_driver_state_policy_actions_match_clean_run():
     # observe="state" with noise on: actions must be computed from the true
     # state, so a noisy run's actions match a clean run's actions per episode.
