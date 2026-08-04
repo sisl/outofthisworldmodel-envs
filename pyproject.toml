@@ -16,19 +16,18 @@ dependencies = [
 
 [project.optional-dependencies]
 render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow", "trimesh"]
-# Bounded below 0.5: datasets/lerobot_writer.py targets the 0.4.x API and
-# depends on version-specific behaviour of create(), the feature schema, and
-# add_frame -- including the (1, 1) feature shapes, which are a workaround for
-# how this version converts declared shapes to HuggingFace types. uv.lock
-# holds 0.4.4 for development, but a published install resolves afresh and
-# would otherwise be free to take a release that changes any of that.
+# Floor at 0.4.4: datasets/lerobot_writer.py was written against the 0.4.x
+# API (create(), the feature schema, add_frame, the (1, 1) feature-shape
+# workaround); 0.5.x keeps that surface and writes the same v3.0 on-disk
+# layout, verified by loading a 0.4.4-written run with 0.5.1. uv.lock holds
+# the development version; consumers may resolve newer releases.
 # huggingface-hub is named here as well as reached through lerobot:
 # datasets/hub.py imports it directly, and a dependency this package calls
 # itself must not be one lerobot is free to drop.
 # plotly is not used by the package itself: scripts/plot_trajectories_3d.py
 # reads a written run's parquet and renders it, so it needs whatever reads
 # those files, and this is the extra that supplies them.
-datasets = ["lerobot>=0.4.4,<0.5", "huggingface-hub>=0.34.2", "plotly>=6.0"]
+datasets = ["lerobot>=0.4.4", "huggingface-hub>=0.34.2", "plotly>=6.0"]
 
 [project.scripts]
 owm-envs = "owm_envs.cli:app"
