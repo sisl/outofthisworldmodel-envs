@@ -177,6 +177,79 @@ def test_scan_transitions_mode_records_truth():
         assert not np.allclose(true, batch.observations[i, :length, :13])
 
 
+def test_writer_emits_state_vector(tmp_path):
+    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+    import pandas as pd
+
+    from owm_envs.datasets.lerobot_writer import write_lerobot_split
+
+    batch = _scan_batch("cooperative", goal_error=False)
+    root = write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=20)
+    files = sorted((root / "data").rglob("*.parquet"))
+    df = pd.concat([pd.read_parquet(f) for f in files])
+
+    assert "state_vector" in df.columns
+    sv = np.stack(df["state_vector"].to_numpy())
+    ov = np.stack(df["observation_vector"].to_numpy())
+    assert sv.shape[-1] == 13
+    assert not np.allclose(sv, ov[:, :13])
+
+
+def test_writer_omits_state_vector_for_a_legacy_batch(tmp_path):
+    """A batch predating the truth channel must still write, with no column
+    of NaN stand-ins pretending to be a state."""
+    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+    import pandas as pd
+
+    from owm_envs.datasets.lerobot_writer import write_lerobot_split
+
+    batch = _rebuild(_scan_batch("off", goal_error=False), None)
+    root = write_lerobot_split(tmp_path / "train", "iss/train", batch, fps=20)
+    files = sorted((root / "data").rglob("*.parquet"))
+    df = pd.concat([pd.read_parquet(f) for f in files])
+
+    assert "state_vector" not in df.columns
+
+
+class _StateCapturingRenderer:
+    def __init__(self):
+        self.states = []
+
+    def render(self, state, action=None, view="DRAGON_FPV"):
+        self.states.append(np.asarray(state))
+        return np.zeros((4, 4, 3), dtype=np.uint8)
+
+
+class _TinyRenderConfig:
+    image_width = 4
+    image_height = 4
+
+
+def test_video_poses_truth_not_the_noisy_observation():
+    from owm_envs.datasets.video import render_episode_frames
+
+    batch = _scan_batch("noncooperative", goal_error=False)
+    renderer = _StateCapturingRenderer()
+    render_episode_frames(batch, 0, _TinyRenderConfig(), renderer=renderer)
+
+    length = int(batch.lengths[0])
+    np.testing.assert_array_equal(
+        np.stack(renderer.states), batch.true_observations[0, :length]
+    )
+
+
+def test_video_renders_truth_for_goal_error_batch():
+    pytest.importorskip("pygfx", reason="rendering is an optional extra")
+    pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
+
+    from owm_envs.datasets.video import render_episode_frames
+    from owm_envs.render.iss_scene import RenderConfig
+
+    batch = _scan_batch("noncooperative", goal_error=True)  # 25-dim obs
+    frames = render_episode_frames(batch, 0, RenderConfig(image_width=64, image_height=64))
+    assert frames.shape[1:] == (64, 64, 3)
+
+
 def test_scan_truth_stays_aligned_across_autoresets():
     """Truth must be dynamics-consistent for EVERY episode, including the
     second and third a lane produces after an in-scan autoreset.
