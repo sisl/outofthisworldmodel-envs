@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -22,19 +24,18 @@ def a_state(pos=(100.0, 0.0, 0.0)):
     return np.array([*pos, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], dtype=np.float32)
 
 
-def _state_on_the_limb(pos=(0.0, 60.0, 0.0)):
-    """A Dragon attitude that puts Earth's limb on the FPV frame's midline.
+def _state_pitched(depression_deg, pos=(0.0, 60.0, 0.0)):
+    """A Dragon attitude with the FPV boresight `depression_deg` below the
+    local horizontal.
 
     The FPV camera looks along body +Z, so the attitude is built from the
-    world-frame axes that direction has to land on: forward depressed below
-    the local horizontal by the limb's own depression angle, and the local
-    outward normal as up.
+    world-frame axes that direction has to land on; +Z is away from Earth, so
+    depressing the boresight tilts it towards -Z. Negative values look above
+    the horizontal, which leaves only the far, near-limb part of the planet in
+    frame.
     """
-    cfg = RenderConfig()
-    orbit_radius = cfg.earth_radius_m + cfg.iss_altitude_m
-    depression = np.arccos(cfg.earth_radius_m / orbit_radius)
-    # +Z is away from Earth, so depressing the ray means tilting it towards -Z.
-    forward = np.array([np.cos(depression), 0.0, -np.sin(depression)])
+    d = np.deg2rad(depression_deg)
+    forward = np.array([np.cos(d), 0.0, -np.sin(d)])
     up = np.array([0.0, 0.0, 1.0]) - forward[2] * forward
     up /= np.linalg.norm(up)
     right = np.cross(up, forward)
@@ -43,6 +44,15 @@ def _state_on_the_limb(pos=(0.0, 60.0, 0.0)):
         dtype=np.float32,
     )
     return np.array([*pos, 0, 0, 0, *quat, 0, 0, 0], dtype=np.float32)
+
+
+def _limb_depression_deg(cfg):
+    """How far below the local horizontal Earth's limb sits, from orbit."""
+    return float(np.degrees(np.arccos(cfg.earth_radius_m / _orbit_radius_m(cfg))))
+
+
+def _orbit_radius_m(cfg):
+    return cfg.earth_radius_m + cfg.iss_altitude_m
 
 
 @pytest.fixture(scope="module")
@@ -106,8 +116,7 @@ def test_views_returns_all_six_placements(renderer):
 def _earth_horizon_slant_m(cfg):
     """Distance from the scene origin to Earth's limb -- the farthest point of
     the planet's surface any camera at the station can see."""
-    orbit_radius = cfg.earth_radius_m + cfg.iss_altitude_m
-    return float(np.sqrt(orbit_radius**2 - cfg.earth_radius_m**2))
+    return float(np.sqrt(_orbit_radius_m(cfg) ** 2 - cfg.earth_radius_m**2))
 
 
 @pytest.mark.parametrize("view", VIEWS)
@@ -129,6 +138,17 @@ def test_no_view_asks_for_a_far_plane_its_near_plane_cannot_express(view):
     assert scene_view.far <= scene_view.near * _MAX_DEPTH_RANGE_RATIO
 
 
+def test_a_custom_cameras_oversized_far_is_capped_too():
+    # `render_view` takes any CameraView, so the cap has to bind on a far the
+    # caller chose as well -- widening one that is too small and cutting one
+    # that the projection would round away regardless.
+    cfg = RenderConfig()
+    greedy = dataclasses.replace(
+        _build_views(cfg, a_state())["DRAGON_FPV"], near=0.5, far=1e12
+    )
+    assert _with_scene_far(greedy, cfg).far == 0.5 * _MAX_DEPTH_RANGE_RATIO
+
+
 def test_earth_fills_the_lower_half_of_an_fpv_frame_pointed_at_it(renderer):
     # The regression: with an FPV near plane of 0.05 m the reachable far plane
     # collapsed to ~1000 km, so the surface past that -- everything from the
@@ -138,27 +158,13 @@ def test_earth_fills_the_lower_half_of_an_fpv_frame_pointed_at_it(renderer):
     # and the farthest surface of all in the band just below the midline.
     # Earth is far brighter than the starfield, so its presence is measurable
     # as coverage: that band went from 82% lit under the bug to 99.8% lit.
-    frame = renderer.render(_state_on_the_limb(), view="DRAGON_FPV")
+    on_the_limb = _state_pitched(_limb_depression_deg(RenderConfig()))
+    frame = renderer.render(on_the_limb, view="DRAGON_FPV")
     height = frame.shape[0]
     band = frame[height // 2 : height // 2 + height // 8]
     lit = float((band.mean(axis=-1) > 40).mean())
     assert lit > 0.97, f"only {lit:.2%} of the surface below the limb is lit"
 
-
-def _state_pitched(depression_deg: float, pos=(0.0, 60.0, 0.0)):
-    """A Dragon attitude with the FPV boresight `depression_deg` below the
-    local horizontal. Negative values look above the horizontal, which leaves
-    only the far, near-limb part of the planet in frame."""
-    d = np.deg2rad(depression_deg)
-    forward = np.array([np.cos(d), 0.0, -np.sin(d)])
-    up = np.array([0.0, 0.0, 1.0]) - forward[2] * forward
-    up /= np.linalg.norm(up)
-    right = np.cross(up, forward)
-    quat = np.asarray(
-        quat_from_rotmat(jnp.asarray(np.stack([right, up, forward], axis=1), dtype=jnp.float32)),
-        dtype=np.float32,
-    )
-    return np.array([*pos, 0, 0, 0, *quat, 0, 0, 0], dtype=np.float32)
 
 
 def _earth_hit_mask(cfg, state, height, width):
@@ -231,20 +237,17 @@ def test_earth_stays_whole_and_steady_across_small_attitude_steps(no_glow_render
     assert jumps.max() < 0.005, f"missing-Earth area jumped {jumps.max():.2%} between frames"
 
 
-def test_clouds_are_never_drawn_over_a_clipped_surface(no_glow_renderer):
+def test_clouds_are_never_drawn_over_a_clipped_surface():
     """The cloud shell sits 12 km above the surface, so along any ray it is
     reached first. A clip distance that fell between the two drew cloud with
     nothing underneath it -- the clouds-without-surface banding. Rendering the
     same state with clouds on and off isolates exactly those pixels.
     """
-    _, renderer = no_glow_renderer
     state = _state_pitched(-13.5)
+    cfg = RenderConfig(image_width=128, image_height=128, show_earth_glow=False)
     lit = {}
     for clouds in (True, False):
-        cfg = RenderConfig(
-            image_width=128, image_height=128, show_earth_glow=False, show_earth_clouds=clouds
-        )
-        r = ISSRenderer(cfg)
+        r = ISSRenderer(cfg.model_copy(update={"show_earth_clouds": clouds}))
         try:
             lit[clouds] = r.render(state, view="DRAGON_FPV").mean(axis=-1) > 40
         finally:

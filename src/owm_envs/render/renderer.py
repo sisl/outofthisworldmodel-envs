@@ -111,12 +111,14 @@ def _far_covering_the_scene(cfg: RenderConfig) -> float:
 def _with_scene_far(view: CameraView, cfg: RenderConfig) -> CameraView:
     """The same camera, with its far plane pushed out to cover the scene.
 
-    Capped at what the near plane can express, so the returned far is one the
-    camera actually clips at rather than a number the projection rounds away.
+    Widened to reach the scene, then capped at what the near plane can
+    express -- including past a caller's own far, which the projection would
+    round away regardless. The returned far is therefore one the camera really
+    does clip at rather than a number that only looks generous.
     """
     near = view.near if view.near is not None else 0.01
-    far = min(_far_covering_the_scene(cfg), near * _MAX_DEPTH_RANGE_RATIO)
-    return dataclasses.replace(view, far=max(view.far or 0.0, far))
+    wanted = max(view.far or 0.0, _far_covering_the_scene(cfg))
+    return dataclasses.replace(view, far=min(wanted, near * _MAX_DEPTH_RANGE_RATIO))
 
 
 def _build_views(cfg: RenderConfig, state: np.ndarray) -> dict[ViewName, CameraView]:
