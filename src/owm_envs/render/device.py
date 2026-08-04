@@ -70,11 +70,29 @@ def _pick_adapter(adapters: list, index: int):
     return pool[index]
 
 
-def _select(index: int) -> None:
+def _enumerate() -> list:
     import wgpu
+
+    return wgpu.gpu.enumerate_adapters_sync()
+
+
+def _select(index: int) -> None:
     from pygfx.renderers import wgpu as pygfx_wgpu
 
-    pygfx_wgpu.select_adapter(_pick_adapter(wgpu.gpu.enumerate_adapters_sync(), index))
+    pygfx_wgpu.select_adapter(_pick_adapter(_enumerate(), index))
+
+
+def _resolve(index: int | None) -> int | None:
+    """The requested GPU: the argument, else the env var, else none at all."""
+    if index is not None:
+        return index
+    raw = os.environ.get(ENV_VAR)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{ENV_VAR} must be an integer, got {raw!r}") from None
 
 
 def select_gpu(index: int | None = None) -> None:
@@ -89,15 +107,24 @@ def select_gpu(index: int | None = None) -> None:
     rendering on the first one.
     """
     global _SELECTED
-    if index is None:
-        raw = os.environ.get(ENV_VAR)
-        if raw is None:
-            return
-        try:
-            index = int(raw)
-        except ValueError:
-            raise ValueError(f"{ENV_VAR} must be an integer, got {raw!r}") from None
-    if index == _SELECTED:
+    index = _resolve(index)
+    if index is None or index == _SELECTED:
         return
     _select(index)
     _SELECTED = index
+
+
+def check_gpu_index(index: int | None = None) -> None:
+    """Raise if `index` names no available GPU, without pinning this process.
+
+    For the caller that renders in worker processes: those select their own
+    adapter, so the parent learns nothing about a mistyped index until the
+    pool starts -- which is after the rollout, an hour it should not have to
+    spend to find out. Enumeration answers the question on its own; only
+    `select_adapter` pins the process, and this deliberately does not call it,
+    so the workers still get their pick of the card.
+    """
+    index = _resolve(index)
+    if index is None:
+        return
+    _pick_adapter(_enumerate(), index)

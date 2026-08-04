@@ -12,7 +12,8 @@ the OpenGL views of the same cards.
 
 import pytest
 
-from owm_envs.render.device import _pick_adapter, select_gpu
+import owm_envs.render.device as device
+from owm_envs.render.device import _pick_adapter, check_gpu_index, select_gpu
 
 
 @pytest.fixture(autouse=True)
@@ -130,3 +131,32 @@ def test_unparseable_env_var_names_the_variable(monkeypatch):
     monkeypatch.setenv("OWM_ENVS_GPU_INDEX", "first")
     with pytest.raises(ValueError, match="OWM_ENVS_GPU_INDEX"):
         select_gpu(None)
+
+
+def test_check_gpu_index_rejects_a_bad_index_without_pinning(monkeypatch):
+    """A render pool selects its adapter inside its workers, i.e. only after
+    the rollout. The parent bounds-checks the index up front instead, and must
+    do it without taking the device the workers need."""
+    monkeypatch.setattr("owm_envs.render.device._enumerate", _dual_a100)
+    monkeypatch.setattr(
+        "owm_envs.render.device._select", lambda index: pytest.fail("must not select")
+    )
+    check_gpu_index(1)
+    with pytest.raises(ValueError, match="out of range"):
+        check_gpu_index(2)
+    assert device._SELECTED is None
+
+
+def test_check_gpu_index_without_index_or_env_enumerates_nothing(monkeypatch):
+    monkeypatch.delenv("OWM_ENVS_GPU_INDEX", raising=False)
+    monkeypatch.setattr(
+        "owm_envs.render.device._enumerate", lambda: pytest.fail("must not enumerate")
+    )
+    check_gpu_index(None)
+
+
+def test_check_gpu_index_reads_env_var(monkeypatch):
+    monkeypatch.setenv("OWM_ENVS_GPU_INDEX", "5")
+    monkeypatch.setattr("owm_envs.render.device._enumerate", _dual_a100)
+    with pytest.raises(ValueError, match="out of range"):
+        check_gpu_index(None)

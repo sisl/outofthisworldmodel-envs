@@ -205,22 +205,26 @@ def generate(
             "drop --no-lerobot so the frames are written."
         )
 
-    if render and render_workers < 1:
+    if render_workers < 1:
         raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
 
-    if render and render_workers == 1:
-        # pygfx pins one shared wgpu device per process the first time a scene
-        # is built, so the adapter has to be chosen up front -- and choosing it
-        # here also rejects a bad index before the rollout burns an hour.
-        #
-        # Only for the single-worker path, which renders in THIS process. With
-        # a pool, every renderer lives in a worker and this process must not
-        # touch the GPU at all; each worker selects the adapter itself, and a
-        # bad index surfaces when the pool starts instead of here.
-        from .render.device import select_gpu
+    if render:
+        from .render.device import check_gpu_index, select_gpu
 
         try:
-            select_gpu(gpu_index)
+            if render_workers == 1:
+                # pygfx pins one shared wgpu device per process the first time
+                # a scene is built, so the adapter has to be chosen up front.
+                # Only for the single-worker path, which renders in THIS
+                # process.
+                select_gpu(gpu_index)
+            else:
+                # With a pool every renderer lives in a worker, and this
+                # process must not take a device the workers need -- so the
+                # index is only bounds-checked here. That check still belongs
+                # before the rollout: the workers do not start until an hour
+                # of rollout is already spent.
+                check_gpu_index(gpu_index)
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
 
@@ -326,9 +330,11 @@ def generate(
 
             render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
             total = int(batch.lengths.sum())
-            typer.echo(f"[render] {name}: {total} frames at ~0.1 s/frame across "
-                       f"{render_workers} worker(s) "
-                       f"-> roughly {total * 0.1 / 60 / render_workers:.1f} min")
+            # Frame and worker counts only: per-frame cost moves with
+            # resolution and scene, and workers buy sub-linear speed-up
+            # (measured 1.6-2.6x over 2-8), so any duration printed here would
+            # be a prediction this code cannot make.
+            typer.echo(f"[render] {name}: {total} frames, {render_workers} worker(s)")
             # Lazy: the writer pulls one episode's clip at a time. Rendering
             # a whole split first would need ~98 GB of RAM at 500k frames.
             frames = iter_batch_frames(
