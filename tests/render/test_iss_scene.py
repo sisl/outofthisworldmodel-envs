@@ -115,7 +115,10 @@ def test_normal_map_from_height_tilts_along_y_for_a_latitude_gradient():
     height = np.tile(np.linspace(0.0, 1.0, 64, dtype=np.float32)[:, None], (1, 64))
     normals = _normal_map_from_height(height, strength=8.0)
     assert np.abs(normals[1:-1, 1:-1, 0]).max() < 1e-5
-    assert normals[1:-1, 1:-1, 1].max() < 0.0
+    # Positive, unlike the x channel: pygfx's getTangentFrame hands the shader
+    # a negated bitangent, so it subtracts this channel for us. Getting this
+    # backwards lights every north-south slope as its own mirror image.
+    assert normals[1:-1, 1:-1, 1].min() > 0.0
 
 
 def test_normal_map_from_height_wraps_across_the_longitude_seam():

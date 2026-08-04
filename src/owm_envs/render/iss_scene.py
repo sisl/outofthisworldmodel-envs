@@ -236,11 +236,15 @@ def _normal_map_from_height(height: np.ndarray, strength: float) -> np.ndarray:
     so the x-gradient is taken across the wrap. Letting `np.gradient` fall back
     to a one-sided difference there tilts the antimeridian's normals by up to
     48 degrees wherever it crosses relief, which lights as a seam.
+
+    The y component is +dh/dv, not -dh/dv: pygfx's `getTangentFrame` returns
+    `mat3x3f(T, -B, N)` -- a negated bitangent, the glTF flipped-green
+    convention -- so the shader already subtracts this channel.
     """
     h = np.asarray(height, dtype=np.float32)
     dy = np.gradient(h, axis=0)
     dx = np.gradient(np.pad(h, ((0, 0), (1, 1)), mode="wrap"), axis=1)[:, 1:-1]
-    normals = np.dstack([-dx * strength, -dy * strength, np.ones_like(h)])
+    normals = np.dstack([-dx * strength, dy * strength, np.ones_like(h)])
     normals /= np.linalg.norm(normals, axis=-1, keepdims=True)
     return normals.astype(np.float32)
 
