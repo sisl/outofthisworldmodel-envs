@@ -124,6 +124,28 @@ def test_a_toml_config_file_is_loaded_too(tmp_path):
     assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
 
 
+@pytest.mark.parametrize("filename, text, expected", [
+    ("env.txt", "dt: 0.05\n", "suffix"),
+    ("missing.yaml", None, "not found"),
+    ("env.yaml", "dt: sometimes\n", "dt"),
+])
+def test_an_unreadable_config_is_a_usage_error_not_a_traceback(
+    tmp_path, filename, text, expected
+):
+    # The wrong extension, the wrong path and a value the schema rejects are
+    # all the caller naming the wrong file.
+    path = tmp_path / filename
+    if text is not None:
+        path.write_text(text)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4",
+        "--split", "train:1:0", "--config", str(path), "--no-lerobot",
+    ])
+    assert result.exit_code != 0
+    assert not isinstance(result.exception, (OSError, ValueError))
+    assert "--config" in result.output and expected in result.output
+
+
 def test_summary_reports_the_episode_count_requested(tmp_path):
     out = tmp_path / "run"
     runner.invoke(

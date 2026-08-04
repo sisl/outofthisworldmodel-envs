@@ -274,7 +274,15 @@ def generate(
     if gen.num_envs < 1:
         raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
 
-    cfg = ISSConfig.load(config) if config is not None else ISSConfig()
+    try:
+        cfg = ISSConfig.load(config) if config is not None else ISSConfig()
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        # A missing file, a suffix load() does not dispatch on, unparseable
+        # text, or a field the schema rejects -- all of them are the caller
+        # naming the wrong file, not a bug to show a traceback for.
+        raise typer.BadParameter(
+            f"cannot read --config {config}: {exc}", param_hint="--config"
+        ) from exc
     if noise is not None:
         if noise not in PRESETS:
             raise typer.BadParameter(

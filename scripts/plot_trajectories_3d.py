@@ -32,11 +32,6 @@ import pandas as pd
 # the ordinal blue ramp episode colour interpolates along -- the light end is
 # the ramp's step 100, the dark end its step 600, which is the darkest step
 # that still clears 2:1 against this surface.
-# Points drawn per episode. 64 paths at this length is a page of a few
-# megabytes that a browser rotates smoothly; the full 7200-step episodes the
-# datasets hold are not.
-MAX_POINTS = 1000
-
 SURFACE = "#1a1a19"
 TEXT_PRIMARY = "#ffffff"
 TEXT_SECONDARY = "#c3c2b7"
@@ -44,6 +39,19 @@ RAMP_LIGHT = (0xCD, 0xE2, 0xFB)
 RAMP_DARK = (0x18, 0x4F, 0x95)
 DOCK_COLOR = "#eda100"
 ORIGIN_COLOR = "#e34948"
+
+# Points drawn per episode. 64 paths at this length is a page of a few
+# megabytes that a browser rotates smoothly; the full 7200-step episodes the
+# datasets hold are not.
+MAX_POINTS = 1000
+
+
+def positive_int(text: str) -> int:
+    """An argparse type for counts that are meaningless below one."""
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {value}")
+    return value
 
 
 def episode_color(position: float) -> str:
@@ -184,12 +192,12 @@ def main() -> int:
         help="split to plot (repeatable); default is every split in the run",
     )
     parser.add_argument(
-        "--max-episodes", type=int, default=64,
+        "--max-episodes", type=positive_int, default=64,
         help="episodes to draw per split, lowest index first (default 64). A "
              "published split holds thousands, which no browser will open.",
     )
     parser.add_argument(
-        "--max-points", type=int, default=MAX_POINTS,
+        "--max-points", type=positive_int, default=MAX_POINTS,
         help=f"points drawn per episode (default {MAX_POINTS}); longer paths are "
              "thinned by a stride, and the hover still reports the true step index",
     )
