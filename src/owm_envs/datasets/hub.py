@@ -67,8 +67,14 @@ _COLUMN_DOC = {
                  "1 orbit, 2 dock); 0 throughout a run driven by a single policy",
     "dock_target": "per-episode: the `[position (3), quaternion (4)]` port pose it was "
                    "flying to; all-NaN when the driver could not supply one",
+    # The first is present in every rendered run; the second only when the run
+    # was generated with --render-views composite.
     "observation.images.fpv": "egocentric RGB video from the chaser, MP4-encoded, "
                               "aligned 1:1 with the vector frames",
+    "observation.images.composite": "all six camera views tiled into one frame per "
+                                    "step (chaser and station, each first-person, "
+                                    "isometric and top-down), for review rather than "
+                                    "training; aligned 1:1 with the vector frames",
     "timestamp": "LeRobot bookkeeping: seconds since the start of the episode",
     "frame_index": "LeRobot bookkeeping: index within the episode, restarting at 0",
     "episode_index": "LeRobot bookkeeping: index of the episode within the split",

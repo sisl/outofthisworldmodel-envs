@@ -8,7 +8,7 @@ notebook actually wants, rather than a canvas object or a raw RGBA texture.
 from __future__ import annotations
 
 import dataclasses
-from typing import Literal
+from typing import Literal, Sequence
 
 import jax.numpy as jnp
 import numpy as np
@@ -271,10 +271,39 @@ class ISSRenderer:
         action: np.ndarray | None = None,
         view: ViewName = "DRAGON_ISO",
     ) -> np.ndarray:
+        return self.render_views(state, action, (view,))[view]
+
+    def render_views(
+        self,
+        state: np.ndarray,
+        action: np.ndarray | None = None,
+        views: Sequence[ViewName] = ("DRAGON_ISO",),
+    ) -> dict[ViewName, np.ndarray]:
+        """Render several of the named views of one state, posed once.
+
+        Posing the scene is per-state, not per-camera, so a caller that wants
+        more than one view of the same frame should ask for them together:
+        `render` in a loop would re-pose the capsule and rebuild the debug
+        overlays once per view for no change in what is drawn.
+        """
+        if self._closed:
+            raise RuntimeError("renderer is closed")
+
+        if isinstance(views, str):
+            # A bare string is iterable, so this would otherwise be reported as
+            # an unknown view named "D".
+            raise TypeError(f"views must be a sequence of view names, not {views!r}")
+
         all_views = _build_views(self.cfg, state)
-        if view not in all_views:
-            raise ValueError(f"unknown view {view!r}; expected one of {sorted(all_views)}")
-        return self.render_view(state, all_views[view], action)
+        unknown = [view for view in views if view not in all_views]
+        if unknown:
+            raise ValueError(
+                f"unknown view {unknown[0]!r}; expected one of {sorted(all_views)}"
+            )
+
+        self._iss_scene.update(state, action)
+        self._update_debug_overlays(action)
+        return {view: self._draw(all_views[view]) for view in views}
 
     def render_view(
         self,

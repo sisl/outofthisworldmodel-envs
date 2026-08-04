@@ -722,7 +722,7 @@ def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkey
 
     seen = {}
 
-    def fake_iter(batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None):
+    def fake_iter(batch, cfg, composite=False, workers=1, gpu_index=None):
         seen["workers"] = workers
         seen["gpu_index"] = gpu_index
         raise RuntimeError("stop-after-fan-out")
@@ -760,7 +760,7 @@ def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
         order.append((kind, allow_download))
         return tmp_path / f"earth_{kind}"
 
-    def fake_iter(batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None):
+    def fake_iter(batch, cfg, composite=False, workers=1, gpu_index=None):
         order.append(("iter_batch_frames", workers))
         raise RuntimeError("stop-after-fan-out")
 
@@ -774,6 +774,16 @@ def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
     assert isinstance(result.exception, RuntimeError), result.output
     assert order == [("color", True), ("clouds", True), ("bump", True),
                      ("iter_batch_frames", 4)]
+
+
+def _fpv_clips(length=4, size=32):
+    """A stand-in episode of video. 32x32 and even-sized: the media tee really
+    encodes these, and libx264 cannot subsample an odd frame."""
+    import numpy as np
+
+    from owm_envs.datasets.video import FPV_KEY
+
+    return {FPV_KEY: np.zeros((length, size, size, 3), dtype=np.uint8)}
 
 
 def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
@@ -794,8 +804,8 @@ def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None: iter(
-            [None] * batch.num_episodes
+        lambda batch, cfg, composite=False, workers=1, gpu_index=None: iter(
+            [_fpv_clips() for _ in range(batch.num_episodes)]
         ),
     )
     result = runner.invoke(app, [
@@ -839,8 +849,8 @@ def test_render_line_names_frames_and_workers_without_a_time_estimate(
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, view="DRAGON_FPV", workers=1, gpu_index=None: iter(
-            [None] * batch.num_episodes
+        lambda batch, cfg, composite=False, workers=1, gpu_index=None: iter(
+            [_fpv_clips() for _ in range(batch.num_episodes)]
         ),
     )
     result = runner.invoke(app, [
@@ -849,7 +859,9 @@ def test_render_line_names_frames_and_workers_without_a_time_estimate(
     ])
     assert result.exit_code == 0, result.output
     line = next(ln for ln in result.output.splitlines() if ln.startswith("[render]"))
-    assert re.fullmatch(r"\[render\] train: \d+ frames, 2 worker\(s\)", line), line
+    assert re.fullmatch(
+        r"\[render\] train: \d+ frames, fpv, 2 worker\(s\)", line
+    ), line
 
 
 def test_bad_gpu_index_fails_before_the_rollout_with_a_worker_pool(tmp_path, monkeypatch):
@@ -1020,3 +1032,40 @@ def test_push_rejects_a_run_whose_own_artifacts_do_not_read(
     assert not isinstance(result.exception, (OSError, ValueError))
     assert "cannot read the run" in result.output
     assert recorded_push == {}
+
+
+def test_render_views_composite_is_opt_in(tmp_path, monkeypatch):
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    import owm_envs.datasets.lerobot_writer as writer
+    seen = {}
+
+    def fake_write(root, repo_id, batch, fps, task_name="iss_docking", frames=None):
+        for _ in frames:
+            pass
+        return root
+
+    monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
+    monkeypatch.setattr(
+        "owm_envs.datasets.video.iter_batch_frames",
+        lambda batch, cfg, composite=False, workers=1, gpu_index=None: (
+            seen.update(composite=composite),
+            iter([_fpv_clips() for _ in range(batch.num_episodes)]),
+        )[1],
+    )
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-views", "composite",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["composite"] is True
+
+
+def test_an_unknown_render_view_is_a_usage_error(tmp_path):
+    """Caught before the rollout: the value is only read once an hour of
+    rollout is already spent, and a typo must not cost that."""
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--render", "--render-views", "DRAGON_FPV",
+    ])
+    assert result.exit_code != 0
+    assert "unknown --render-views value" in result.output
