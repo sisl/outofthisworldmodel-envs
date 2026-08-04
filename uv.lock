@@ -1933,6 +1933,7 @@ dependencies = [
 
 [package.optional-dependencies]
 datasets = [
+    { name = "huggingface-hub" },
     { name = "lerobot" },
 ]
 render = [
@@ -1952,6 +1953,7 @@ dev = [
 requires-dist = [
     { name = "astrojax", specifier = ">=0.8.0" },
     { name = "gymnasium", specifier = ">=1.0" },
+    { name = "huggingface-hub", marker = "extra == 'datasets'", specifier = ">=0.34.2" },
     { name = "imageio", marker = "extra == 'render'" },
     { name = "jax", specifier = ">=0.4.30" },
     { name = "lerobot", marker = "extra == 'datasets'", specifier = ">=0.4.4,<0.5" },

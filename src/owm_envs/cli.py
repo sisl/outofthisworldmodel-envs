@@ -2,6 +2,7 @@
 
     owm-envs generate --out logs/run1 --split train:100000t:0 --split val:20000t:1
     owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
+    owm-envs push logs/run1
     owm-envs list
 
 `--driver auto` selects the fused JAX path when the backend supports it and
@@ -350,6 +351,29 @@ def generate(
 
     metadata.write(out)
     typer.echo(f"[done] {out}")
+
+
+@app.command()
+def push(
+    run_dir: Path = typer.Argument(..., help="Finished run directory (must contain summary.json)."),
+    name: Optional[str] = typer.Option(
+        None, help="Repo name (default: derived owm-{env}-{noise}-{goal}-dt{ms}ms)."),
+    namespace: Optional[str] = typer.Option(
+        None, help="Hub namespace (default: the HF_TOKEN account)."),
+    private: bool = typer.Option(
+        False, "--private/--public", help="Create the repo private (default public)."),
+) -> None:
+    """Upload a run directory to the HuggingFace Hub as a dataset repo."""
+    from .datasets.hub import push_run
+
+    try:
+        repo_id = push_run(run_dir, name=name, namespace=namespace, private=private)
+    except FileNotFoundError as exc:
+        # An unfinished run, or one with no LeRobot split: the caller named the
+        # wrong directory or generated it wrong, so say so as a usage error
+        # rather than as a traceback.
+        raise typer.BadParameter(str(exc), param_hint="RUN_DIR") from exc
+    typer.echo(f"[push] https://huggingface.co/datasets/{repo_id}")
 
 
 def _simulation_fps(dt: float) -> int | None:

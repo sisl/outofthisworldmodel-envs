@@ -22,7 +22,10 @@ render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow", "trimesh"]
 # how this version converts declared shapes to HuggingFace types. uv.lock
 # holds 0.4.4 for development, but a published install resolves afresh and
 # would otherwise be free to take a release that changes any of that.
-datasets = ["lerobot>=0.4.4,<0.5"]
+# huggingface-hub is named here as well as reached through lerobot:
+# datasets/hub.py imports it directly, and a dependency this package calls
+# itself must not be one lerobot is free to drop.
+datasets = ["lerobot>=0.4.4,<0.5", "huggingface-hub>=0.34.2"]
 
 [project.scripts]
 owm-envs = "owm_envs.cli:app"

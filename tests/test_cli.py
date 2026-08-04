@@ -832,3 +832,25 @@ def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
         "--split", "train:1:0", "--no-lerobot",
     ])
     assert result.exit_code == 0, result.output
+
+
+def test_push_reports_the_dataset_url(tmp_path, monkeypatch):
+    pushed = {}
+
+    def fake_push(run_dir, name=None, namespace=None, private=False):
+        pushed.update(run_dir=run_dir, name=name, namespace=namespace, private=private)
+        return "acct/owm-iss-coop-goal-dt50ms"
+
+    monkeypatch.setattr("owm_envs.datasets.hub.push_run", fake_push)
+    result = runner.invoke(app, ["push", str(tmp_path), "--private"])
+
+    assert result.exit_code == 0, result.output
+    assert "https://huggingface.co/datasets/acct/owm-iss-coop-goal-dt50ms" in result.output
+    assert pushed == {"run_dir": tmp_path, "name": None, "namespace": None, "private": True}
+
+
+def test_push_rejects_a_directory_that_is_not_a_finished_run(tmp_path):
+    result = runner.invoke(app, ["push", str(tmp_path)])
+    assert result.exit_code != 0
+    assert "did not finish" in result.output
+    assert not isinstance(result.exception, FileNotFoundError)
