@@ -31,7 +31,7 @@ from pygfx.renderers.wgpu import get_shared
 from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
 from owm_envs.render import asset_path
-from owm_envs.render.earth import earth_texture_path
+from owm_envs.render.earth import MAP_WIDTHS, earth_texture_path
 from owm_envs.render.iss_frame import ISS_RECENTRE_OFFSET, UPRIGHT_EULER_XYZ
 from owm_envs.render.loaders import load_cubemap_from_faces, load_glb_scene
 
@@ -181,6 +181,28 @@ def _visible_geometry_center(obj: gfx.WorldObject) -> np.ndarray | None:
     return (total / count).astype(np.float32)
 
 
+# Pillow warns above 89.5 Mpx and refuses outright above twice that, on the
+# assumption that a file that big is a decompression bomb aimed at whoever
+# opens it. The Earth maps are first-party assets baked by
+# `owm_envs.render.downsample` to the widths in `MAP_WIDTHS` -- the widest is
+# 16384x8192 = 134 Mpx -- so the cap is raised to exactly what those can be
+# rather than removed: an asset that outgrows the widths this package itself
+# produces should still trip the check.
+_MAX_MAP_PIXELS = max(MAP_WIDTHS.values()) * (max(MAP_WIDTHS.values()) // 2)
+
+
+def _read_map(path: Path) -> np.ndarray:
+    """Read one of the Earth maps, whatever its pixel count.
+
+    Pillow's cap is a process-wide global, so raising it here raises it for
+    everything in the process; `None` means a caller has already lifted it
+    entirely and must not be walked back.
+    """
+    if Image.MAX_IMAGE_PIXELS is not None:
+        Image.MAX_IMAGE_PIXELS = max(Image.MAX_IMAGE_PIXELS, _MAX_MAP_PIXELS)
+    return np.asarray(iio.imread(path))
+
+
 def _max_texture_size() -> int:
     return int(get_shared().device.limits["max-texture-dimension-2d"])
 
@@ -210,7 +232,7 @@ def _fit_to_device_limit(arr: np.ndarray, path: Path) -> np.ndarray:
 
 
 def _load_rgb_texture(path: Path) -> gfx.Texture:
-    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    arr = _fit_to_device_limit(_read_map(path), path)
     if arr.ndim == 2:
         arr = np.repeat(arr[..., None], 3, axis=2)
     arr = np.ascontiguousarray(arr[..., :3].astype(np.uint8))
@@ -220,7 +242,7 @@ def _load_rgb_texture(path: Path) -> gfx.Texture:
 def _load_cloud_texture(path: Path, *, opacity: float) -> gfx.Texture:
     """The cloud map is stored as plain RGB; its brightness is coverage, so
     turn that into the alpha channel of a white RGBA texture."""
-    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    arr = _fit_to_device_limit(_read_map(path), path)
     brightness = arr[..., :3].astype(np.float32).mean(axis=-1) if arr.ndim == 3 else arr.astype(np.float32)
     alpha = np.clip(np.rint(brightness * float(opacity)), 0.0, 255.0).astype(np.uint8)
     rgb = np.full(alpha.shape + (3,), 255, dtype=np.uint8)
@@ -261,7 +283,7 @@ def _earth_normal_map(path: Path, *, show: bool, strength: float) -> gfx.Texture
         warnings.warn(f"earth bump map missing at {path}; rendering without a normal map")
         return None
 
-    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    arr = _fit_to_device_limit(_read_map(path), path)
     if arr.ndim == 3:
         arr = arr[..., 0]
     normals = _normal_map_from_height(arr.astype(np.float32) / 255.0, strength)
