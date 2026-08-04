@@ -207,9 +207,9 @@ class ISSRenderer:
     default render should show the scene, not the control signal.
     """
 
-    def __init__(self, cfg: RenderConfig) -> None:
+    def __init__(self, cfg: RenderConfig, *, download_textures: bool = True) -> None:
         self.cfg = cfg
-        self._iss_scene = ISSScene(cfg)
+        self._iss_scene = ISSScene(cfg, download_textures=download_textures)
         self._closed = False
 
         self.show_force_arrows = False

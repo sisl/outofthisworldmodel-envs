@@ -122,7 +122,12 @@ def _worker_init(cfg_json: str, view: str, gpu_index: int | None) -> None:
     global _WORKER_RENDERER, _WORKER_CFG, _WORKER_VIEW
     _WORKER_CFG = RenderConfig.model_validate_json(cfg_json)
     _WORKER_VIEW = view
-    _WORKER_RENDERER = ISSRenderer(_WORKER_CFG)
+    # Downloads off: the parent resolved all three Earth textures before the
+    # pool started. A worker allowed to fetch its own would put them back the
+    # moment the parent's fetch failed -- every worker retrying the same
+    # multi-gigabyte download at once, and a worker whose retry succeeded
+    # rendering at a different Earth resolution from one whose retry did not.
+    _WORKER_RENDERER = ISSRenderer(_WORKER_CFG, download_textures=False)
 
 
 def _worker_render(payload: tuple[np.ndarray, np.ndarray, int]) -> np.ndarray:

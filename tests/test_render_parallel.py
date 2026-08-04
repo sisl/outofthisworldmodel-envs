@@ -95,6 +95,28 @@ def test_abandoning_the_iterator_still_closes_the_renderer(fake_renderer):
     assert fake_renderer.closes == 1
 
 
+def test_a_worker_never_downloads_its_own_earth_textures(monkeypatch):
+    """`generate` resolves all three Earth textures before starting the pool.
+    A worker that resolved with downloads enabled would undo that: when the
+    parent's fetch failed the source is still absent, so every worker would
+    retry the multi-gigabyte download at once, and workers whose retries
+    disagreed would render one dataset at two different Earth resolutions."""
+    import owm_envs.datasets.video as video
+
+    seen = {}
+
+    class _Recorder:
+        def __init__(self, cfg, *, download_textures=True):
+            seen["download_textures"] = download_textures
+
+    monkeypatch.setattr("owm_envs.render.renderer.ISSRenderer", _Recorder)
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
+    from owm_envs.render.iss_scene import RenderConfig
+
+    video._worker_init(RenderConfig().model_dump_json(), "DRAGON_FPV", None)
+    assert seen["download_textures"] is False
+
+
 def test_parallel_matches_sequential():
     """Needs a real GPU renderer: the point is that a worker process renders
     the same episode to the same bytes as the in-process path."""

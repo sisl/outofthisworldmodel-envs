@@ -320,7 +320,7 @@ class ISSScene:
     """The pygfx scene graph for the ISS docking environment: the station,
     the Dragon capsule, Earth, the Moon, and the starfield background."""
 
-    def __init__(self, cfg: RenderConfig) -> None:
+    def __init__(self, cfg: RenderConfig, *, download_textures: bool = True) -> None:
         self.cfg = cfg
 
         # At the subpoint the globe's local axes are east (+X), north (+Y),
@@ -335,10 +335,13 @@ class ISSScene:
 
         # Resolved once and held: these calls may fetch and downsample a
         # multi-gigabyte source, and a per-frame lookup would also repeat a
-        # failed network round-trip on every frame.
-        self._earth_color_path = earth_texture_path("color", allow_download=True)
-        self._earth_clouds_path = earth_texture_path("clouds", allow_download=True)
-        self._earth_bump_path = earth_texture_path("bump", allow_download=True)
+        # failed network round-trip on every frame. `download_textures` is
+        # cleared by a render worker, whose parent resolved all three before
+        # the pool started -- a worker that fetched its own would restore the
+        # race that resolution removed.
+        self._earth_color_path = earth_texture_path("color", allow_download=download_textures)
+        self._earth_clouds_path = earth_texture_path("clouds", allow_download=download_textures)
+        self._earth_bump_path = earth_texture_path("bump", allow_download=download_textures)
 
         # Loaded assets face +Y; rotate them onto this environment's body +Z
         # so the capsule's nose and the station's long axis agree with the
