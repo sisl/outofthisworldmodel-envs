@@ -224,3 +224,5 @@ pocs/
 # baked from them; reduced-resolution fallback maps are committed instead
 src/owm_envs/render/resources/earth/sources/
 src/owm_envs/render/resources/earth/maps/*_full.*
+# temporaries from an interrupted bake
+src/owm_envs/render/resources/earth/maps/*.part

@@ -36,8 +36,17 @@ def _write_fallback(resources: Path, kind: str, size=(8, 4)) -> Path:
     return path
 
 
-def _refuse_network(*args, **kwargs):
-    raise AssertionError("resolution reached the network")
+@pytest.fixture
+def network_calls(monkeypatch):
+    """Records attempted downloads (and fails them) so a test can assert none."""
+    calls = []
+
+    def record(url, filename):
+        calls.append(url)
+        raise OSError("network access is not allowed in tests")
+
+    monkeypatch.setattr("urllib.request.urlretrieve", record)
+    return calls
 
 
 def test_bump_bakes_grayscale_png_from_source(fake_resources):
@@ -89,8 +98,7 @@ def test_production_bake_targets_are_pinned():
     assert set(earth._FALLBACK_NAMES) == kinds
 
 
-def test_full_map_wins_over_both_the_source_and_the_fallback(fake_resources, monkeypatch):
-    monkeypatch.setattr("urllib.request.urlretrieve", _refuse_network)
+def test_full_map_wins_over_both_the_source_and_the_fallback(fake_resources, network_calls):
     full = fake_resources / "earth" / "maps" / "earth_color_full.jpg"
     Image.new("RGB", (8, 4)).save(full)
     _write_source(fake_resources / "earth" / "sources" / "EarthColorMap-80k.tif", "RGB")
@@ -98,6 +106,7 @@ def test_full_map_wins_over_both_the_source_and_the_fallback(fake_resources, mon
 
     assert earth_texture_path("color", allow_download=True) == full
     assert Image.open(full).size == (8, 4)  # untouched: no re-bake over a present map
+    assert network_calls == []
 
 
 def test_a_source_bakes_the_full_map_in_preference_to_the_fallback(fake_resources):
@@ -116,10 +125,12 @@ def test_no_full_map_and_no_source_resolves_to_the_fallback(fake_resources, kind
     assert path.exists()
 
 
-def test_missing_everything_returns_the_fallback_path(fake_resources):
-    # No source, no full map, no fallback: returns the (nonexistent) fallback
-    # path rather than raising, so a caller can render without the texture.
-    path = earth_texture_path("clouds")
+def test_a_missing_fallback_warns_about_git_lfs(fake_resources):
+    # The fallback is committed through git-lfs, so the realistic way to lose
+    # it is a clone without lfs. Returning the path silently would surface as
+    # an image-decoder error deep inside the texture loader instead.
+    with pytest.warns(UserWarning, match="git lfs"):
+        path = earth_texture_path("clouds")
     assert path.name == "earth_clouds_fallback.jpg"
     assert not path.exists()
 
@@ -129,14 +140,14 @@ def test_unknown_texture_kind_raises():
         earth_texture_path("infrared")
 
 
-def test_present_source_short_circuits_the_download(fake_resources, monkeypatch):
+def test_present_source_short_circuits_the_download(fake_resources, network_calls):
     # The default render path asks for a download; a machine that already has
     # the sources side-loaded must never touch the network.
-    monkeypatch.setattr("urllib.request.urlretrieve", _refuse_network)
     _write_source(fake_resources / "earth" / "sources" / "EarthColorMap-80k.tif", "RGB")
     path = earth_texture_path("color", allow_download=True)
     assert path.name == "earth_color_full.jpg"
     assert Image.open(path).size == (64, 32)
+    assert network_calls == []
 
 
 def test_download_failure_falls_back_to_the_committed_fallback(fake_resources, monkeypatch):
@@ -166,7 +177,9 @@ def test_a_downloaded_source_is_baked_into_the_full_map(fake_resources, monkeypa
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_committed_fallbacks_resolve_with_no_sources_and_no_network(kind, tmp_path, monkeypatch):
+def test_committed_fallbacks_resolve_with_no_sources_and_no_network(
+    kind, tmp_path, monkeypatch, network_calls
+):
     # Fresh-clone regression: neither the gitignored full maps nor the
     # multi-gigabyte sources are in the repository, so the committed fallbacks
     # alone have to satisfy every texture lookup -- offline.
@@ -176,16 +189,13 @@ def test_committed_fallbacks_resolve_with_no_sources_and_no_network(kind, tmp_pa
     for name in earth._FALLBACK_NAMES.values():
         (maps / name).symlink_to(real_maps / name)
     monkeypatch.setattr(earth, "resources_dir", lambda: tmp_path)
-    monkeypatch.setattr("urllib.request.urlretrieve", _refuse_network)
 
     assert earth_texture_path(kind).exists()
+    assert network_calls == []
 
-    def offline(*args, **kwargs):
-        raise OSError("no route to host")
-
-    monkeypatch.setattr("urllib.request.urlretrieve", offline)
     with pytest.warns(UserWarning):
         assert earth_texture_path(kind, allow_download=True).exists()
+    assert len(network_calls) == 1
 
 
 def test_downloader_returns_none_on_failure_rather_than_raising(fake_resources, monkeypatch):
@@ -208,6 +218,27 @@ def test_downloader_leaves_no_part_file_behind(fake_resources, monkeypatch):
     with pytest.warns(UserWarning):
         _ensure_earth_source("EarthColorMap-80k.tif")
     assert list((fake_resources / "earth" / "sources").glob("*.part")) == []
+
+
+def test_concurrent_downloads_do_not_share_a_temp_file(fake_resources, monkeypatch):
+    # Parallel render workers each resolve their own textures; a shared
+    # `.part` name lets one worker's cleanup delete another's live download.
+    seen = []
+
+    def fetch(url, filename):
+        seen.append(Path(filename))
+        _write_source(Path(filename), "RGB", fmt="TIFF")
+
+    monkeypatch.setattr("urllib.request.urlretrieve", fetch)
+    source = fake_resources / "earth" / "sources" / "EarthColorMap-80k.tif"
+    _ensure_earth_source("EarthColorMap-80k.tif")
+    source.unlink()
+    _ensure_earth_source("EarthColorMap-80k.tif")
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert source not in seen
+    assert source.exists()
 
 
 def test_tier2_miss_warns_when_source_dir_has_unmatched_files(fake_resources):

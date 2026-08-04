@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from uuid import uuid4
 
 JPEG_QUALITY = 92
 
@@ -31,8 +32,10 @@ def bake_full_map(source: Path, output: Path, max_width: int, mode: str = "RGB")
 
     is_jpeg = output.suffix.lower() in (".jpg", ".jpeg")
     # Write beside the target and rename: a 16384px bake takes minutes, and
-    # parallel render workers must never observe a half-written map.
-    tmp = output.with_suffix(output.suffix + ".part")
+    # parallel render workers must never observe a half-written map. The name
+    # is per-writer, so two workers baking at once cannot corrupt or delete
+    # each other's temporary.
+    tmp = output.with_suffix(f"{output.suffix}.{uuid4().hex}.part")
     try:
         if is_jpeg:
             im.save(tmp, format="JPEG", quality=JPEG_QUALITY)

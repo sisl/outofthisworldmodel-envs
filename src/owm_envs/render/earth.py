@@ -14,10 +14,12 @@ Three-tier strategy:
 
 from __future__ import annotations
 
+import os
 import urllib.request
 import warnings
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from owm_envs.render import resources_dir
 
@@ -98,11 +100,15 @@ def _ensure_earth_source(name: str) -> Path | None:
     dest = _source_dir() / name
     if dest.exists():
         return dest
-    tmp = dest.with_suffix(dest.suffix + ".part")
+    # Per-download name: parallel render workers each resolve their own
+    # textures, and a shared temporary lets one worker's cleanup delete
+    # another's live download.
+    tmp = dest.with_suffix(f"{dest.suffix}.{uuid4().hex}.part")
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
+        warnings.warn(f"fetching {name} from {_EARTH_ASSET_BASE_URL}; this is a large file")
         urllib.request.urlretrieve(f"{_EARTH_ASSET_BASE_URL}/{name}", tmp)
-        tmp.rename(dest)  # atomic: a crash mid-download leaves no false complete file
+        os.replace(tmp, dest)  # atomic: a crash mid-download leaves no false complete file
         return dest
     except Exception as exc:  # HTTPError, URLError, OSError, cap exceeded...
         tmp.unlink(missing_ok=True)
@@ -130,4 +136,10 @@ def earth_texture_path(kind: TextureKind, *, allow_download: bool = False) -> Pa
     if baked is not None:
         return baked
 
-    return _maps_dir() / _FALLBACK_NAMES[kind]
+    fallback = _maps_dir() / _FALLBACK_NAMES[kind]
+    if not fallback.exists():
+        # The fallbacks are committed through git-lfs, so a clone without lfs
+        # loses them; say so here rather than let an image decoder fail on a
+        # pointer file several frames later.
+        warnings.warn(f"{fallback} is missing; if this is a fresh clone, run `git lfs pull`")
+    return fallback

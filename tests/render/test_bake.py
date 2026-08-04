@@ -80,6 +80,29 @@ def test_bake_leaves_no_temp_file_behind_on_success(tmp_path):
     assert list(tmp_path.glob("*.part")) == []
 
 
+def test_concurrent_bakes_do_not_share_a_temp_file(tmp_path, monkeypatch):
+    # Two workers baking the same map must not write through one temp path:
+    # whichever finishes first would replace the file the other is still
+    # writing, and either one's cleanup would delete the other's data.
+    source = tmp_path / "source.tif"
+    _write_source(source, (180, 90))
+    output = tmp_path / "earth_color_full.jpg"
+    seen = []
+    real_save = Image.Image.save
+
+    def record(self, fp, *args, **kwargs):
+        seen.append(Path(fp))
+        return real_save(self, fp, *args, **kwargs)
+
+    monkeypatch.setattr(Image.Image, "save", record)
+    bake_full_map(source, output, 32)
+    bake_full_map(source, output, 32)
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert output not in seen
+
+
 def test_bake_failure_leaves_neither_a_partial_nor_a_stale_map(tmp_path, monkeypatch):
     # Task 11 renders episodes in parallel workers; a half-written map picked up
     # by a sibling worker would corrupt frames instead of failing loudly.
