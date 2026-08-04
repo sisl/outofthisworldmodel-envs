@@ -183,6 +183,11 @@ def generate(
         help="Render an egocentric video feed (slow: ~0.1 s/frame; off by default).",
     ),
     render_view: str = typer.Option("DRAGON_FPV", help="Camera view to render, when --render is set."),
+    gpu_index: Optional[int] = typer.Option(
+        None,
+        help="GPU adapter index for rendering (default: wgpu's own choice). "
+             "Counts discrete GPUs only. Also settable via OWM_ENVS_GPU_INDEX.",
+    ),
 ) -> None:
     """Roll out trajectories for every split and write a dataset run directory."""
     if env != "iss":
@@ -193,6 +198,14 @@ def generate(
             "rendered frames, so rendering would be pure wasted cost. Drop --render, or "
             "drop --no-lerobot so the frames are written."
         )
+
+    if render:
+        # pygfx pins one shared wgpu device per process the first time a scene
+        # is built, so the adapter has to be chosen up front -- and choosing it
+        # here also rejects a bad index before the rollout burns an hour.
+        from .render.device import select_gpu
+
+        select_gpu(gpu_index)
 
     if lerobot:
         # lerobot is declared only in the optional 'datasets' extra, so a
