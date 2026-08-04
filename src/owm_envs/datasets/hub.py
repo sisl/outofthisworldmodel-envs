@@ -83,6 +83,29 @@ _STATE_VECTOR_DOC = (
     "from the config"
 )
 
+_ASSETS_SECTION = """## Assets and attribution
+
+This dataset is a derived work of third-party 3D assets. The station geometry every
+episode flies against -- the collision hull and the docking-port poses -- is derived
+from `ISS_stationary.glb`, and a rendered video additionally shows the chaser, the
+Moon, the starfield and the Earth:
+
+| Asset | Source |
+|---|---|
+| ISS mesh | NASA 3D Resources / science.nasa.gov |
+| Chaser mesh | Sketchfab -- "SpaceX Dragon 2 Exterior" |
+| Starfield | NASA SVS #4851 |
+| Moon | texture from NASA SVS #14959 (CGI Moon Kit); mesh geometry source not recorded |
+| Earth maps | downsampled from equirectangular imagery collected from one of \
+sketchfab.com, science.nasa.gov, cgtrader.com and maps.drsys.eu -- which one produced \
+each map was not recorded |
+
+**No licence is asserted for this dataset**, and none is declared in this card's
+metadata: the upstream terms of the assets above were never recorded when they were
+collected. Sketchfab and CGTrader items carry per-item terms, some requiring
+attribution, and NASA imagery has its own usage guidelines. Resolve the terms of every
+asset above before redistributing this data or a model trained on it."""
+
 _STATE_DOC = (
     "position (3, m), velocity (3, m/s), attitude quaternion (4, w-first, body to "
     "world) and body rate (3, rad/s), all station-relative"
@@ -227,8 +250,11 @@ def _dataset_card(name: str, run_dir: Path, env_cfg: ISSConfig) -> str:
     )
     render_flag = " --render" if info.get("video_path") else ""
 
+    # No `license:` key: every dataset here is a derived work of assets whose
+    # upstream terms were never recorded, so any value would be an assertion
+    # nobody can back. _ASSETS_SECTION says so in the body rather than leaving
+    # the omission to be noticed.
     return f"""---
-license: mit
 pretty_name: {name}
 tags:
 - world-models
@@ -301,6 +327,8 @@ with the data, so the run is reproducible from this repo alone:
 owm-envs generate --out run --config env_config.yaml \\
     --gen-config generation_config.yaml{render_flag}
 ```
+
+{_ASSETS_SECTION}
 """
 
 

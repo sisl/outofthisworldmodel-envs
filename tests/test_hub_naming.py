@@ -208,6 +208,23 @@ def test_a_noise_free_run_says_the_channels_agree(tmp_path):
     assert "goal-error block" not in card
 
 
+def test_the_card_asserts_no_licence(tmp_path):
+    # The station geometry these episodes fly against, and the video rendered
+    # from it, are derived from third-party assets whose upstream terms were
+    # never recorded (see the repository README). A `license:` key in the
+    # frontmatter would be an assertion nobody can back.
+    frontmatter = _card(_write_run(tmp_path)).split("---")[1]
+    assert "license" not in frontmatter
+
+
+def test_the_card_names_the_asset_sources_and_their_unrecorded_terms(tmp_path):
+    card = _card(_write_run(tmp_path))
+    assert "## Assets and attribution" in card
+    for source in ("ISS_stationary.glb", "Sketchfab", "CGTrader", "NASA SVS"):
+        assert source in card, f"{source} unattributed"
+    assert "never recorded" in card
+
+
 def test_the_card_names_the_source_commit(tmp_path):
     assert COMMIT in _card(_write_run(tmp_path))
 
