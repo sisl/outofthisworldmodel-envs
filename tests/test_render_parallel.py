@@ -272,6 +272,54 @@ def test_writer_closes_the_clip_source_when_an_episode_fails(tmp_path):
     assert closed == [True]
 
 
+def test_writer_closes_the_clip_source_when_the_first_episode_fails(tmp_path):
+    """Episode 0 fails while the hand-back generator is still suspended on the
+    peeked clip, before it ever delegates to the source. Closing the hand-back
+    alone leaves the source open, and the caller still holds it -- the CLI
+    keeps its `iter_batch_frames(...)` binding for the whole split -- so
+    nothing else collects it either.
+    """
+    write_lerobot_split = _writer()
+
+    batch = _fake_batch()
+    closed = []
+
+    def clips():
+        try:
+            yield np.zeros((int(batch.lengths[0]) + 1, 32, 32, 3), dtype=np.uint8)
+        finally:
+            closed.append(True)
+
+    source = clips()
+    with pytest.raises(ValueError) as excinfo:
+        write_lerobot_split(
+            tmp_path / "first", "iss/first", batch, fps=20, frames=source
+        )
+    assert "episode 0" in str(excinfo.value)
+    assert closed == [True]
+
+
+def test_a_clip_source_that_fails_to_close_does_not_mask_the_write_error(tmp_path):
+    """Cleanup must not replace the failure being reported. The write error is
+    what names the real fault; a pool that also fails on the way down must not
+    be what a ten-hour render is left holding."""
+    write_lerobot_split = _writer()
+
+    batch = _fake_batch()
+
+    def clips():
+        try:
+            yield np.zeros((int(batch.lengths[0]), 32, 32, 3), dtype=np.uint8)
+            yield np.zeros((int(batch.lengths[1]) + 1, 32, 32, 3), dtype=np.uint8)
+        finally:
+            raise RuntimeError("the pool failed to shut down")
+
+    with pytest.raises(ValueError, match="episode 1"):
+        write_lerobot_split(
+            tmp_path / "mask", "iss/mask", batch, fps=20, frames=clips()
+        )
+
+
 def test_writer_rejects_a_mismatched_frame_shape_from_an_iterator(tmp_path):
     write_lerobot_split = _writer()
 

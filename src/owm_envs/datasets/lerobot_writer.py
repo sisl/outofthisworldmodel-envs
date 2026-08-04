@@ -94,6 +94,7 @@ staying the sole lerobot call site.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
@@ -191,15 +192,28 @@ def write_lerobot_split(
             raise ValueError(
                 f"frames has more clips than the batch's {batch.num_episodes} episodes"
             )
-    finally:
+    except BaseException:
         # A write that dies part-way leaves the source suspended, and the
         # raised exception's traceback keeps this frame -- and so the source --
         # alive for as long as the exception is held. Closing it here runs its
         # cleanup at the failure rather than whenever the traceback is dropped.
-        if clips is not None and hasattr(clips, "close"):
-            clips.close()
+        #
+        # Suppressed, and only on this path: a source that also fails on the
+        # way down must not replace the error that says what actually went
+        # wrong. On the path below there is no such error to protect, so a
+        # failed shutdown is itself the news and propagates.
+        with contextlib.suppress(Exception):
+            _close(clips)
+        raise
+    _close(clips)
 
     return root
+
+
+def _close(clips: Iterator[np.ndarray] | None) -> None:
+    """Close `clips` if it is the kind of iterator that can be closed."""
+    if clips is not None and hasattr(clips, "close"):
+        clips.close()
 
 
 def _write_episode(
@@ -274,10 +288,20 @@ def _hand_back(head: np.ndarray, clips: Iterator[np.ndarray]) -> Iterator[np.nda
     `itertools.chain((head,), clips)` would do the same but keeps `head` in
     its argument tuple for the whole write, pinning one episode of video --
     on a 7200-step episode at 256x256 that is 1.4 GiB held for nothing.
+
+    Closing this before it reaches `yield from` -- which is where a failure on
+    episode 0 leaves it -- would otherwise close only this wrapper, and the
+    caller still holds the source (the CLI keeps its `iter_batch_frames(...)`
+    binding for the whole split), so nothing would collect it. Past that
+    point `yield from` propagates the close on its own and the `finally` is a
+    no-op.
     """
-    yield head
-    del head
-    yield from clips
+    try:
+        yield head
+        del head
+        yield from clips
+    finally:
+        _close(clips)
 
 
 def _next_clip(
