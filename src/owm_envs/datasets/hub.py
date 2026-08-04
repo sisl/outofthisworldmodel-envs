@@ -67,10 +67,25 @@ _COLUMN_DOC = {
                  "1 orbit, 2 dock); 0 throughout a run driven by a single policy",
     "dock_target": "per-episode: the `[position (3), quaternion (4)]` port pose it was "
                    "flying to; all-NaN when the driver could not supply one",
-    # The first is present in every rendered run; the second only when the run
-    # was generated with --render-views composite.
+    # A rendered run writes all of these unless --render-views narrowed it;
+    # only the first is the training view.
     "observation.images.fpv": "egocentric RGB video from the chaser, MP4-encoded, "
                               "aligned 1:1 with the vector frames",
+    "observation.images.dragon_iso": "isometric RGB video following the chaser, for "
+                                     "review rather than training; aligned 1:1 with "
+                                     "the vector frames",
+    "observation.images.dragon_top": "top-down RGB video following the chaser, for "
+                                     "review rather than training; aligned 1:1 with "
+                                     "the vector frames",
+    "observation.images.iss_fpv": "RGB video from the station looking back at the "
+                                  "chaser, for review rather than training; aligned "
+                                  "1:1 with the vector frames",
+    "observation.images.iss_iso": "isometric RGB video of the station, for review "
+                                  "rather than training; aligned 1:1 with the vector "
+                                  "frames",
+    "observation.images.iss_top": "top-down RGB video of the station, for review "
+                                  "rather than training; aligned 1:1 with the vector "
+                                  "frames",
     "observation.images.composite": "all six camera views tiled into one frame per "
                                     "step (chaser and station, each first-person, "
                                     "isometric and top-down), for review rather than "

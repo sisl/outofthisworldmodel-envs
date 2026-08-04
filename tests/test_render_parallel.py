@@ -119,7 +119,7 @@ def test_a_worker_never_downloads_its_own_earth_textures(monkeypatch):
     monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
     from owm_envs.render.iss_scene import RenderConfig
 
-    video._worker_init(RenderConfig().model_dump_json(), False, None)
+    video._worker_init(RenderConfig().model_dump_json(), (FPV,), None)
     assert seen["download_textures"] is False
 
 

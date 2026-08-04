@@ -10,6 +10,8 @@ from owm_envs.datasets.video import (  # noqa: E402
     COMPOSITE_KEY,
     COMPOSITE_VIEWS,
     FPV_KEY,
+    OUTPUT_KEYS,
+    VIEW_KEYS,
     render_batch_frames,
     render_episode_frames,
 )
@@ -101,9 +103,59 @@ def test_the_default_renders_only_the_egocentric_training_view():
 def test_the_composite_adds_one_feature_the_size_of_a_single_view():
     # Six views in one frame, not six frames: the mosaic is the same shape as
     # the training view, which is what keeps it affordable to store.
-    clips = render_episode_frames(small_batch(), 0, _Cfg(), composite=True)
+    clips = render_episode_frames(
+        small_batch(), 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY)
+    )
     assert set(clips) == {FPV_KEY, COMPOSITE_KEY}
     assert clips[COMPOSITE_KEY].shape == clips[FPV_KEY].shape
+
+
+def test_every_named_view_can_be_written_as_its_own_feature():
+    # The full set: six cameras under their own keys plus the mosaic. Each is
+    # a video stream of its own, which is what the flag exists to let a run
+    # trade away.
+    clips = render_episode_frames(small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS)
+    assert tuple(clips) == OUTPUT_KEYS
+    assert {clip.shape for clip in clips.values()} == {(3, 8, 8, 3)}
+
+
+def test_each_per_view_feature_carries_its_own_camera():
+    # Six keys of the right shape would look identical to six copies of the
+    # training view, so check the pixels reach the key named after them.
+    class _PerViewRenderer(_FakeRenderer):
+        def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+            return {
+                view: np.full((8, 8, 3), COMPOSITE_VIEWS.index(view) + 1, dtype=np.uint8)
+                for view in views
+            }
+
+    clips = render_episode_frames(
+        small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS, renderer=_PerViewRenderer(_Cfg())
+    )
+    for index, view in enumerate(COMPOSITE_VIEWS):
+        assert set(np.unique(clips[VIEW_KEYS[view]]).tolist()) == {index + 1}
+
+
+def test_only_the_cameras_a_run_asked_for_are_drawn():
+    # The per-frame cost is draws, and a run that wants one view must not pay
+    # for six. The composite is the exception -- it is not a camera and needs
+    # all of them -- which the test above pins.
+    calls = []
+
+    class _CountingRenderer(_FakeRenderer):
+        def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+            calls.append(tuple(views))
+            return super().render_views(state, action, views)
+
+    batch = small_batch()
+    render_episode_frames(
+        batch,
+        0,
+        _Cfg(),
+        keys=("observation.images.iss_top",),
+        renderer=_CountingRenderer(_Cfg()),
+    )
+    assert calls == [("ISS_TOP",)] * int(batch.lengths[0])
 
 
 def test_the_composite_asks_for_every_view_once_per_frame():
@@ -118,7 +170,9 @@ def test_the_composite_asks_for_every_view_once_per_frame():
 
     batch = small_batch()
     renderer = _CountingRenderer(_Cfg())
-    render_episode_frames(batch, 0, _Cfg(), composite=True, renderer=renderer)
+    render_episode_frames(
+        batch, 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY), renderer=renderer
+    )
     assert calls == [COMPOSITE_VIEWS] * int(batch.lengths[0])
 
 

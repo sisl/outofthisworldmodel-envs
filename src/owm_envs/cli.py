@@ -21,7 +21,7 @@ import yaml
 from pydantic import ValidationError
 
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
-from .datasets.video import COMPOSITE_VIEWS, OUTPUT_KEYS
+from .datasets.video import COMPOSITE_VIEWS, FPV_KEY, OUTPUT_KEYS
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig, ObservationConfig
 from .envs.iss.docking_ports import PORT_NAMES
@@ -54,22 +54,28 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
     return PolicyConfig(type=policy, observe=observe, dock=DockParams(ports=names))
 
 
-def _wants_composite(spec: str) -> bool:
-    """`--render-views` -> whether to emit the composite mosaic alongside fpv.
+def _parse_render_views(spec: str) -> tuple[str, ...]:
+    """`--render-views` -> the video feature keys to write, in a stable order.
 
-    Only two things can come out of a render, so this is a choice rather than
-    a list: the egocentric training view, which is always written, and the
-    six-view mosaic beside it.
+    Names are the short ones the keys end in -- `fpv`, `iss_top`, `composite`
+    -- with `all` for every one of them. Reported in `OUTPUT_KEYS` order rather
+    than the order they were typed, so two runs asking for the same set declare
+    their features identically.
     """
-    choice = spec.strip().lower()
-    if choice in ("fpv", ""):
-        return False
-    if choice in ("composite", "all"):
-        return True
-    raise typer.BadParameter(
-        f"unknown --render-views value {spec!r}; expected 'fpv' (the default), "
-        "'composite' to add the six-view mosaic, or 'all' for the same thing"
-    )
+    short = {key.rsplit(".", 1)[-1]: key for key in OUTPUT_KEYS}
+    names = [name for part in spec.replace("+", ",").split(",") if (name := part.strip().lower())]
+    # Every name is checked even when `all` is among them: `all,typo` is a typo
+    # the caller wants to hear about, and reading `all` first would swallow it.
+    unknown = [name for name in names if name != "all" and name not in short]
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown --render-views value {unknown[0]!r}; expected 'all' (the default) "
+            f"or a comma-joined list of {', '.join(sorted(short))}"
+        )
+    if not names or "all" in names:
+        return OUTPUT_KEYS
+    wanted = {short[name] for name in names}
+    return tuple(key for key in OUTPUT_KEYS if key in wanted)
 
 
 def _parse_split_flags(
@@ -204,13 +210,18 @@ def generate(
         help="Render an egocentric video feed (slow: ~0.1 s/frame; off by default).",
     ),
     render_views: str = typer.Option(
-        "fpv",
-        help="What --render writes: 'fpv' (default) is the egocentric training view "
-             f"alone, under {OUTPUT_KEYS[0]}. 'composite' adds {OUTPUT_KEYS[1]}, one "
-             f"frame tiling all {len(COMPOSITE_VIEWS)} named views -- for looking at "
-             "rather than training on, and it costs six renders per frame instead of "
-             "one. Either way a per-episode copy of the fpv clip is written under "
-             "media/fpv/<split>/.",
+        "all",
+        help="Which video features --render writes: 'all' (default) is every one of "
+             f"the {len(COMPOSITE_VIEWS)} named cameras under its own key, plus the "
+             "composite tiling them into one frame -- "
+             f"{len(OUTPUT_KEYS)} video streams per split. Or a comma-joined list of "
+             f"{', '.join(sorted(key.rsplit('.', 1)[-1] for key in OUTPUT_KEYS))} to "
+             "write fewer. The default costs six draws per frame rather than one, and "
+             f"stores {len(OUTPUT_KEYS)} encoded streams rather than one, so pass "
+             "'--render-views fpv' for a lean training run: that writes the egocentric "
+             f"view alone, under {OUTPUT_KEYS[0]}, which is the key training reads. "
+             "Any run that includes fpv also gets a per-episode copy of that clip "
+             "under media/fpv/<split>/.",
     ),
     render_workers: int = typer.Option(
         1,
@@ -237,7 +248,7 @@ def generate(
     if render_workers < 1:
         raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
 
-    composite = _wants_composite(render_views)
+    view_keys = _parse_render_views(render_views)
 
     if render:
         from .render.device import check_gpu_index, select_gpu
@@ -387,21 +398,27 @@ def generate(
             # cannot make. How many workers to spend is the operator's call.
             typer.echo(
                 f"[render] {name}: {total} frames, "
-                f"{'fpv + composite' if composite else 'fpv'}, "
+                f"{len(view_keys)} video feature(s) "
+                f"({', '.join(key.rsplit('.', 1)[-1] for key in view_keys)}), "
                 f"{render_workers} worker(s)"
             )
             # Lazy: the writer pulls one episode's clips at a time. Rendering
             # a whole split first would need ~98 GB of RAM per feature at 500k
             # frames.
             frames = iter_batch_frames(
-                batch, render_cfg, composite=composite,
+                batch, render_cfg, keys=view_keys,
                 workers=render_workers, gpu_index=gpu_index,
             )
             # Tapped on the way past rather than rendered again: each episode's
             # egocentric clip is also written on its own under media/, which is
             # the one-video-per-rollout shape that reviewers and the training
             # side's tooling expect. Auxiliary files, not dataset features.
-            frames = tee_episode_clips(frames, out / "media" / "fpv" / name, resolved_fps)
+            # Only when the run renders that view at all -- `--render-views
+            # iss_top` produces no fpv clip to tee.
+            if FPV_KEY in view_keys:
+                frames = tee_episode_clips(
+                    frames, out / "media" / "fpv" / name, resolved_fps
+                )
         if lerobot:
             from .datasets.lerobot_writer import write_lerobot_split
 

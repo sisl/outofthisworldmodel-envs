@@ -722,7 +722,7 @@ def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkey
 
     seen = {}
 
-    def fake_iter(batch, cfg, composite=False, workers=1, gpu_index=None):
+    def fake_iter(batch, cfg, keys=(), workers=1, gpu_index=None):
         seen["workers"] = workers
         seen["gpu_index"] = gpu_index
         raise RuntimeError("stop-after-fan-out")
@@ -760,7 +760,7 @@ def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
         order.append((kind, allow_download))
         return tmp_path / f"earth_{kind}"
 
-    def fake_iter(batch, cfg, composite=False, workers=1, gpu_index=None):
+    def fake_iter(batch, cfg, keys=(), workers=1, gpu_index=None):
         order.append(("iter_batch_frames", workers))
         raise RuntimeError("stop-after-fan-out")
 
@@ -804,7 +804,7 @@ def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, composite=False, workers=1, gpu_index=None: iter(
+        lambda batch, cfg, keys=(), workers=1, gpu_index=None: iter(
             [_fpv_clips() for _ in range(batch.num_episodes)]
         ),
     )
@@ -849,7 +849,7 @@ def test_render_line_names_frames_and_workers_without_a_time_estimate(
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, composite=False, workers=1, gpu_index=None: iter(
+        lambda batch, cfg, keys=(), workers=1, gpu_index=None: iter(
             [_fpv_clips() for _ in range(batch.num_episodes)]
         ),
     )
@@ -860,7 +860,8 @@ def test_render_line_names_frames_and_workers_without_a_time_estimate(
     assert result.exit_code == 0, result.output
     line = next(ln for ln in result.output.splitlines() if ln.startswith("[render]"))
     assert re.fullmatch(
-        r"\[render\] train: \d+ frames, fpv, 2 worker\(s\)", line
+        r"\[render\] train: \d+ frames, 7 video feature\(s\) \([\w, ]+\), 2 worker\(s\)",
+        line,
     ), line
 
 
@@ -1034,10 +1035,21 @@ def test_push_rejects_a_run_whose_own_artifacts_do_not_read(
     assert recorded_push == {}
 
 
-def test_render_views_composite_is_opt_in(tmp_path, monkeypatch):
-    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+def _clips_for(keys, length=4, size=32):
+    """A stand-in episode carrying exactly the keys the run asked for."""
+    import numpy as np
+
+    return {key: np.zeros((length, size, size, 3), dtype=np.uint8) for key in keys}
+
+
+def _record_render_keys(monkeypatch, seen):
+    """Stand in for the render pool and the writer, capturing the keys asked for.
+
+    The clips carry the requested keys and no others: a fake that always
+    returned an fpv clip would let a run that never rendered fpv reach the
+    media tee looking as though it had.
+    """
     import owm_envs.datasets.lerobot_writer as writer
-    seen = {}
 
     def fake_write(root, repo_id, batch, fps, task_name="iss_docking", frames=None):
         for _ in frames:
@@ -1047,17 +1059,89 @@ def test_render_views_composite_is_opt_in(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, composite=False, workers=1, gpu_index=None: (
-            seen.update(composite=composite),
-            iter([_fpv_clips() for _ in range(batch.num_episodes)]),
+        lambda batch, cfg, keys=(), workers=1, gpu_index=None: (
+            seen.update(keys=tuple(keys)),
+            iter([_clips_for(keys) for _ in range(batch.num_episodes)]),
         )[1],
     )
+
+
+def test_a_rendered_run_writes_every_view_by_default(tmp_path, monkeypatch):
+    """The default is the whole set -- six cameras and the mosaic -- so a run
+    that says nothing about views gets everything there is to look at."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from owm_envs.datasets.video import OUTPUT_KEYS
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
     result = runner.invoke(app, [
         "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
-        "--num-envs", "1", "--render", "--render-views", "composite",
+        "--num-envs", "1", "--render",
     ])
     assert result.exit_code == 0, result.output
-    assert seen["composite"] is True
+    assert seen["keys"] == OUTPUT_KEYS
+    assert len(seen["keys"]) == 7
+
+
+def test_render_views_restricts_a_run_to_what_it_asked_for(tmp_path, monkeypatch):
+    """The whole point of keeping the flag: seven video streams is the cost a
+    lean training run declines, and it must get exactly the key training reads."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from owm_envs.datasets.video import FPV_KEY
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-views", "fpv",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["keys"] == (FPV_KEY,)
+
+
+def test_a_run_without_the_fpv_view_still_completes(tmp_path, monkeypatch):
+    """The media tee copies the fpv clip, so a run that never rendered fpv has
+    nothing for it to copy. Asking for another view alone is a legitimate run,
+    not a broken one, and it must not be charged a rollout to find that out."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-views", "iss_top",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["keys"] == ("observation.images.iss_top",)
+    assert not (out / "media").exists(), "wrote a media clip for a view it never rendered"
+
+
+def test_an_unknown_view_is_caught_even_beside_all(tmp_path):
+    """'all' must not swallow a typo sitting next to it: the run would silently
+    render something other than what was asked for."""
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--render", "--render-views", "all,dragon_fvp",
+    ])
+    assert result.exit_code != 0
+    assert "dragon_fvp" in result.output
+
+
+def test_render_views_takes_a_list_and_orders_it_canonically(tmp_path, monkeypatch):
+    """Two runs asking for the same set must declare the same features, so the
+    order is the module's rather than the order the names were typed in."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from owm_envs.datasets.video import FPV_KEY
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--steps", "4", "--split", "train:1:0",
+        "--num-envs", "1", "--render", "--render-views", "composite,fpv",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen["keys"] == (FPV_KEY, "observation.images.composite")
 
 
 def test_an_unknown_render_view_is_a_usage_error(tmp_path):

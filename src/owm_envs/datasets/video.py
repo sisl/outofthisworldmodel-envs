@@ -8,13 +8,17 @@ module level outside the render package itself.
 This module also owns which dataset feature a clip is written as: the renderer
 knows nothing about datasets, and the writer takes whatever keys it is handed.
 
-Two features are possible. `observation.images.fpv` is the egocentric training
-view and is always produced -- downstream training configs name that key
-directly, and quickdraw reads exactly one camera per run. The optional
-`observation.images.composite` is a single frame tiling all six named views,
-for looking at rather than training on: one extra feature and roughly one
-extra view's worth of storage, rather than the six a feature per view would
-cost.
+Each named camera has a feature of its own, and `observation.images.composite`
+is a seventh: one frame tiling all six, for scrubbing a run without opening
+six streams side by side. `observation.images.fpv` is the egocentric training
+view -- downstream training configs name that key directly, and quickdraw reads
+exactly one camera per run -- so it keeps its name and meaning whatever else is
+asked for, and the extra keys are additive.
+
+Which of them a run produces is the caller's choice, because they are not
+priced alike: the six cameras come from one pose apiece, so asking for more
+views costs draws rather than poses, while every key asked for is a video
+stream of its own to encode and store.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import os
 import warnings
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 
@@ -36,7 +40,9 @@ FPV_KEY = "observation.images.fpv"
 COMPOSITE_KEY = "observation.images.composite"
 
 # Row-major tile order for the composite: the capsule's three views above the
-# station's three, each row reading first-person, isometric, top-down.
+# station's three, each row reading first-person, isometric, top-down. Also the
+# order every per-view key is reported in, so a run's features read the same
+# way its mosaic does.
 COMPOSITE_VIEWS: tuple[str, ...] = (
     "DRAGON_FPV",
     "DRAGON_ISO",
@@ -48,7 +54,38 @@ COMPOSITE_VIEWS: tuple[str, ...] = (
 COMPOSITE_COLUMNS = 3
 COMPOSITE_ROWS = 2
 
-OUTPUT_KEYS: tuple[str, ...] = (FPV_KEY, COMPOSITE_KEY)
+# `DRAGON_FPV` is `observation.images.fpv` rather than `dragon_fpv`: that key
+# is the training contract, named directly by downstream configs, and renaming
+# it to match its siblings would break every one of them for tidiness.
+VIEW_KEYS: dict[str, str] = {
+    "DRAGON_FPV": FPV_KEY,
+    "DRAGON_ISO": "observation.images.dragon_iso",
+    "DRAGON_TOP": "observation.images.dragon_top",
+    "ISS_FPV": "observation.images.iss_fpv",
+    "ISS_ISO": "observation.images.iss_iso",
+    "ISS_TOP": "observation.images.iss_top",
+}
+KEY_VIEWS: dict[str, str] = {key: view for view, key in VIEW_KEYS.items()}
+
+OUTPUT_KEYS: tuple[str, ...] = tuple(VIEW_KEYS[view] for view in COMPOSITE_VIEWS) + (
+    COMPOSITE_KEY,
+)
+
+
+def views_for(keys: Sequence[str]) -> tuple[str, ...]:
+    """Which cameras have to be drawn to produce `keys`.
+
+    The composite is not a camera: it needs all six drawn whether or not their
+    own keys were asked for. Reported in `COMPOSITE_VIEWS` order so a frame's
+    draws do not reshuffle with the order the keys arrived in.
+    """
+    unknown = [key for key in keys if key not in KEY_VIEWS and key != COMPOSITE_KEY]
+    if unknown:
+        raise ValueError(f"unknown video feature {unknown[0]!r}; expected one of {OUTPUT_KEYS}")
+    if COMPOSITE_KEY in keys:
+        return COMPOSITE_VIEWS
+    wanted = {KEY_VIEWS[key] for key in keys}
+    return tuple(view for view in COMPOSITE_VIEWS if view in wanted)
 
 
 def _episode_state(batch: TrajectoryBatch, episode_index: int, t: int) -> np.ndarray:
@@ -93,18 +130,35 @@ def tile_views(rendered: dict[str, np.ndarray], height: int, width: int) -> np.n
     return frame
 
 
+def _fill_frame(
+    clips: dict[str, np.ndarray],
+    rendered: dict[str, np.ndarray],
+    t: int,
+    keys: Sequence[str],
+    height: int,
+    width: int,
+) -> None:
+    """Write frame `t` of every requested key from one frame's draws."""
+    for key in keys:
+        if key == COMPOSITE_KEY:
+            clips[key][t] = tile_views(rendered, height, width)
+        else:
+            clips[key][t] = rendered[KEY_VIEWS[key]]
+
+
 def render_episode_frames(
     batch: TrajectoryBatch,
     episode_index: int,
     cfg: Any,
-    composite: bool = False,
+    keys: Sequence[str] = (FPV_KEY,),
     renderer: Any | None = None,
 ) -> dict[str, np.ndarray]:
     """Render one episode to `(L, H, W, 3)` uint8 clips, keyed by feature name.
 
-    Always produces `observation.images.fpv`; with `composite`, also produces
-    `observation.images.composite`, which needs all six views of every frame
-    and so costs six renders per frame rather than one.
+    `keys` names the features to produce, out of `OUTPUT_KEYS`. Only the
+    cameras they need are drawn, so the per-frame cost tracks the number of
+    distinct views asked for rather than the number of keys -- except that
+    `observation.images.composite` needs all six whatever else is requested.
 
     `L` is `batch.lengths[episode_index]` -- only real, non-padded frames are
     rendered. `cfg` is an `owm_envs.render.iss_scene.RenderConfig`.
@@ -122,27 +176,23 @@ def render_episode_frames(
     omitted, a renderer is built and closed just for this one episode.
     """
     length = int(batch.lengths[episode_index])
+    views = views_for(keys)
     owns_renderer = renderer is None
     if owns_renderer:
         from ..render.renderer import ISSRenderer
 
         renderer = ISSRenderer(cfg)
-    views = COMPOSITE_VIEWS if composite else (FPV_VIEW,)
     try:
         clips = {
             key: np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
-            for key in (OUTPUT_KEYS if composite else (FPV_KEY,))
+            for key in keys
         }
         for t in range(length):
             state = _episode_state(batch, episode_index, t)
             action = batch.actions[episode_index, t]
             # One pose serves every view of this frame.
             rendered = renderer.render_views(state, action=action, views=views)
-            clips[FPV_KEY][t] = rendered[FPV_VIEW]
-            if composite:
-                clips[COMPOSITE_KEY][t] = tile_views(
-                    rendered, cfg.image_height, cfg.image_width
-                )
+            _fill_frame(clips, rendered, t, keys, cfg.image_height, cfg.image_width)
     finally:
         if owns_renderer:
             renderer.close()
@@ -152,7 +202,7 @@ def render_episode_frames(
 def render_batch_frames(
     batch: TrajectoryBatch,
     cfg: Any,
-    composite: bool = False,
+    keys: Sequence[str] = (FPV_KEY,),
 ) -> list[dict[str, np.ndarray]]:
     """Render every episode in `batch` to its clips, keyed by feature name.
 
@@ -165,7 +215,7 @@ def render_batch_frames(
     renderer = ISSRenderer(cfg)
     try:
         return [
-            render_episode_frames(batch, i, cfg, composite=composite, renderer=renderer)
+            render_episode_frames(batch, i, cfg, keys=keys, renderer=renderer)
             for i in range(batch.num_episodes)
         ]
     finally:
@@ -174,10 +224,10 @@ def render_batch_frames(
 
 _WORKER_RENDERER: Any = None
 _WORKER_CFG: Any = None
-_WORKER_COMPOSITE: bool = False
+_WORKER_KEYS: tuple[str, ...] = (FPV_KEY,)
 
 
-def _worker_init(cfg_json: str, composite: bool, gpu_index: int | None) -> None:
+def _worker_init(cfg_json: str, keys: Sequence[str], gpu_index: int | None) -> None:
     """Build this worker's own renderer, once, at pool start-up.
 
     The GPU is chosen first and exactly once: pygfx pins one shared wgpu
@@ -198,9 +248,9 @@ def _worker_init(cfg_json: str, composite: bool, gpu_index: int | None) -> None:
     from ..render.iss_scene import RenderConfig
     from ..render.renderer import ISSRenderer
 
-    global _WORKER_RENDERER, _WORKER_CFG, _WORKER_COMPOSITE
+    global _WORKER_RENDERER, _WORKER_CFG, _WORKER_KEYS
     _WORKER_CFG = RenderConfig.model_validate_json(cfg_json)
-    _WORKER_COMPOSITE = bool(composite)
+    _WORKER_KEYS = tuple(keys)
     # Downloads off: the parent resolved all three Earth textures before the
     # pool started. A worker allowed to fetch its own would put them back the
     # moment the parent's fetch failed -- every worker retrying the same
@@ -217,22 +267,20 @@ def _worker_render(payload: tuple[np.ndarray, np.ndarray, int]) -> dict[str, np.
     batch once per episode.
     """
     states, actions, length = payload
-    views = COMPOSITE_VIEWS if _WORKER_COMPOSITE else (FPV_VIEW,)
-    keys = OUTPUT_KEYS if _WORKER_COMPOSITE else (FPV_KEY,)
+    keys = _WORKER_KEYS
+    views = views_for(keys)
     height, width = _WORKER_CFG.image_height, _WORKER_CFG.image_width
     clips = {key: np.empty((length, height, width, 3), dtype=np.uint8) for key in keys}
     for t in range(length):
         rendered = _WORKER_RENDERER.render_views(states[t], action=actions[t], views=views)
-        clips[FPV_KEY][t] = rendered[FPV_VIEW]
-        if _WORKER_COMPOSITE:
-            clips[COMPOSITE_KEY][t] = tile_views(rendered, height, width)
+        _fill_frame(clips, rendered, t, keys, height, width)
     return clips
 
 
 def iter_batch_frames(
     batch: TrajectoryBatch,
     cfg: Any,
-    composite: bool = False,
+    keys: Sequence[str] = (FPV_KEY,),
     workers: int = 1,
     gpu_index: int | None = None,
 ) -> Iterator[dict[str, np.ndarray]]:
@@ -280,7 +328,7 @@ def iter_batch_frames(
         try:
             for episode in range(batch.num_episodes):
                 yield render_episode_frames(
-                    batch, episode, cfg, composite=composite, renderer=renderer
+                    batch, episode, cfg, keys=keys, renderer=renderer
                 )
         finally:
             renderer.close()
@@ -296,7 +344,7 @@ def iter_batch_frames(
         max_workers=workers,
         mp_context=mp.get_context("spawn"),
         initializer=_worker_init,
-        initargs=(cfg.model_dump_json(), composite, gpu_index),
+        initargs=(cfg.model_dump_json(), tuple(keys), gpu_index),
     )
     try:
         episodes = iter(range(batch.num_episodes))
