@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 from astrojax.attitude_representations.quaternion import Quaternion
+from astrojax.attitude_representations.rotation_matrix import RotationMatrix
 
 # --------------------------------------------------------------------------------------
 # Quaternion conventions
@@ -52,6 +53,11 @@ def quat_to_rotmat(q: jnp.ndarray) -> jnp.ndarray:
     """
     r = Quaternion.from_vector(q).to_rotation_matrix().to_matrix()
     return r.T
+
+
+def quat_from_rotmat(r_bw: jnp.ndarray) -> jnp.ndarray:
+    """Inverse of `quat_to_rotmat`: unit quaternion [w,x,y,z] from a body -> world matrix."""
+    return Quaternion.from_rotation_matrix(RotationMatrix.from_matrix(r_bw.T)).to_vector()
 
 
 def rotate_body_to_world(q_bw: jnp.ndarray, v_body: jnp.ndarray) -> jnp.ndarray:

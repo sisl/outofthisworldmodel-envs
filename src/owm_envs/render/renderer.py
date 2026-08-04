@@ -237,23 +237,37 @@ class ISSRenderer:
         action: np.ndarray | None = None,
         view: ViewName = "DRAGON_ISO",
     ) -> np.ndarray:
-        if self._closed:
-            raise RuntimeError("renderer is closed")
-
         all_views = _build_views(self.cfg, state)
         if view not in all_views:
             raise ValueError(f"unknown view {view!r}; expected one of {sorted(all_views)}")
+        # Widen the far clip for the wide shots so Earth and the Moon are not
+        # clipped out; skip it for the FPV views, whose near plane is already
+        # very small and does not need the added near/far precision spread.
+        return self.render_view(
+            state, all_views[view], action, widen_far=not view.endswith("_FPV")
+        )
+
+    def render_view(
+        self,
+        state: np.ndarray,
+        view: CameraView,
+        action: np.ndarray | None = None,
+        widen_far: bool = True,
+    ) -> np.ndarray:
+        """Render the posed scene through an arbitrary camera.
+
+        The six named views go through here as well; pass a `CameraView` of your
+        own to look at the scene from somewhere they do not cover.
+        """
+        if self._closed:
+            raise RuntimeError("renderer is closed")
 
         self._iss_scene.update(state, action)
         self._update_debug_overlays(action)
 
-        chosen = all_views[view]
-        # Widen the far clip for the wide shots so Earth and the Moon are not
-        # clipped out; skip it for the FPV views, whose near plane is already
-        # very small and does not need the added near/far precision spread.
-        scene_view = chosen if view.endswith("_FPV") else _with_far(chosen, _far_covering_earth_and_moon(self.cfg))
+        scene_view = _with_far(view, _far_covering_earth_and_moon(self.cfg)) if widen_far else view
 
-        self._renderer.render(self._iss_scene.background, make_camera(chosen), clear=True)
+        self._renderer.render(self._iss_scene.background, make_camera(view), clear=True)
         self._renderer.render(self._iss_scene.scene, make_camera(scene_view), clear=False)
 
         frame = np.asarray(self._renderer.snapshot())
