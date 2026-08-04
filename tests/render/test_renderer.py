@@ -1,6 +1,7 @@
 import dataclasses
 
 import numpy as np
+import pygfx as gfx
 import pytest
 
 pytest.importorskip("pygfx", reason="rendering is an optional extra")
@@ -256,6 +257,90 @@ def test_clouds_are_never_drawn_over_a_clipped_surface():
     hit = _earth_hit_mask(cfg, state, 128, 128)
     orphaned = float((hit & lit[True] & ~lit[False]).sum()) / int(hit.sum())
     assert orphaned < 0.001, f"{orphaned:.2%} of Earth is cloud over a clipped surface"
+
+
+def _cloud_mesh(renderer):
+    """The cloud deck, which is the surface group's second and last child."""
+    children = renderer._iss_scene._earth_surface_group.children
+    assert len(children) == 2, "expected the surface group to hold the globe and the deck"
+    return children[1]
+
+
+def _cloud_mask(renderer, state, cloud):
+    """Which pixels the cloud deck is responsible for, found by toggling it."""
+    cloud.visible = True
+    on = renderer.render(state, view="DRAGON_FPV")
+    cloud.visible = False
+    off = renderer.render(state, view="DRAGON_FPV")
+    cloud.visible = True
+    return np.abs(on.astype(np.int16) - off.astype(np.int16)).max(axis=-1) > 24
+
+
+def test_the_cloud_deck_does_not_flicker_between_frames(renderer):
+    """The deck sits 12 km above the surface, which no depth buffer reachable
+    from a docking near plane can resolve -- one float32 depth step is ~21 km
+    at the nadir range and ~650 km at the limb. Depth-testing the deck against
+    the surface was therefore rounding noise: it threw most of the deck away
+    and changed its mind about which pixels as the camera moved, so cloud
+    patches blinked on and off over the oceans.
+
+    These six frames are 0.05 degrees apart -- far less than a pixel of cloud
+    motion -- so the deck has to stay put. Measured over them: composited by
+    depth, 65.3% of cloud pixels changed state between neighbouring frames;
+    composited by draw order, 5.3%, which is the genuine sub-pixel drift.
+    """
+    cloud = _cloud_mesh(renderer)
+    masks = [_cloud_mask(renderer, _state_pitched(62.0 + i * 0.05), cloud) for i in range(6)]
+
+    coverage = np.array([m.mean() for m in masks])
+    # A deck that is not drawn at all would hold perfectly still.
+    assert coverage.min() > 0.02, f"only {coverage.min():.2%} of the frame is cloud"
+
+    flipped = []
+    for before, after in zip(masks, masks[1:]):
+        flipped.append(float((before ^ after).sum()) / int((before | after).sum()))
+    assert max(flipped) < 0.15, f"{max(flipped):.1%} of cloud pixels flipped between frames"
+
+
+def test_the_station_occludes_the_cloud_deck(renderer):
+    """Drawing the deck without a depth test leaves draw order alone to keep it
+    behind the station, so this checks that order really does hold in a view
+    where surface, deck and station all stack up. The station's silhouette
+    comes from toggling it with the planet hidden, so both renders it is
+    measured from still have the skybox behind them.
+    """
+    scene = renderer._iss_scene
+    # Straight down onto the station from 26 m, so Earth fills everything the
+    # station does not.
+    state = _state_pitched(90.0, pos=(0.0, 0.0, 26.0))
+    planet = [
+        child
+        for child in scene.scene.children
+        if not isinstance(child, gfx.Light) and child not in (scene.iss, scene.dragon)
+    ]
+
+    try:
+        cloud_pixels = _cloud_mask(renderer, state, _cloud_mesh(renderer))
+        for child in planet:
+            child.visible = False
+        with_station = renderer.render(state, view="DRAGON_FPV")
+        scene.iss.visible = scene.dragon.visible = False
+        sky_only = renderer.render(state, view="DRAGON_FPV")
+    finally:
+        for child in planet:
+            child.visible = True
+        scene.iss.visible = scene.dragon.visible = True
+
+    station = np.abs(with_station.astype(np.int16) - sky_only.astype(np.int16)).max(axis=-1) > 12
+    assert station.mean() > 0.2, "the station should fill much of this framing"
+    assert cloud_pixels.sum() > 0, "the deck should be visible past the station"
+
+    # Not exactly zero: the two renders antialias the station's edge against
+    # different backdrops, and this station is mostly edge -- a lattice of
+    # trusses and panels. Real bleed would scale with the silhouette's area
+    # rather than with its perimeter.
+    bleed = float((cloud_pixels & station).sum()) / int(station.sum())
+    assert bleed < 0.005, f"{bleed:.2%} of the station was painted over by cloud"
 
 
 def test_render_after_close_raises_runtime_error():

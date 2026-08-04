@@ -208,6 +208,28 @@ def _read_map(path: Path) -> np.ndarray:
     return np.asarray(iio.imread(path))
 
 
+# Draw order for the Earth's cloud deck, and for what has to be behind it.
+#
+# The deck is a shell 12 km above the surface, which at orbital viewing
+# distances is far below what a float32 depth buffer can tell apart: one depth
+# step is `d**2 / (near * 2**24)`, about 21 km at the 420 km nadir range and
+# 650 km at the limb. Depth-testing the shell against the surface is therefore
+# rounding noise -- it discarded ~94% of the deck and flipped which pixels
+# survived as the camera moved. No near plane fixes it either: resolving 12 km
+# at the limb would need a near plane of ~27 m, which would clip the station
+# away during a dock.
+#
+# So the deck is composited by draw order instead, which does not depend on
+# precision at all. Geometry puts it strictly in front of everything below it
+# and strictly behind the station, so it is drawn between the two with no depth
+# test and no depth write of its own. pygfx sorts on
+# `(material.render_queue, object.render_order, distance)`; the station and
+# capsule keep pygfx's default queue of 2600 and so paint over the deck
+# normally, using the depth the surface wrote.
+_DISTANT_QUEUE = 2000  # Earth's surface, the Sun, the Moon -- all below the deck
+_CLOUD_QUEUE = 2100  # the deck, over them
+
+
 def _max_texture_size() -> int:
     return int(get_shared().device.limits["max-texture-dimension-2d"])
 
@@ -382,7 +404,8 @@ class ISSScene:
         self._earth_surface_group = gfx.Group()
 
         self.scene = gfx.Scene()
-        self.scene.add(self._load_iss_group())
+        self.iss = self._load_iss_group()
+        self.scene.add(self.iss)
         self.scene.add(self._load_earth_group())
         self.scene.add(self._load_moon_group())
         self.scene.add(self._build_sun_sphere())
@@ -446,6 +469,7 @@ class ISSScene:
             emissive=(0.06, 0.06, 0.08),
             emissive_intensity=1.0,
         )
+        earth_mat.render_queue = _DISTANT_QUEUE
         earth_mesh = gfx.Mesh(earth_geom, earth_mat)
         self._earth_surface_group.add(earth_mesh)
 
@@ -460,7 +484,14 @@ class ISSScene:
                 subpoint_lat_deg=cfg.earth_subpoint_lat_deg,
             )
             cloud_mat = gfx.MeshBasicMaterial(map=_texture_map(cloud_tex))
-            cloud_mat.alpha_mode = "blend"
+            cloud_mat.alpha_mode = "blend"  # already implies depth_write=False
+            cloud_mat.render_queue = _CLOUD_QUEUE
+            cloud_mat.depth_test = False
+            # Without a depth test the shell no longer hides its own far half,
+            # and pygfx draws both sides of a mesh by default. Front faces are
+            # exactly the near hemisphere from any viewpoint outside the shell,
+            # which is where the station always is.
+            cloud_mat.side = gfx.VisibleSide.front
             cloud_mesh = gfx.Mesh(cloud_geom, cloud_mat)
             self._earth_surface_group.add(cloud_mesh)
 
@@ -507,6 +538,8 @@ class ISSScene:
         direction = _unit(np.array(cfg.moon_direction_from_earth_world, dtype=np.float32))
         moon_world = earth_center_world + cfg.earth_moon_distance_m * direction
         moon_group.local.position = tuple(moon_world.tolist())
+        for mesh in _collect_meshes(moon_group):
+            mesh.material.render_queue = _DISTANT_QUEUE
         return moon_group
 
     def _build_sun_sphere(self) -> gfx.Mesh:
@@ -514,9 +547,11 @@ class ISSScene:
         distance = max(cfg.sun_visual_distance_m, 1.0)
         angular_radius_rad = 0.5 * np.deg2rad(cfg.sun_angular_diameter_deg)
         radius = max(distance * float(np.tan(angular_radius_rad)), 1.0)
+        sun_mat = gfx.MeshBasicMaterial(color=(1.0, 0.96, 0.82, 1.0))
+        sun_mat.render_queue = _DISTANT_QUEUE
         sun = gfx.Mesh(
             gfx.sphere_geometry(radius=radius, width_segments=32, height_segments=16),
-            gfx.MeshBasicMaterial(color=(1.0, 0.96, 0.82, 1.0)),
+            sun_mat,
         )
         direction = _unit(np.array(cfg.sun_direction_world, dtype=np.float32))
         sun.local.position = tuple((direction * distance).tolist())
