@@ -360,8 +360,10 @@ def push(
         None, help="Repo name (default: derived owm-{env}-{noise}-{goal}-dt{ms}ms)."),
     namespace: Optional[str] = typer.Option(
         None, help="Hub namespace (default: the HF_TOKEN account)."),
-    private: bool = typer.Option(
-        False, "--private/--public", help="Create the repo private (default public)."),
+    private: Optional[bool] = typer.Option(
+        None, "--private/--public",
+        help="Repo visibility. Given neither, a new repo is public and one that "
+             "already exists keeps the visibility it has."),
 ) -> None:
     """Upload a run directory to the HuggingFace Hub as a dataset repo."""
     from .datasets.hub import push_run

@@ -848,6 +848,13 @@ def test_push_reports_the_dataset_url(tmp_path, monkeypatch):
     assert "https://huggingface.co/datasets/acct/owm-iss-coop-goal-dt50ms" in result.output
     assert pushed == {"run_dir": tmp_path, "name": None, "namespace": None, "private": True}
 
+    # Neither flag reaches push_run as None, not as False: "public" is a
+    # request to change an existing repo's visibility, "unset" is not.
+    runner.invoke(app, ["push", str(tmp_path)])
+    assert pushed["private"] is None
+    runner.invoke(app, ["push", str(tmp_path), "--public"])
+    assert pushed["private"] is False
+
 
 def test_push_rejects_a_directory_that_is_not_a_finished_run(tmp_path):
     result = runner.invoke(app, ["push", str(tmp_path)])

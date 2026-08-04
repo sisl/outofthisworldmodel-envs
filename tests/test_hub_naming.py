@@ -244,6 +244,7 @@ class _FakeApi:
     def __init__(self):
         self.calls: list[str] = []
         self.create_kwargs: dict = {}
+        self.settings_kwargs: dict = {}
         self.upload_kwargs: dict = {}
         self.card_at_upload: str | None = None
 
@@ -254,6 +255,10 @@ class _FakeApi:
     def create_repo(self, repo_id, **kwargs):
         self.calls.append("create_repo")
         self.create_kwargs = {"repo_id": repo_id, **kwargs}
+
+    def update_repo_settings(self, repo_id, **kwargs):
+        self.calls.append("update_repo_settings")
+        self.settings_kwargs = {"repo_id": repo_id, **kwargs}
 
     def upload_folder(self, **kwargs):
         self.calls.append("upload_folder")
@@ -286,6 +291,14 @@ def test_push_creates_the_repo_then_uploads_a_carded_folder(tmp_path, api):
     assert repo_id.split("/")[1] in api.card_at_upload
 
 
+def test_push_mirrors_the_run_rather_than_merging_into_what_is_there(tmp_path, api):
+    # A regenerated run must REPLACE its repo. Merging would leave the previous
+    # run's parquet behind, still matching the split's viewer glob, so one repo
+    # would serve two runs' frames under a README describing only the newer.
+    push_run(_write_run(tmp_path))
+    assert api.upload_kwargs["delete_patterns"] == "*"
+
+
 def test_push_honours_an_explicit_name_and_namespace(tmp_path, api):
     run = _write_run(tmp_path)
     assert push_run(run, name="trial", namespace="org") == "org/trial"
@@ -293,9 +306,22 @@ def test_push_honours_an_explicit_name_and_namespace(tmp_path, api):
     assert "whoami" not in api.calls
 
 
-def test_push_can_create_a_private_repo(tmp_path, api):
+def test_push_makes_the_repo_private_before_uploading_into_it(tmp_path, api):
     push_run(_write_run(tmp_path), private=True)
-    assert api.create_kwargs["private"] is True
+    # create_repo's `private` is ignored for a repo that already exists, so the
+    # setting has to be applied on its own -- and applied before the data
+    # lands, or a private run is briefly world-readable.
+    assert api.calls == ["whoami", "create_repo", "update_repo_settings", "upload_folder"]
+    assert api.settings_kwargs == {"repo_id": "acct/owm-iss-noncoop-goal-dt50ms",
+                                   "repo_type": "dataset", "private": True}
+
+
+def test_push_leaves_an_existing_repos_visibility_alone_by_default(tmp_path, api):
+    # Neither flag given: a new repo is public, and a repo someone deliberately
+    # made private is not exposed by a routine re-push.
+    push_run(_write_run(tmp_path))
+    assert "update_repo_settings" not in api.calls
+    assert api.create_kwargs["private"] is False
 
 
 def test_push_refuses_a_run_that_did_not_finish(tmp_path, api):

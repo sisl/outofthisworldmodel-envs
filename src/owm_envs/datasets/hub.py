@@ -308,13 +308,18 @@ def push_run(
     run_dir: str | Path,
     name: str | None = None,
     namespace: str | None = None,
-    private: bool = False,
+    private: bool | None = None,
 ) -> str:
     """Upload `run_dir` as one Hub dataset repo. Returns the repo id.
 
     The card is written into `run_dir` before the upload starts, so it is part
     of that upload rather than a second commit against a repo that briefly had
     no description at all.
+
+    `private` is three-state. True or False sets the repo's visibility; None
+    (the default) makes a NEW repo public and leaves an existing one at
+    whatever it already is, so a routine re-push can neither expose a repo
+    that was deliberately made private nor hide one people are already using.
     """
     run_dir = Path(run_dir)
     summary_path = run_dir / SUMMARY_FILENAME
@@ -332,6 +337,24 @@ def push_run(
     repo_name = name or dataset_name(env_cfg)
     repo_id = f"{namespace}/{repo_name}"
     (run_dir / "README.md").write_text(_dataset_card(repo_name, run_dir, env_cfg))
-    api.create_repo(repo_id, repo_type="dataset", private=private, exist_ok=True)
-    api.upload_folder(repo_id=repo_id, repo_type="dataset", folder_path=str(run_dir))
+    api.create_repo(repo_id, repo_type="dataset", private=bool(private), exist_ok=True)
+    if private is not None:
+        # create_repo ignores `private` for a repo that already exists, so
+        # asking for one there and stopping would report success while
+        # uploading into a repo of the other visibility. Applied BEFORE the
+        # upload: a run pushed as private must never be publicly readable, not
+        # even for the length of the transfer.
+        api.update_repo_settings(repo_id, repo_type="dataset", private=private)
+    # delete_patterns="*" makes the upload a MIRROR of run_dir, in the same
+    # commit: every remote file this run does not have is removed. Without it a
+    # regenerated run only overwrites the paths it happens to reuse, and the
+    # previous run's leftover parquet still matches the split's
+    # `data/**/*.parquet` viewer glob -- one repo serving two runs' frames
+    # under one README that describes only the newer.
+    api.upload_folder(
+        repo_id=repo_id,
+        repo_type="dataset",
+        folder_path=str(run_dir),
+        delete_patterns="*",
+    )
     return repo_id
