@@ -333,12 +333,12 @@ class ISSScene:
         )
         self._earth_spin_angle_rad = 0.0
 
-        # Resolved once and held: the download mirror behind this call is
-        # currently rate-limited, so a per-frame lookup would repeat a failed
-        # network round-trip on every frame.
-        self._earth_color_path = earth_texture_path("color")
-        self._earth_clouds_path = earth_texture_path("clouds")
-        self._earth_bump_path = earth_texture_path("bump")
+        # Resolved once and held: these calls may fetch and bake a
+        # multi-gigabyte source, and a per-frame lookup would also repeat a
+        # failed network round-trip on every frame.
+        self._earth_color_path = earth_texture_path("color", allow_download=True)
+        self._earth_clouds_path = earth_texture_path("clouds", allow_download=True)
+        self._earth_bump_path = earth_texture_path("bump", allow_download=True)
 
         # Loaded assets face +Y; rotate them onto this environment's body +Z
         # so the capsule's nose and the station's long axis agree with the

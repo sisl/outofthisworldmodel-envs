@@ -1,12 +1,15 @@
-"""Earth texture resolution: baked full-globe maps, local re-baking, opt-in download.
+"""Earth texture resolution: locally-baked full maps, re-baking, committed fallbacks.
 
 Three-tier strategy:
-1. A locally-baked or committed map exists -- return it. This is the
-   default and needs no network.
-2. A high-resolution source is present on disk -- bake from it (via
-   `owm_envs.render.bake`).
-3. If `allow_download` is set, try the mirror; on ANY failure fall back to
-   tier 1.
+1. A locally-baked full-resolution map exists -- return it. These are too
+   large to commit, so they are gitignored and only present on a machine
+   that has baked them.
+2. A high-resolution source is present on disk -- bake the full map from it
+   (via `owm_envs.render.bake`). When `allow_download` is set and the source
+   is missing, fetch it from the mirror first; any failure warns and falls
+   through.
+3. The committed reasonable-resolution fallback map. Always present in a
+   clone, so rendering works offline out of the box.
 """
 
 from __future__ import annotations
@@ -44,6 +47,17 @@ _MAP_NAMES = {
 }
 _BAKE_MODE = {"color": "RGB", "clouds": "RGB", "bump": "L"}
 
+# Committed fallbacks: the full maps above total ~46 MB, too much for git.
+# These are the same globes at half (color) or a quarter (clouds, bump) the
+# width -- ~7 MB in LFS, and enough for a recognisable Earth without any
+# source on disk.
+FALLBACK_WIDTHS = {"color": 8192, "clouds": 4096, "bump": 2048}
+_FALLBACK_NAMES = {
+    "color": "earth_color_fallback.jpg",
+    "clouds": "earth_clouds_fallback.jpg",
+    "bump": "earth_bump_fallback.png",
+}
+
 
 def _maps_dir() -> Path:
     return resources_dir() / "earth" / "maps"
@@ -78,8 +92,8 @@ def _bake_map(kind: TextureKind) -> Path | None:
 def _ensure_earth_source(name: str) -> Path | None:
     """Fetch a high-resolution Earth source. Returns None if unavailable.
 
-    Never raises and never blocks rendering: the committed baked maps are the
-    default path, and this is an optional quality upgrade.
+    Never raises and never blocks rendering: the committed fallback maps are
+    always there, and this is an optional quality upgrade.
     """
     dest = _source_dir() / name
     if dest.exists():
@@ -92,7 +106,7 @@ def _ensure_earth_source(name: str) -> Path | None:
         return dest
     except Exception as exc:  # HTTPError, URLError, OSError, cap exceeded...
         tmp.unlink(missing_ok=True)
-        warnings.warn(f"could not fetch {name} ({exc}); using the baked Earth map")
+        warnings.warn(f"could not fetch {name} ({exc}); using the fallback Earth map")
         return None
 
 
@@ -100,28 +114,20 @@ def earth_texture_path(kind: TextureKind, *, allow_download: bool = False) -> Pa
     """Resolve an Earth texture through the three-tier strategy.
 
     Never raises on a download failure -- it falls back to the committed
-    baked map. The returned path is where the map belongs, which does not
-    exist when nothing is committed and no source is on disk; callers that
-    can render without a texture must check.
+    fallback map, which exists in every clone.
     """
     if kind not in _SOURCE_NAMES:
         raise ValueError(f"unknown Earth texture kind: {kind!r}")
 
-    baked = _maps_dir() / _MAP_NAMES[kind]
+    full = _maps_dir() / _MAP_NAMES[kind]
+    if full.exists():
+        return full
 
-    if allow_download:
-        source = _ensure_earth_source(_SOURCE_NAMES[kind])
-        if source is not None:
-            rebaked = _bake_map(kind)
-            if rebaked is not None:
-                return rebaked
-        return baked  # download unavailable (or bake failed) -- fall back to tier 1
+    if allow_download and not (_source_dir() / _SOURCE_NAMES[kind]).exists():
+        _ensure_earth_source(_SOURCE_NAMES[kind])  # warns and returns None on failure
 
-    if baked.exists():
+    baked = _bake_map(kind)
+    if baked is not None:
         return baked
 
-    rebaked = _bake_map(kind)  # tier 2: no baked map, but a source may be on disk
-    if rebaked is not None:
-        return rebaked
-
-    return baked
+    return _maps_dir() / _FALLBACK_NAMES[kind]

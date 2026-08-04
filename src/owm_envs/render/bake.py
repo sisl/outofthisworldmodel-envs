@@ -10,6 +10,7 @@ anywhere that must work without it.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 JPEG_QUALITY = 92
@@ -27,7 +28,17 @@ def bake_full_map(source: Path, output: Path, max_width: int, mode: str = "RGB")
     if im.size != target:
         im = im.resize(target, Image.LANCZOS)
     output.parent.mkdir(parents=True, exist_ok=True)
-    if output.suffix.lower() in (".jpg", ".jpeg"):
-        im.save(output, quality=JPEG_QUALITY)
-    else:
-        im.save(output)
+
+    is_jpeg = output.suffix.lower() in (".jpg", ".jpeg")
+    # Write beside the target and rename: a 16384px bake takes minutes, and
+    # parallel render workers must never observe a half-written map.
+    tmp = output.with_suffix(output.suffix + ".part")
+    try:
+        if is_jpeg:
+            im.save(tmp, format="JPEG", quality=JPEG_QUALITY)
+        else:
+            im.save(tmp, format="PNG")
+        os.replace(tmp, output)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise

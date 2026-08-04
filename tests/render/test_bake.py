@@ -9,8 +9,10 @@ success. It must be an ordinary importable module under `src/`.
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 import owm_envs
@@ -56,3 +58,57 @@ def test_bake_writes_the_requested_mode(tmp_path):
     output = tmp_path / "earth_bump_full.png"
     bake_full_map(source, output, 32, mode="L")
     assert Image.open(output).mode == "L"
+
+
+def test_bake_encodes_by_extension_not_by_temp_name(tmp_path):
+    # The atomic write goes through a temp path whose suffix Pillow cannot map
+    # to a format, so the encoder has to be chosen from the final name.
+    source = tmp_path / "source.tif"
+    _write_source(source, (180, 90))
+    jpg = tmp_path / "earth_color_full.jpg"
+    png = tmp_path / "earth_bump_full.png"
+    bake_full_map(source, jpg, 32)
+    bake_full_map(source, png, 32, mode="L")
+    assert Image.open(jpg).format == "JPEG"
+    assert Image.open(png).format == "PNG"
+
+
+def test_bake_leaves_no_temp_file_behind_on_success(tmp_path):
+    source = tmp_path / "source.tif"
+    _write_source(source, (180, 90))
+    bake_full_map(source, tmp_path / "earth_color_full.jpg", 32)
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_bake_failure_leaves_neither_a_partial_nor_a_stale_map(tmp_path, monkeypatch):
+    # Task 11 renders episodes in parallel workers; a half-written map picked up
+    # by a sibling worker would corrupt frames instead of failing loudly.
+    source = tmp_path / "source.tif"
+    _write_source(source, (180, 90))
+    output = tmp_path / "earth_color_full.jpg"
+
+    def die(self, fp, *args, **kwargs):
+        Path(fp).write_bytes(b"half an image")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Image.Image, "save", die)
+    with pytest.raises(OSError, match="disk full"):
+        bake_full_map(source, output, 32)
+    assert not output.exists()
+    assert list(tmp_path.glob("*.part")) == []
+
+
+def test_bake_does_not_clobber_an_existing_map_when_it_fails(tmp_path, monkeypatch):
+    source = tmp_path / "source.tif"
+    _write_source(source, (180, 90))
+    output = tmp_path / "earth_color_full.jpg"
+    bake_full_map(source, output, 32)
+    good = output.read_bytes()
+
+    def die(self, fp, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Image.Image, "save", die)
+    with pytest.raises(OSError):
+        bake_full_map(source, output, 64)
+    assert output.read_bytes() == good

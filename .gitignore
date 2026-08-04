@@ -220,5 +220,7 @@ __marimo__/
 # uncommitted proof-of-concept scripts
 pocs/
 
-# multi-gigabyte Earth texture sources; baked patches are committed instead
+# multi-gigabyte Earth texture sources and the ~46 MB full-resolution maps
+# baked from them; reduced-resolution fallback maps are committed instead
 src/owm_envs/render/resources/earth/sources/
+src/owm_envs/render/resources/earth/maps/*_full.*
