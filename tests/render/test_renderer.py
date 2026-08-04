@@ -9,7 +9,7 @@ pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 import jax.numpy as jnp  # noqa: E402
 from owm_envs.core.quaternion import quat_from_rotmat  # noqa: E402
-from owm_envs.render.iss_scene import RenderConfig  # noqa: E402
+from owm_envs.render.iss_scene import RenderConfig, _collect_meshes  # noqa: E402
 from owm_envs.render.renderer import (  # noqa: E402
     _MAX_DEPTH_RANGE_RATIO,
     ISSRenderer,
@@ -274,6 +274,29 @@ def _cloud_mask(renderer, state, cloud):
     off = renderer.render(state, view="DRAGON_FPV")
     cloud.visible = True
     return np.abs(on.astype(np.int16) - off.astype(np.int16)).max(axis=-1) > 24
+
+
+def test_the_cloud_deck_is_drawn_between_the_globe_and_the_station(renderer):
+    """The ordering the deck's correctness rests on, asserted directly.
+
+    With no depth test of its own, nothing but the sort key keeps the deck off
+    the station -- and the station's queue is whatever its glTF materials
+    happened to load as, not something this package sets. A future asset that
+    loaded them differently would silently put the deck on top of the station,
+    which the pixel tests could only catch where the two overlap.
+    """
+    scene = renderer._iss_scene
+    globe, deck = scene._earth_surface_group.children
+    station = _collect_meshes(scene.iss) + _collect_meshes(scene.dragon)
+    assert station, "expected the station and capsule to carry meshes"
+
+    assert globe.material.render_queue < deck.material.render_queue
+    assert deck.material.render_queue < min(m.material.render_queue for m in station)
+    assert deck.material.depth_test is False
+    assert deck.material.depth_write is False
+    # Front faces are the near hemisphere from outside the shell; both sides
+    # would let the deck's far half paint over its near half.
+    assert deck.material.side == gfx.VisibleSide.front
 
 
 def test_the_cloud_deck_does_not_flicker_between_frames(renderer):

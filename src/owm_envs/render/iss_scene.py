@@ -489,8 +489,12 @@ class ISSScene:
             cloud_mat.depth_test = False
             # Without a depth test the shell no longer hides its own far half,
             # and pygfx draws both sides of a mesh by default. Front faces are
-            # exactly the near hemisphere from any viewpoint outside the shell,
-            # which is where the station always is.
+            # exactly the near hemisphere seen from anywhere OUTSIDE the shell,
+            # which is the only place this environment's cameras go: the deck
+            # tops out 12 km up and the station orbits at 420 km. A camera
+            # inside it would lose the deck rather than see it from below --
+            # no static `side` is right for both faces of a surface, and that
+            # vantage point is 400 km beneath the scene.
             cloud_mat.side = gfx.VisibleSide.front
             cloud_mesh = gfx.Mesh(cloud_geom, cloud_mat)
             self._earth_surface_group.add(cloud_mesh)
