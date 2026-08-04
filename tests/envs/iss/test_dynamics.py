@@ -316,6 +316,100 @@ def test_attitude_gate_is_jit_and_vmap_compatible():
     assert events.docked.shape == (3,)
 
 
+def test_escape_fires_outside_the_max_range():
+    dyn = ISSDynamics(ISSConfig(
+        max_range_m=1000.0,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+    ))
+    _, events = dyn.step(make_state(pos=(1500.0, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(events.escaped) is True
+
+
+def test_escape_does_not_fire_inside_the_max_range():
+    dyn = ISSDynamics(ISSConfig(
+        max_range_m=1000.0,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+    ))
+    _, events = dyn.step(make_state(pos=(500.0, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(events.escaped) is False
+
+
+@pytest.mark.parametrize("radius, expected", [(999.9, False), (1000.1, True)])
+def test_escape_turns_on_at_the_boundary(radius, expected):
+    # At rest with zero action the post-step position is the given one, so
+    # this pins the comparison itself rather than a step's worth of drift.
+    dyn = ISSDynamics(ISSConfig(
+        max_range_m=1000.0,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+    ))
+    _, events = dyn.step(make_state(pos=(radius, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(events.escaped) is expected
+
+
+def test_escape_is_scored_on_the_post_step_position():
+    # Inside the domain before the step, outside after it: the flag must
+    # describe the state the caller is handed back, not the one it came from.
+    dyn = ISSDynamics(ISSConfig(
+        dt=1.0,
+        max_range_m=1000.0,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+    ))
+    s = make_state(pos=(999.0, 0.0, 0.0), vel=(10.0, 0.0, 0.0))
+    s_next, events = dyn.step(s, ZERO_ACTION)
+    assert float(jnp.linalg.norm(s[0:3])) < 1000.0
+    assert float(jnp.linalg.norm(s_next[0:3])) > 1000.0
+    assert bool(events.escaped) is True
+
+
+def test_max_range_none_never_escapes():
+    dyn = ISSDynamics(ISSConfig(
+        max_range_m=None,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+    ))
+    _, events = dyn.step(make_state(pos=(1e7, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(events.escaped) is False
+
+
+def test_escape_is_independent_of_collision_and_docking():
+    # The three flags are separate outcomes, not a single enum: a chaser far
+    # outside the domain has hit nothing and docked with nothing, and one that
+    # hits the station has not escaped. Consumers OR them into `terminated`.
+    dyn = ISSDynamics(ISSConfig(
+        max_range_m=1000.0,
+        physics=PhysicsConfig(
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [10.0, 10.0, 10.0]}]
+        ),
+        dock=DockConfig(
+            enabled=True, position=(0.0, 0.0, 0.0), max_distance_m=1.0,
+            max_velocity_m_s=1.0, max_attitude_error_deg=None, max_body_rate_rad_s=None,
+        ),
+    ))
+    _, far = dyn.step(make_state(pos=(1500.0, 0.0, 0.0)), ZERO_ACTION)
+    assert (bool(far.escaped), bool(far.collision), bool(far.docked)) == (True, False, False)
+
+    _, at_station = dyn.step(make_state(pos=(0.0, 0.0, 0.0)), ZERO_ACTION)
+    assert bool(at_station.escaped) is False
+    assert bool(at_station.collision) is True
+    assert bool(at_station.docked) is True
+
+
+def test_escape_is_jit_and_vmap_compatible():
+    dyn = ISSDynamics(ISSConfig(
+        max_range_m=1000.0,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        dock=DockConfig(enabled=False),
+    ))
+    states = jnp.stack([make_state(pos=(r, 0.0, 0.0)) for r in (100.0, 1500.0, 2000.0)])
+    _, events = jax.vmap(jax.jit(dyn.step))(states, jnp.zeros((3, 6), jnp.float32))
+    assert events.escaped.shape == (3,)
+    np.testing.assert_array_equal(np.asarray(events.escaped), [False, True, True])
+
+
 def test_reset_places_chaser_on_the_start_sphere():
     dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_m=100.0)))
     s = dyn.reset(jax.random.PRNGKey(0))

@@ -66,6 +66,42 @@ def test_collision_terminates_episodes_early():
     assert np.all(batch.lengths < 50)
 
 
+def test_leaving_the_domain_terminates_episodes_early():
+    # A runaway episode must end at the domain edge rather than burn the whole
+    # horizon. max_range_m below the start sphere puts every reset out of
+    # bounds, so the escape is immediate and does not depend on where the
+    # random policy happens to fly.
+    cfg = ISSConfig(
+        max_range_m=50.0,
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        dock=DockConfig(enabled=False),
+    )
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2)
+    batch = driver.generate(RolloutSpec(num_episodes=2, max_steps=200, seed=0))
+    batch.validate()
+
+    assert np.all(batch.terminated)
+    assert not np.any(batch.truncated)
+    # One step -> two observations, far short of the 200-step horizon.
+    assert np.all(batch.lengths == 2)
+    # Sensor noise is off by default, so the recorded terminal observation is
+    # the out-of-bounds state that ended the episode.
+    terminal = batch.observations[np.arange(batch.num_episodes), batch.lengths - 1]
+    assert np.all(np.linalg.norm(terminal[:, 0:3], axis=1) > 50.0)
+
+
+def test_max_range_none_lets_a_far_episode_run_to_truncation():
+    cfg = ISSConfig(
+        max_range_m=None,
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        dock=DockConfig(enabled=False),
+    )
+    driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2)
+    batch = driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
+    assert np.all(batch.truncated)
+    assert not np.any(batch.terminated)
+
+
 def test_is_deterministic_in_the_seed():
     a = make_driver().generate(RolloutSpec(num_episodes=3, max_steps=10, seed=7))
     b = make_driver().generate(RolloutSpec(num_episodes=3, max_steps=10, seed=7))

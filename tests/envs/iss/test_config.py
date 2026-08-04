@@ -30,6 +30,34 @@ def test_default_config_matches_expected_values():
     assert cfg.dock.max_velocity_m_s == 0.5
 
 
+def test_max_range_defaults_to_a_kilometre():
+    assert ISSConfig().max_range_m == 1000.0
+
+
+def test_max_range_explicit_none_survives_toml_roundtrip(tmp_path):
+    # max_range_m defaults to 1000.0, not None, so an explicit None has to go
+    # through ConfigModel's explicit-null machinery: omitting it the way TOML
+    # omits any None would silently resurrect the 1 km bound on load and
+    # terminate episodes a caller deliberately let run unbounded.
+    original = ISSConfig(max_range_m=None)
+    path = tmp_path / "run_config.toml"
+    original.to_toml(path)
+    loaded = ISSConfig.from_toml(path)
+    assert loaded.max_range_m is None
+    assert loaded == original
+
+
+@pytest.mark.parametrize("max_range_m", [0.0, -1.0, float("inf"), float("nan")])
+def test_non_positive_or_non_finite_max_range_is_rejected(max_range_m):
+    # A zero or negative bound would put every reachable state outside the
+    # domain, ending each episode on its first step; inf/NaN describe no
+    # boundary at all -- None is how the bound is turned off.
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ISSConfig(max_range_m=max_range_m)
+
+
 def test_config_is_frozen():
     from pydantic import ValidationError
 

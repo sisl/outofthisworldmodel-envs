@@ -5,7 +5,7 @@ from owm_envs.envs.iss.config import DockConfig, ISSConfig, RewardWeights
 from owm_envs.envs.iss.dynamics import Events
 from owm_envs.envs.iss.reward import iss_reward
 
-NO_EVENTS = Events(collision=jnp.array(False), docked=jnp.array(False))
+NO_EVENTS = Events(collision=jnp.array(False), docked=jnp.array(False), escaped=jnp.array(False))
 ZERO_ACTION = jnp.zeros((6,), dtype=jnp.float32)
 
 
@@ -84,16 +84,28 @@ def test_control_effort_term_penalizes_actuation():
 
 def test_collision_applies_the_full_penalty_weight():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
-    hit = Events(collision=jnp.array(True), docked=jnp.array(False))
+    hit = Events(collision=jnp.array(True), docked=jnp.array(False), escaped=jnp.array(False))
     r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
     assert np.isclose(float(r), cfg.reward_weights.collision, atol=1.0)
 
 
 def test_docking_is_not_penalized():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
-    docked = Events(collision=jnp.array(False), docked=jnp.array(True))
+    docked = Events(collision=jnp.array(False), docked=jnp.array(True), escaped=jnp.array(False))
     r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, docked, cfg)
     assert np.isclose(float(r), 0.0, atol=1e-6)
+
+
+def test_escaping_is_neither_rewarded_nor_penalized():
+    # Leaving the domain ends the episode but carries no reward term of its
+    # own: the existing position shaping already scores being far away, and a
+    # bonus or penalty here would be a second, unweighted opinion on it.
+    cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
+    state = state_at((2000.0, 0.0, 0.0))
+    escaped = Events(collision=jnp.array(False), docked=jnp.array(False), escaped=jnp.array(True))
+    assert float(iss_reward(state, ZERO_ACTION, escaped, cfg)) == float(
+        iss_reward(state, ZERO_ACTION, NO_EVENTS, cfg)
+    )
 
 
 def test_reward_goal_position_none_targets_the_dock_position():
@@ -157,6 +169,6 @@ def test_penalties_are_negative_rewards():
 
 def test_collision_is_catastrophic_not_rewarded():
     cfg = ISSConfig(reward_goal_position=(0.0, 0.0, 0.0))
-    hit = Events(collision=jnp.array(True), docked=jnp.array(False))
+    hit = Events(collision=jnp.array(True), docked=jnp.array(False), escaped=jnp.array(False))
     r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
     assert float(r) < -1000.0, "a collision must be a large NEGATIVE reward"

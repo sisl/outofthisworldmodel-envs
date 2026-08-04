@@ -244,7 +244,9 @@ class ScanDriver:
                 measured_next = next_state
 
             next_index = step_index + 1
-            terminated = jnp.logical_or(events.collision, events.docked)
+            terminated = jnp.logical_or(
+                jnp.logical_or(events.collision, events.docked), events.escaped
+            )
             truncated = jnp.logical_and(~terminated, next_index >= max_steps)
             done = jnp.logical_or(terminated, truncated)
 
