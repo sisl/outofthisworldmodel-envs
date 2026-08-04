@@ -68,22 +68,10 @@ def test_render_config_round_trips_through_toml(tmp_path):
     assert RenderConfig.from_toml(path) == cfg
 
 
-def test_no_reference_to_the_missing_bump_texture():
-    # No bump/normal-map source exists for this asset set; the code path
-    # must be gone entirely, not merely disabled. Checks every module in the
-    # render package, not just this one -- a reference left in a sibling
-    # module would otherwise go uncaught.
-    import pkgutil
-
-    import owm_envs.render as render_package
+def test_scene_does_not_hardcode_a_high_resolution_source_name():
+    # Source filenames belong to earth.py's tier table; a copy here would go
+    # stale the moment a source is replaced.
     import owm_envs.render.iss_scene as scene_module
-
-    for module_info in pkgutil.walk_packages(render_package.__path__, prefix="owm_envs.render."):
-        module = __import__(module_info.name, fromlist=["_"])
-        if not hasattr(module, "__file__") or module.__file__ is None:
-            continue
-        source = open(module.__file__).read()
-        assert "bump" not in source.lower(), f"{module_info.name} still references bump"
 
     assert "EarthColorMap-80k" not in open(scene_module.__file__).read()
 

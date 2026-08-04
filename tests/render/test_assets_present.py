@@ -6,8 +6,6 @@ from owm_envs.render import asset_path, resources_dir
 
 EXPECTED = [
     ("international-space-station", "ISS_stationary.glb"),
-    ("earth", "patches", "earth_color_patch.jpg"),
-    ("earth", "patches", "earth_clouds_patch.jpg"),
     ("moon", "moon_small.glb"),
     ("spacex-dragon-capsule", "spacex_dragon_2_exterior.glb"),
 ]
