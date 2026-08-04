@@ -2,7 +2,11 @@
 name = "owm-envs"
 version = "0.1.0"
 description = "Training data environments for the Out of this World Model (OWM) world model"
-requires-python = ">=3.11"
+# >=3.12 because the datasets extra pins lerobot 0.6.1, which requires it.
+# Leaving 3.11 open is what let an install silently resolve a different
+# lerobot -- and a different on-disk dataset format -- than the one this
+# package is written against.
+requires-python = ">=3.12"
 dependencies = [
     "astrojax>=0.8.0",
     "jax>=0.4.30",
@@ -16,19 +20,20 @@ dependencies = [
 
 [project.optional-dependencies]
 render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow", "trimesh"]
-# Bounded below 0.5: datasets/lerobot_writer.py targets the 0.4.x API and
-# depends on version-specific behaviour of create(), the feature schema, and
-# add_frame -- including the (1, 1) feature shapes, which are a workaround for
-# how this version converts declared shapes to HuggingFace types. uv.lock
-# holds 0.4.4 for development, but a published install resolves afresh and
-# would otherwise be free to take a release that changes any of that.
+# Pinned exactly: datasets/lerobot_writer.py depends on version-specific
+# behaviour of create(), the feature schema, add_frame and finalize() --
+# including the (1, 1) feature shapes, which are a workaround for how this
+# version converts declared shapes to HuggingFace types. The consumer of
+# these datasets (quickdraw) pins the same version; the two must agree,
+# because lerobot's on-disk format is versioned independently of its API and
+# a reader on a different release can find a layout it does not know.
 # huggingface-hub is named here as well as reached through lerobot:
 # datasets/hub.py imports it directly, and a dependency this package calls
 # itself must not be one lerobot is free to drop.
 # plotly is not used by the package itself: scripts/plot_trajectories_3d.py
 # reads a written run's parquet and renders it, so it needs whatever reads
 # those files, and this is the extra that supplies them.
-datasets = ["lerobot>=0.4.4,<0.5", "huggingface-hub>=0.34.2", "plotly>=6.0"]
+datasets = ["lerobot[dataset]==0.6.1", "huggingface-hub>=0.34.2", "plotly>=6.0"]
 
 [project.scripts]
 owm-envs = "owm_envs.cli:app"
