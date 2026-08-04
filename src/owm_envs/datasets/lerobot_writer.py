@@ -140,6 +140,9 @@ def write_lerobot_split(
     clips: Iterator[np.ndarray] | None = None
     frame_shape: tuple[int, ...] | None = None
     root = Path(root)
+    # Bound before the try so the failure path can tell "the dataset exists and
+    # needs finalizing" from "we never got as far as creating one".
+    dataset = None
     # The caller's own iterator, held apart from the peeked-and-handed-back
     # view of it below. This is the one that owns the render pool, and so the
     # one that has to be closed however this call ends -- closing the hand-back
@@ -238,10 +241,20 @@ def write_lerobot_split(
         # for as long as the exception is held. Closing it here runs its
         # cleanup at the failure rather than whenever the traceback is dropped.
         #
-        # Suppressed, and only on this path: a source that also fails on the
-        # way down must not replace the error that says what actually went
-        # wrong. On the path below there is no such error to protect, so a
-        # failed shutdown is itself the news and propagates.
+        # The split this call leaves behind gets finalized for the same reason:
+        # unfinalized, it is only readable once lerobot's `__del__` reaches it,
+        # so whether a failed run left a loadable split would come down to when
+        # the dataset was collected. Finalizing decides it -- the episodes that
+        # completed are the ones that are there. The episode being written when
+        # this failed was never saved, so it is not among them.
+        #
+        # Suppressed, and only on this path: neither a source nor a writer that
+        # also fails on the way down must replace the error that says what
+        # actually went wrong. On the path below there is no such error to
+        # protect, so a failed shutdown is itself the news and propagates.
+        if dataset is not None:
+            with contextlib.suppress(Exception):
+                dataset.finalize()
         with contextlib.suppress(Exception):
             _close(source)
         raise

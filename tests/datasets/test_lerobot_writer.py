@@ -248,3 +248,44 @@ def test_finalizes_the_dataset_without_relying_on_garbage_collection(tmp_path, m
     reloaded = LeRobotDataset("iss/train", root=tmp_path / "train")
     assert reloaded.num_frames == 8
     assert reloaded.num_episodes == 2
+
+
+def test_finalizes_the_split_it_leaves_behind_when_an_episode_write_fails(tmp_path, monkeypatch):
+    """A write that dies part-way must still leave a decided split on disk.
+
+    The writer already documents that a failure surfaces with the earlier
+    episodes on disk. Without finalizing on that path those episodes are only
+    a loadable dataset once lerobot's `__del__` gets round to it, so whether
+    the run left a readable split or an unreadable one comes down to when the
+    dataset was collected. Finalizing decides it either way; the episodes that
+    completed are the ones that are there.
+    """
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from owm_envs.datasets import lerobot_writer
+
+    created = []
+    real_create = LeRobotDataset.create
+
+    def capturing_create(*args, **kwargs):
+        dataset = real_create(*args, **kwargs)
+        created.append(dataset)
+        return dataset
+
+    real_write_episode = lerobot_writer._write_episode
+
+    def failing_write_episode(dataset, batch, episode, clips, frame_shape, task_name):
+        if episode == 1:
+            raise RuntimeError("simulated failure writing episode 1")
+        return real_write_episode(dataset, batch, episode, clips, frame_shape, task_name)
+
+    monkeypatch.setattr(LeRobotDataset, "create", capturing_create)
+    monkeypatch.setattr(lerobot_writer, "_write_episode", failing_write_episode)
+
+    with pytest.raises(RuntimeError, match="simulated failure"):
+        write_lerobot_split(tmp_path / "train", "iss/train", small_batch(), fps=24)
+    assert created, "writer did not create a dataset"
+
+    # Episode 0 (5 frames) completed; episode 1 never did.
+    reloaded = LeRobotDataset("iss/train", root=tmp_path / "train")
+    assert reloaded.num_episodes == 1
+    assert reloaded.num_frames == 5
