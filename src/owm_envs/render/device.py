@@ -1,20 +1,20 @@
 """Select which GPU adapter pygfx renders on.
 
-Both A100s on a dual-GPU host expose the identical adapter name ("NVIDIA A100
-80GB PCIe (DiscreteGPU) via Vulkan"), so wgpu's name-based selection cannot
-tell them apart; selection has to go by enumeration index. Vulkan also ignores
-CUDA_VISIBLE_DEVICES, so that is not an escape hatch either.
+Identical GPUs in one host expose the identical adapter name, so wgpu's
+name-based selection cannot tell them apart; selection has to go by
+enumeration index. Vulkan also ignores CUDA_VISIBLE_DEVICES, so that is not
+an escape hatch either.
 
 Must run before the first renderer or scene is built: pygfx creates one shared
 wgpu device per process on first use and refuses to rebuild it, so
 `select_adapter` raises RuntimeError once that device exists.
 
 pygfx does not promise that enumeration order matches nvidia-smi order, and
-wgpu exposes no PCI/bus id to check it against -- both cards report the same
-vendor_id and device_id, which is why the index is the only discriminator. On
-this host it was verified to match: rendering with index 0 and then index 1
-put ~1.9 GiB on nvidia-smi GPU 0 and GPU 1 respectively, each leaving the
-other card idle. Re-check that on any new host before trusting the mapping.
+wgpu exposes no PCI/bus id to check it against -- identical cards report the
+same vendor_id and device_id, which is why the index is the only
+discriminator. Verify the mapping on any new host before trusting it: render
+at one index at a time and confirm the allocation lands on the card
+nvidia-smi numbers the same way, leaving the others idle.
 
 Against wgpu-py 0.27.0 / pygfx 0.15.2 the API is
 `wgpu.gpu.enumerate_adapters_sync()` and
