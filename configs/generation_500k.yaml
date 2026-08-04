@@ -10,7 +10,7 @@ splits:
       orbit:
         radius_range_m:
         - 60.0
-        - 500.0
+        - 250.0
         speed_fraction_range:
         - 0.4
         - 1.0
@@ -90,7 +90,7 @@ splits:
       orbit:
         radius_range_m:
         - 60.0
-        - 500.0
+        - 250.0
         speed_fraction_range:
         - 0.4
         - 1.0

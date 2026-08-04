@@ -181,7 +181,7 @@ class ISSConfig(ConfigModel):
     # Strictly positive and finite when set: zero or negative would put every
     # reachable state outside the domain, and inf/NaN describe no boundary at
     # all -- None is how the bound is turned off.
-    max_range_m: float | None = Field(default=1000.0, gt=0, allow_inf_nan=False)
+    max_range_m: float | None = Field(default=500.0, gt=0, allow_inf_nan=False)
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)

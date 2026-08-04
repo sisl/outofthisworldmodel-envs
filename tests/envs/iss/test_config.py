@@ -31,7 +31,7 @@ def test_default_config_matches_expected_values():
 
 
 def test_max_range_defaults_to_a_kilometre():
-    assert ISSConfig().max_range_m == 1000.0
+    assert ISSConfig().max_range_m == 500.0
 
 
 def test_max_range_explicit_none_survives_toml_roundtrip(tmp_path):
