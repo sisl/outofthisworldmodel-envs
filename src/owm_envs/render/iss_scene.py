@@ -31,7 +31,7 @@ from pygfx.renderers.wgpu import get_shared
 from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
 from owm_envs.render import asset_path
-from owm_envs.render.earth import earth_texture_path
+from owm_envs.render.earth import MAP_WIDTHS, earth_texture_path
 from owm_envs.render.iss_frame import ISS_RECENTRE_OFFSET, UPRIGHT_EULER_XYZ
 from owm_envs.render.loaders import load_cubemap_from_faces, load_glb_scene
 
@@ -71,14 +71,54 @@ class RenderConfig(ConfigModel):
     earth_moon_distance_m: float = 384_400_000.0
     moon_direction_from_earth_world: tuple[float, float, float] = (0.0, 1.0, 0.0)
 
+    # Exposure multiplier on the starfield, in linear light: 1.0 is the map at
+    # full strength, 0.0 a black sky. The map is a survey composite, exposed to
+    # show the Milky Way rather than as a camera pointed at a sunlit station
+    # would see it -- that camera stops down for the Earth and the hull, and
+    # the sky behind them goes nearly black. 0.3 keeps the band faintly legible
+    # without competing with the lit scene.
+    star_brightness: float = 0.3
+
     directional_light_intensity: float = 8.0
     sun_direction_world: tuple[float, float, float] = (1.0, -0.3, 0.5)
     sun_visual_distance_m: float = 1_000_000.0
     sun_angular_diameter_deg: float = 0.53
 
+    # Near planes are what bound how far a camera can see, not the far planes:
+    # see `_MAX_DEPTH_RANGE_RATIO` in `owm_envs.render.renderer`. The FPV
+    # camera is squeezed from both sides. Measured over the limb framing at
+    # 128x128, not derived:
+    #
+    #   near   surface   atmosphere   hull kept
+    #   0.02     11.1%       3.6%      100%  (reference)
+    #   0.20    100%       100%         98.0%
+    #   0.30    100%       100%         98.1%
+    #   0.40    100%       100%         98.1%
+    #   0.45    100%       100%         87.1%
+    #   0.50    100%       100%         65.3%
+    #
+    # Below ~0.20 m the depth range stops reaching Earth's limb at 2.35e6 m and
+    # the planet is cut off just inside it; above ~0.40 m it eats the capsule's
+    # own nose cone, whose nearest surface inside this camera's frustum is
+    # 0.4026 m away. 0.3 m sits in the middle of that window: 1.5x clear of the
+    # planet bound, 1.34x clear of the hull.
+    #
+    # The window used to be far tighter -- effectively the single point 0.40 --
+    # because the atmospheric glow shells reach much further out than the
+    # surface does and were being clipped away below that. Comparing their
+    # depth on `<=` instead of `<` (see `_GLOW_QUEUE`) costs nothing and
+    # retires that constraint, leaving only the surface and the hull, which
+    # are a factor of two apart.
+    #
+    # The STATION is not the binding constraint: the closest an FPV camera came
+    # to ISS geometry over a full run of docking episodes was 2.19 m, 6x clear.
+    # This near plane serves ISS_FPV too, which is unaffected either way -- it
+    # is mounted on the zenith side looking away from the station, with no ISS
+    # geometry inside its frustum at all, and its far plane still clears the
+    # limb 2.5x.
     scene_camera_near_m: float = 5.0
     scene_camera_far_m: float = 1_000_000.0
-    fpv_camera_near_m: float = 0.05
+    fpv_camera_near_m: float = 0.3
     fpv_camera_far_m: float = 1_000_000.0
 
     dragon_iso_offset_world: tuple[float, float, float] = (31.5, -31.5, 24.5)
@@ -181,6 +221,58 @@ def _visible_geometry_center(obj: gfx.WorldObject) -> np.ndarray | None:
     return (total / count).astype(np.float32)
 
 
+# Pillow warns above 89.5 Mpx and refuses outright above twice that, on the
+# assumption that a file that big is a decompression bomb aimed at whoever
+# opens it. The Earth maps are first-party assets baked by
+# `owm_envs.render.downsample` to the widths in `MAP_WIDTHS` -- the widest is
+# 16384x8192 = 134 Mpx -- so the cap is raised to exactly what those can be
+# rather than removed: an asset that outgrows the widths this package itself
+# produces should still trip the check.
+_MAX_MAP_PIXELS = max(MAP_WIDTHS.values()) * (max(MAP_WIDTHS.values()) // 2)
+
+
+def _read_map(path: Path) -> np.ndarray:
+    """Read one of the Earth maps, whatever its pixel count.
+
+    Pillow's cap is a process-wide global, so raising it here raises it for
+    everything in the process; `None` means a caller has already lifted it
+    entirely and must not be walked back.
+    """
+    if Image.MAX_IMAGE_PIXELS is not None:
+        Image.MAX_IMAGE_PIXELS = max(Image.MAX_IMAGE_PIXELS, _MAX_MAP_PIXELS)
+    return np.asarray(iio.imread(path))
+
+
+# Draw order for the Earth's cloud deck, and for what has to be behind it.
+#
+# The deck is a shell 12 km above the surface, which at orbital viewing
+# distances is far below what a float32 depth buffer can tell apart: one depth
+# step is `d**2 / (near * 2**24)`, about 21 km at the 420 km nadir range and
+# 650 km at the limb. Depth-testing the shell against the surface is therefore
+# rounding noise -- it discarded ~94% of the deck and flipped which pixels
+# survived as the camera moved. No near plane fixes it either: resolving 12 km
+# at the limb would need a near plane of ~27 m, which would clip the station
+# away during a dock.
+#
+# So the deck is composited by draw order instead, which does not depend on
+# precision at all. Geometry puts it strictly in front of everything below it
+# and strictly behind the station, so it is drawn between the two with no depth
+# test and no depth write of its own. pygfx sorts on
+# `(material.render_queue, object.render_order, distance)`; the station and
+# capsule keep pygfx's default queue of 2600 and so paint over the deck
+# normally, using the depth the surface wrote.
+#
+# "Strictly behind the station" is an assumption about this scene rather than
+# something the sort key can check: it holds because the deck tops out at
+# `earth_cloud_altitude_m` (12 km) while everything the simulation flies stays
+# near the station's 420 km. A capsule flown down through the deck, or a config
+# that raised the deck above the station, would be drawn on the wrong side of
+# it -- both are outside what this environment produces.
+_DISTANT_QUEUE = 2000  # Earth's surface, the Sun, the Moon -- all below the deck
+_CLOUD_QUEUE = 2100  # the deck, over them
+_GLOW_QUEUE = 2200  # the atmospheric limb, over the deck
+
+
 def _max_texture_size() -> int:
     return int(get_shared().device.limits["max-texture-dimension-2d"])
 
@@ -210,7 +302,7 @@ def _fit_to_device_limit(arr: np.ndarray, path: Path) -> np.ndarray:
 
 
 def _load_rgb_texture(path: Path) -> gfx.Texture:
-    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    arr = _fit_to_device_limit(_read_map(path), path)
     if arr.ndim == 2:
         arr = np.repeat(arr[..., None], 3, axis=2)
     arr = np.ascontiguousarray(arr[..., :3].astype(np.uint8))
@@ -220,7 +312,7 @@ def _load_rgb_texture(path: Path) -> gfx.Texture:
 def _load_cloud_texture(path: Path, *, opacity: float) -> gfx.Texture:
     """The cloud map is stored as plain RGB; its brightness is coverage, so
     turn that into the alpha channel of a white RGBA texture."""
-    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    arr = _fit_to_device_limit(_read_map(path), path)
     brightness = arr[..., :3].astype(np.float32).mean(axis=-1) if arr.ndim == 3 else arr.astype(np.float32)
     alpha = np.clip(np.rint(brightness * float(opacity)), 0.0, 255.0).astype(np.uint8)
     rgb = np.full(alpha.shape + (3,), 255, dtype=np.uint8)
@@ -261,7 +353,7 @@ def _earth_normal_map(path: Path, *, show: bool, strength: float) -> gfx.Texture
         warnings.warn(f"earth bump map missing at {path}; rendering without a normal map")
         return None
 
-    arr = _fit_to_device_limit(np.asarray(iio.imread(path)), path)
+    arr = _fit_to_device_limit(_read_map(path), path)
     if arr.ndim == 3:
         arr = arr[..., 0]
     normals = _normal_map_from_height(arr.astype(np.float32) / 255.0, strength)
@@ -350,12 +442,22 @@ class ISSScene:
 
         self.background = gfx.Scene()
         starmap = load_cubemap_from_faces(asset_path("nasa_starmap_2020"), ext="png")
-        self.background.add(gfx.Background(None, gfx.BackgroundSkyboxMaterial(map=starmap)))
+        star_material = gfx.BackgroundSkyboxMaterial(map=starmap)
+        # The skybox shader ignores `material.color` -- it samples the cubemap
+        # straight into the output -- but it does scale by `opacity`, and the
+        # background blends over a buffer already cleared to black, in linear
+        # light. So opacity is the exposure multiplier, exactly: measured, 0.5
+        # and 0.3 come back as 0.506x and 0.299x the linear radiance. Scaling
+        # the texels instead would cost a copy of the cubemap and a gamma
+        # round-trip for the same result.
+        star_material.opacity = cfg.star_brightness
+        self.background.add(gfx.Background(None, star_material))
 
         self._earth_surface_group = gfx.Group()
 
         self.scene = gfx.Scene()
-        self.scene.add(self._load_iss_group())
+        self.iss = self._load_iss_group()
+        self.scene.add(self.iss)
         self.scene.add(self._load_earth_group())
         self.scene.add(self._load_moon_group())
         self.scene.add(self._build_sun_sphere())
@@ -419,6 +521,7 @@ class ISSScene:
             emissive=(0.06, 0.06, 0.08),
             emissive_intensity=1.0,
         )
+        earth_mat.render_queue = _DISTANT_QUEUE
         earth_mesh = gfx.Mesh(earth_geom, earth_mat)
         self._earth_surface_group.add(earth_mesh)
 
@@ -433,7 +536,18 @@ class ISSScene:
                 subpoint_lat_deg=cfg.earth_subpoint_lat_deg,
             )
             cloud_mat = gfx.MeshBasicMaterial(map=_texture_map(cloud_tex))
-            cloud_mat.alpha_mode = "blend"
+            cloud_mat.alpha_mode = "blend"  # already implies depth_write=False
+            cloud_mat.render_queue = _CLOUD_QUEUE
+            cloud_mat.depth_test = False
+            # Without a depth test the shell no longer hides its own far half,
+            # and pygfx draws both sides of a mesh by default. Front faces are
+            # exactly the near hemisphere seen from anywhere OUTSIDE the shell,
+            # which is the only place this environment's cameras go: the deck
+            # tops out 12 km up and the station orbits at 420 km. A camera
+            # inside it would lose the deck rather than see it from below --
+            # no static `side` is right for both faces of a surface, and that
+            # vantage point is 400 km beneath the scene.
+            cloud_mat.side = gfx.VisibleSide.front
             cloud_mesh = gfx.Mesh(cloud_geom, cloud_mat)
             self._earth_surface_group.add(cloud_mesh)
 
@@ -459,6 +573,19 @@ class ISSScene:
             mat.alpha_mode = "add"
             mat.side = gfx.VisibleSide.back
             mat.depth_write = False
+            # These shells reach much further out than the surface does -- the
+            # camera sits inside the outer ones, so their back faces run to
+            # ~1.4e7 m -- and past the depth range those fragments round to a
+            # depth of exactly 1.0 and lose `<` against the cleared buffer.
+            # That is what was eating the atmospheric limb at small near
+            # planes. `<=` is the whole fix: a saturated fragment still draws
+            # where nothing occludes it, while the globe -- whose depth is
+            # comfortably under 1.0 -- still hides the far-side shells behind
+            # it. Dropping the depth test instead would let those far-side
+            # back faces add over the planet, and it is precisely their being
+            # hidden there that makes this a limb and not a wash.
+            mat.render_queue = _GLOW_QUEUE
+            mat.depth_compare = "<="
             shell = gfx.Mesh(geom, mat)
             shell.local.rotation = surface_rotation
             earth_group.add(shell)
@@ -480,6 +607,8 @@ class ISSScene:
         direction = _unit(np.array(cfg.moon_direction_from_earth_world, dtype=np.float32))
         moon_world = earth_center_world + cfg.earth_moon_distance_m * direction
         moon_group.local.position = tuple(moon_world.tolist())
+        for mesh in _collect_meshes(moon_group):
+            mesh.material.render_queue = _DISTANT_QUEUE
         return moon_group
 
     def _build_sun_sphere(self) -> gfx.Mesh:
@@ -487,9 +616,11 @@ class ISSScene:
         distance = max(cfg.sun_visual_distance_m, 1.0)
         angular_radius_rad = 0.5 * np.deg2rad(cfg.sun_angular_diameter_deg)
         radius = max(distance * float(np.tan(angular_radius_rad)), 1.0)
+        sun_mat = gfx.MeshBasicMaterial(color=(1.0, 0.96, 0.82, 1.0))
+        sun_mat.render_queue = _DISTANT_QUEUE
         sun = gfx.Mesh(
             gfx.sphere_geometry(radius=radius, width_segments=32, height_segments=16),
-            gfx.MeshBasicMaterial(color=(1.0, 0.96, 0.82, 1.0)),
+            sun_mat,
         )
         direction = _unit(np.array(cfg.sun_direction_world, dtype=np.float32))
         sun.local.position = tuple((direction * distance).tolist())

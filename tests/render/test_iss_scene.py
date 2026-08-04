@@ -8,6 +8,8 @@ pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 import imageio.v3 as iio  # noqa: E402  -- ships with the render extra, like pygfx
 import owm_envs.render.iss_scene as scene_module  # noqa: E402
+from PIL import Image  # noqa: E402
+from owm_envs.render.earth import MAP_WIDTHS  # noqa: E402
 from owm_envs.render.iss_scene import (  # noqa: E402
     ISSScene,
     RenderConfig,
@@ -292,6 +294,39 @@ def test_downscaling_never_collapses_a_dimension_to_zero(tmp_path, monkeypatch):
     with pytest.warns(UserWarning, match="texture limit"):
         texture = _load_rgb_texture(path)
     assert min(texture.size[:2]) >= 1
+
+
+def _bomb_warnings(caught):
+    return [w for w in caught if issubclass(w.category, Image.DecompressionBombWarning)]
+
+
+@pytest.mark.parametrize(
+    "load",
+    [
+        _load_rgb_texture,
+        lambda path: _load_cloud_texture(path, opacity=0.8),
+        lambda path: _earth_normal_map(path, show=True, strength=8.0),
+    ],
+)
+def test_a_map_above_pillows_pixel_cap_loads_without_a_bomb_warning(tmp_path, monkeypatch, load):
+    # A real full-globe map is 16384x8192 = 134 Mpx, over Pillow's 89.5 Mpx
+    # default. Writing one here would cost hundreds of megabytes, so the cap is
+    # lowered instead: what the loader must do is raise whatever cap is in
+    # force, and that is the same code path at either size.
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 16)
+    path = tmp_path / "big.png"
+    iio.imwrite(path, np.zeros((64, 128, 3), dtype=np.uint8))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        load(path)
+    assert not _bomb_warnings(caught)
+
+
+def test_the_raised_pixel_cap_covers_the_largest_full_globe_map():
+    # The cap is derived from the widths owm_envs.render.earth downsamples to,
+    # so raising one of those cannot silently put a shipped map back over it.
+    widest = max(MAP_WIDTHS.values())
+    assert scene_module._MAX_MAP_PIXELS >= widest * (widest // 2)
 
 
 def test_earth_is_a_full_globe_with_a_normal_map(scene):

@@ -82,19 +82,53 @@ def _dragon_fpv_pose_world(cfg: RenderConfig, state: np.ndarray) -> tuple[np.nda
     return fpv_pos, fpv_forward, fpv_up
 
 
-def _far_covering_earth_and_moon(cfg: RenderConfig) -> float:
-    """A far clip distance that reaches the Moon, the far side of it being
-    the most distant thing in the scene.
+# A perspective projection maps a point at distance d to a depth of
+# `1 - near/d`, and the depth buffer is float32: once `near/d` falls below the
+# spacing of the floats just under 1.0, that rounds to exactly 1.0, the
+# fragment fails the depth test against the cleared buffer, and whatever was
+# drawn behind it shows through. The usable depth range is therefore bounded
+# by the float32 mantissa -- about `near * 2**24` -- NO MATTER WHAT `far` SAYS.
+# Widening `far` past this point is inert: it is the near plane that has to
+# move. (Measured on this scene: near=0.05 m clips at ~1.07e6 m however large
+# `far` is; near=0.5 m at ~1.7e7 m.)
+#
+# This budget is what makes `RenderConfig.fpv_camera_near_m` a knife edge: one
+# camera cannot comfortably hold both a hull 0.4 m away and a limb 2350 km
+# away. The way out is to stop asking it to -- draw the planet and the station
+# in two passes with the depth buffer CLEARED between them, so each gets the
+# whole budget for its own scale. pygfx 0.15 has no public depth-only clear
+# (`renderer.render(clear=True)` takes the colour with it, and the background
+# pass shares this same buffer), so that means compositing the two passes
+# ourselves rather than moving objects between the existing scenes. Worth
+# doing; too structural to fold into a bug fix.
+_MAX_DEPTH_RANGE_RATIO = 2.0**24
+
+
+def _far_covering_the_scene(cfg: RenderConfig) -> float:
+    """A far clip distance that reaches the far side of the Moon, the most
+    distant thing in the scene.
 
     Earth and the Moon live in the same scene graph as the ISS and Dragon,
     tens to hundreds of millions of metres out -- a far plane sized for
-    nearby station geometry would clip them out entirely.
+    nearby station geometry would clip them out entirely. The Moon is past
+    what `_MAX_DEPTH_RANGE_RATIO` allows at any near plane close enough to
+    render a dock, so this is an upper bound on what a camera asks for, not
+    a promise that it gets there.
     """
     return cfg.earth_moon_distance_m + cfg.earth_radius_m + cfg.iss_altitude_m + cfg.moon_radius_m
 
 
-def _with_far(view: CameraView, far: float) -> CameraView:
-    return dataclasses.replace(view, far=max(view.far or 0.0, far))
+def _with_scene_far(view: CameraView, cfg: RenderConfig) -> CameraView:
+    """The same camera, with its far plane pushed out to cover the scene.
+
+    Widened to reach the scene, then capped at what the near plane can
+    express -- including past a caller's own far, which the projection would
+    round away regardless. The returned far is therefore one the camera really
+    does clip at rather than a number that only looks generous.
+    """
+    near = view.near if view.near is not None else 0.01
+    wanted = max(view.far or 0.0, _far_covering_the_scene(cfg))
+    return dataclasses.replace(view, far=min(wanted, near * _MAX_DEPTH_RANGE_RATIO))
 
 
 def _build_views(cfg: RenderConfig, state: np.ndarray) -> dict[ViewName, CameraView]:
@@ -240,19 +274,13 @@ class ISSRenderer:
         all_views = _build_views(self.cfg, state)
         if view not in all_views:
             raise ValueError(f"unknown view {view!r}; expected one of {sorted(all_views)}")
-        # Widen the far clip for the wide shots so Earth and the Moon are not
-        # clipped out; skip it for the FPV views, whose near plane is already
-        # very small and does not need the added near/far precision spread.
-        return self.render_view(
-            state, all_views[view], action, widen_far=not view.endswith("_FPV")
-        )
+        return self.render_view(state, all_views[view], action)
 
     def render_view(
         self,
         state: np.ndarray,
         view: CameraView,
         action: np.ndarray | None = None,
-        widen_far: bool = True,
     ) -> np.ndarray:
         """Render the posed scene through an arbitrary camera.
 
@@ -264,12 +292,20 @@ class ISSRenderer:
 
         self._iss_scene.update(state, action)
         self._update_debug_overlays(action)
+        return self._draw(view)
 
-        scene_view = _with_far(view, _far_covering_earth_and_moon(self.cfg)) if widen_far else view
+    def _draw(self, view: CameraView) -> np.ndarray:
+        """Draw the already-posed scene through one camera.
 
+        The skybox is drawn on the camera as configured and the scene on a
+        copy whose far plane covers the whole scene: the background writes no
+        depth, so the two passes only have to agree on where the camera is,
+        not on how deep it can see.
+        """
         self._renderer.render(self._iss_scene.background, make_camera(view), clear=True)
-        self._renderer.render(self._iss_scene.scene, make_camera(scene_view), clear=False)
-
+        self._renderer.render(
+            self._iss_scene.scene, make_camera(_with_scene_far(view, self.cfg)), clear=False
+        )
         frame = np.asarray(self._renderer.snapshot())
         return np.ascontiguousarray(frame[..., :3])
 
