@@ -53,8 +53,8 @@ def render_episode_frames(
             # carrying the goal-error block is not renderable geometry (25
             # dims into a renderer that poses 13). The fallback is measured,
             # not true -- see this function's docstring.
-            if batch.true_observations is not None:
-                state = batch.true_observations[episode_index, t]
+            if batch.true_state is not None:
+                state = batch.true_state[episode_index, t]
             else:
                 state = batch.observations[episode_index, t][:13]
             action = batch.actions[episode_index, t]

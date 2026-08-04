@@ -370,7 +370,7 @@ def test_truth_is_none_for_a_backend_that_supplies_no_state():
     )
     batch = driver.generate(RolloutSpec(num_episodes=1, max_steps=1, seed=0))
     batch.validate()
-    assert batch.true_observations is None
+    assert batch.true_state is None
 
 
 def test_env_is_closed_when_the_rollout_raises():
@@ -678,11 +678,11 @@ def test_truth_stays_aligned_when_lanes_desynchronize():
     # checking nothing the others don't.
     assert sorted(batch.lengths.tolist()) == [4, 4, 4, 6, 6]
 
-    assert batch.true_observations is not None
+    assert batch.true_state is not None
     for i in range(batch.num_episodes):
         length = int(batch.lengths[i])
         np.testing.assert_array_equal(
-            batch.true_observations[i, :length],
+            batch.true_state[i, :length],
             batch.observations[i, :length] + _CodedStateVectorEnv.state_offset,
         )
 

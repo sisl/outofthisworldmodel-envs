@@ -103,7 +103,7 @@ def test_both_drivers_agree_on_free_flight_trajectories():
     np.testing.assert_allclose(a.observations, b.observations, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(a.actions, b.actions, rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(a.rewards, b.rewards, rtol=1e-3, atol=1e-2)
-    np.testing.assert_allclose(a.true_observations, b.true_observations, rtol=1e-4, atol=1e-4)
+    np.testing.assert_allclose(a.true_state, b.true_state, rtol=1e-4, atol=1e-4)
     _assert_truth_recorded(a)
     _assert_truth_recorded(b)
 
@@ -132,7 +132,7 @@ def test_scan_and_vector_agree_on_goal_blocks_for_dock():
     np.testing.assert_array_equal(scan.lengths, vector.lengths)
     # Truth is the un-augmented 13-dim state on both sides: the goal block
     # widens `observations` only, so the two channels must still agree.
-    np.testing.assert_allclose(scan.true_observations, vector.true_observations, atol=1e-5)
+    np.testing.assert_allclose(scan.true_state, vector.true_state, atol=1e-5)
     _assert_truth_recorded(scan)
     _assert_truth_recorded(vector)
 
@@ -205,10 +205,10 @@ def _assert_truth_recorded(batch):
     stored observation are the same numbers; asserting that pins the
     alignment, which a shape check alone would not.
     """
-    assert batch.true_observations is not None
-    assert batch.true_observations.shape == batch.observations.shape[:2] + (13,)
+    assert batch.true_state is not None
+    assert batch.true_state.shape == batch.observations.shape[:2] + (13,)
     np.testing.assert_allclose(
-        batch.true_observations, batch.observations[..., :13], rtol=1e-5, atol=1e-5
+        batch.true_state, batch.observations[..., :13], rtol=1e-5, atol=1e-5
     )
 
 
@@ -341,7 +341,7 @@ def _assert_batches_equal(a, b):
     np.testing.assert_array_equal(a.observations, b.observations)
     np.testing.assert_array_equal(a.actions, b.actions)
     np.testing.assert_array_equal(a.lengths, b.lengths)
-    np.testing.assert_array_equal(a.true_observations, b.true_observations)
+    np.testing.assert_array_equal(a.true_state, b.true_state)
 
 
 # Multi-split runs call generate() repeatedly (the CLI builds a driver per

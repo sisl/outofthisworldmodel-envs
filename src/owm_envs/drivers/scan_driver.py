@@ -106,7 +106,7 @@ class ScanDriver:
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
             records_dock_targets=True,
-            records_true_observations=True,
+            records_true_state=True,
         )
 
     def _generate_transitions(
@@ -166,7 +166,7 @@ class ScanDriver:
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
             records_dock_targets=True,
-            records_true_observations=True,
+            records_true_state=True,
         )
 
     def _build_runner(self, max_steps: int, horizon: int):
@@ -383,8 +383,8 @@ class ScanDriver:
                             axis=0,
                         ),
                         # The same N+1 cut over the true states, so
-                        # "true_obs"[i] is the un-noised state behind "obs"[i].
-                        "true_obs": np.concatenate(
+                        # "true_state"[i] is the un-noised state behind "obs"[i].
+                        "true_state": np.concatenate(
                             [true_states[lane, start : t + 1], true_next_states[lane, t : t + 1]],
                             axis=0,
                         ),
@@ -400,7 +400,7 @@ class ScanDriver:
                         "truncated": bool(truncated[lane, t]),
                         "policy_id": int(extras[lane, start, _UNION_POLICY_IDX])
                         if records_policy_ids
-                        else 0,
+                        else None,
                         # The row the scan itself resolved and handed to
                         # `dynamics.step`, taken at `start` (the episode's
                         # first emitted step) -- not reconstructed from the

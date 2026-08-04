@@ -9,7 +9,7 @@ def _episode(length: int, obs_dim: int = 13, act_dim: int = 6) -> dict:
     rng = np.random.default_rng(length)
     return {
         "obs": rng.normal(size=(length, obs_dim)).astype(np.float32),
-        "true_obs": rng.normal(size=(length, 13)).astype(np.float32),
+        "true_state": rng.normal(size=(length, 13)).astype(np.float32),
         "act": rng.normal(size=(length, act_dim)).astype(np.float32),
         "rew": rng.normal(size=(length,)).astype(np.float32),
         "terminated": True,
@@ -19,15 +19,15 @@ def _episode(length: int, obs_dim: int = 13, act_dim: int = 6) -> dict:
     }
 
 
-def test_pack_records_true_observations():
+def test_pack_records_true_state():
     batch = pack_episodes(
         [_episode(4), _episode(2)], obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
-        records_true_observations=True,
+        records_true_state=True,
     )
-    assert batch.true_observations is not None
-    assert batch.true_observations.shape == (2, 4, 13)
-    assert np.all(batch.true_observations[1, 2:] == 0)  # zero padding
+    assert batch.true_state is not None
+    assert batch.true_state.shape == (2, 4, 13)
+    assert np.all(batch.true_state[1, 2:] == 0)  # zero padding
 
 
 def test_pack_without_flag_leaves_none():
@@ -35,34 +35,46 @@ def test_pack_without_flag_leaves_none():
         [_episode(3)], obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
     )
-    assert batch.true_observations is None
+    assert batch.true_state is None
 
 
-def test_pack_preserves_true_observation_values():
+def test_pack_ignores_policy_id_when_not_recording():
+    """Both drivers leave `policy_id` None when they are not recording one, so
+    packing must never read it under `records_policy_ids=False`."""
+    episode = _episode(3)
+    episode["policy_id"] = None
+    batch = pack_episodes(
+        [episode], obs_dim=13, act_dim=6,
+        records_policy_ids=False, records_dock_targets=True,
+    )
+    assert batch.policy_ids is None
+
+
+def test_pack_preserves_true_state_values():
     episodes = [_episode(4), _episode(2)]
     batch = pack_episodes(
         episodes, obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
-        records_true_observations=True,
+        records_true_state=True,
     )
     for i, episode in enumerate(episodes):
         length = episode["obs"].shape[0]
         np.testing.assert_array_equal(
-            batch.true_observations[i, :length], episode["true_obs"]
+            batch.true_state[i, :length], episode["true_state"]
         )
 
 
 @pytest.mark.parametrize("bad_shape", [(13,), (1, 13)])
-def test_pack_rejects_broadcastable_true_obs(bad_shape):
-    """A (13,) or (1, 13) true_obs would broadcast over every timestep and
+def test_pack_rejects_broadcastable_true_state(bad_shape):
+    """A (13,) or (1, 13) true_state would broadcast over every timestep and
     produce a batch that validates but holds duplicated state."""
     episode = _episode(4)
-    episode["true_obs"] = np.zeros(bad_shape, dtype=np.float32)
-    with pytest.raises(ValueError, match="true_obs"):
+    episode["true_state"] = np.zeros(bad_shape, dtype=np.float32)
+    with pytest.raises(ValueError, match="true_state"):
         pack_episodes(
             [episode], obs_dim=13, act_dim=6,
             records_policy_ids=False, records_dock_targets=True,
-            records_true_observations=True,
+            records_true_state=True,
         )
 
 
@@ -70,48 +82,48 @@ def test_validate_rejects_wrong_episode_count():
     batch = pack_episodes(
         [_episode(3)], obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
-        records_true_observations=True,
+        records_true_state=True,
     )
     bad = TrajectoryBatch(
         observations=batch.observations, actions=batch.actions,
         rewards=batch.rewards, lengths=batch.lengths,
         terminated=batch.terminated, truncated=batch.truncated,
         policy_ids=None, dock_targets=batch.dock_targets,
-        true_observations=np.zeros((2, 3, 13), dtype=np.float32),
+        true_state=np.zeros((2, 3, 13), dtype=np.float32),
     )
     with pytest.raises(ValueError):
         bad.validate()
 
 
-def _rebuild(batch: TrajectoryBatch, true_observations: np.ndarray) -> TrajectoryBatch:
+def _rebuild(batch: TrajectoryBatch, true_state: np.ndarray) -> TrajectoryBatch:
     return TrajectoryBatch(
         observations=batch.observations, actions=batch.actions,
         rewards=batch.rewards, lengths=batch.lengths,
         terminated=batch.terminated, truncated=batch.truncated,
         policy_ids=None, dock_targets=batch.dock_targets,
-        true_observations=true_observations,
+        true_state=true_state,
     )
 
 
 @pytest.mark.parametrize("shape", [(2, 5, 13), (2, 4, 7)])
-def test_validate_rejects_wrong_true_observation_shape(shape):
+def test_validate_rejects_wrong_true_state_shape(shape):
     batch = pack_episodes(
         [_episode(4), _episode(2)], obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
-        records_true_observations=True,
+        records_true_state=True,
     )
     bad = _rebuild(batch, np.zeros(shape, dtype=np.float32))
-    with pytest.raises(ValueError, match="true_observations"):
+    with pytest.raises(ValueError, match="true_state"):
         bad.validate()
 
 
-def test_validate_rejects_nonzero_true_observation_padding():
+def test_validate_rejects_nonzero_true_state_padding():
     batch = pack_episodes(
         [_episode(4), _episode(2)], obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
-        records_true_observations=True,
+        records_true_state=True,
     )
-    dirty = batch.true_observations.copy()
+    dirty = batch.true_state.copy()
     dirty[1, 3] = 1.0
     with pytest.raises(ValueError, match="padding"):
         _rebuild(batch, dirty).validate()
@@ -134,15 +146,15 @@ def _scan_batch(noise: str, goal_error: bool):
 
 def test_scan_truth_equals_obs_without_noise():
     batch = _scan_batch("off", goal_error=False)
-    assert batch.true_observations is not None
-    np.testing.assert_array_equal(batch.true_observations, batch.observations)
+    assert batch.true_state is not None
+    np.testing.assert_array_equal(batch.true_state, batch.observations)
 
 
 def test_scan_truth_differs_under_noise():
     batch = _scan_batch("noncooperative", goal_error=False)
     real = batch.lengths[0]
     measured = batch.observations[0, :real, :13]
-    true = batch.true_observations[0, :real]
+    true = batch.true_state[0, :real]
     assert not np.allclose(measured, true)
     # Quaternions stay unit under both channels.
     np.testing.assert_allclose(np.linalg.norm(true[:, 6:10], axis=1), 1.0, atol=1e-5)
@@ -151,8 +163,8 @@ def test_scan_truth_differs_under_noise():
 def test_scan_truth_is_13_dim_with_goal_error():
     batch = _scan_batch("off", goal_error=True)
     assert batch.observations.shape[-1] == 25
-    assert batch.true_observations.shape[-1] == 13
-    np.testing.assert_array_equal(batch.true_observations, batch.observations[:, :, :13])
+    assert batch.true_state.shape[-1] == 13
+    np.testing.assert_array_equal(batch.true_state, batch.observations[:, :, :13])
 
 
 def test_scan_transitions_mode_records_truth():
@@ -168,11 +180,11 @@ def test_scan_transitions_mode_records_truth():
     driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)
     batch = driver.generate(RolloutSpec(max_steps=10, seed=0, min_transitions=60))
 
-    assert batch.true_observations is not None
-    assert batch.true_observations.shape == batch.observations.shape[:2] + (13,)
+    assert batch.true_state is not None
+    assert batch.true_state.shape == batch.observations.shape[:2] + (13,)
     for i in range(batch.num_episodes):
         length = int(batch.lengths[i])
-        true = batch.true_observations[i, :length]
+        true = batch.true_state[i, :length]
         assert not np.allclose(true, 0.0)
         assert not np.allclose(true, batch.observations[i, :length, :13])
 
@@ -234,7 +246,7 @@ def test_video_poses_truth_not_the_noisy_observation():
 
     length = int(batch.lengths[0])
     np.testing.assert_array_equal(
-        np.stack(renderer.states), batch.true_observations[0, :length]
+        np.stack(renderer.states), batch.true_state[0, :length]
     )
 
 
@@ -278,7 +290,7 @@ def test_scan_truth_stays_aligned_across_autoresets():
     for i in range(batch.num_episodes):
         length = int(batch.lengths[i])
         assert length > 1
-        true = batch.true_observations[i, :length]
+        true = batch.true_state[i, :length]
         for t in range(length - 1):
             stepped, _ = dynamics.step(
                 jnp.asarray(true[t]),
@@ -318,15 +330,15 @@ def _vector_batch(noise: str, goal_error: bool):
 
 def test_vector_truth_equals_obs_without_noise():
     batch = _vector_batch("off", goal_error=False)
-    assert batch.true_observations is not None
-    np.testing.assert_array_equal(batch.true_observations, batch.observations)
+    assert batch.true_state is not None
+    np.testing.assert_array_equal(batch.true_state, batch.observations)
 
 
 def test_vector_truth_differs_under_noise():
     batch = _vector_batch("noncooperative", goal_error=False)
     real = batch.lengths[0]
     measured = batch.observations[0, :real, :13]
-    true = batch.true_observations[0, :real]
+    true = batch.true_state[0, :real]
     assert not np.allclose(measured, true)
     np.testing.assert_allclose(np.linalg.norm(true[:, 6:10], axis=1), 1.0, atol=1e-5)
 
@@ -334,8 +346,8 @@ def test_vector_truth_differs_under_noise():
 def test_vector_truth_is_13_dim_with_goal_error():
     batch = _vector_batch("off", goal_error=True)
     assert batch.observations.shape[-1] == 25
-    assert batch.true_observations.shape[-1] == 13
-    np.testing.assert_array_equal(batch.true_observations, batch.observations[:, :, :13])
+    assert batch.true_state.shape[-1] == 13
+    np.testing.assert_array_equal(batch.true_state, batch.observations[:, :, :13])
 
 
 @pytest.mark.parametrize(
@@ -375,7 +387,7 @@ def test_vector_truth_stays_aligned_across_resets(env_max_steps, spec_max_steps)
     for i in range(batch.num_episodes):
         length = int(batch.lengths[i])
         assert length > 1
-        true = batch.true_observations[i, :length]
+        true = batch.true_state[i, :length]
         # Every episode's truth must begin on the start sphere: a lane that
         # carried the previous episode's final state across a reset would
         # essentially never land there by chance.
@@ -397,10 +409,10 @@ def test_vector_transitions_mode_records_truth():
         RolloutSpec(max_steps=10, seed=0, min_transitions=60)
     )
 
-    assert batch.true_observations is not None
-    assert batch.true_observations.shape == batch.observations.shape[:2] + (13,)
+    assert batch.true_state is not None
+    assert batch.true_state.shape == batch.observations.shape[:2] + (13,)
     for i in range(batch.num_episodes):
         length = int(batch.lengths[i])
-        true = batch.true_observations[i, :length]
+        true = batch.true_state[i, :length]
         assert not np.allclose(true, 0.0)
         assert not np.allclose(true, batch.observations[i, :length, :13])
