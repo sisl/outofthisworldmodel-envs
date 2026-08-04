@@ -164,6 +164,24 @@ class ISSConfig(ConfigModel):
     # ground track runs there is always surface under it; episode length is
     # bounded by the control problem alone, not by the map.
     max_steps: int = 7200
+    # Radius of the spherical domain, measured from the ISS origin. A chaser
+    # whose post-step position lies outside it has left the scenario, and the
+    # episode terminates there rather than running out the horizon.
+    #
+    # 1 km is 2x the largest radius anything here is meant to reach: episodes
+    # start on the 100 m sphere and the orbit policy commands circles out to
+    # 500 m. Its purpose is the random policy, whose undirected walk otherwise
+    # spends the full 360 s horizon drifting away from the station recording
+    # nothing but empty space. It also bounds the non-cooperative sensor
+    # noise, whose position error is proportional to range
+    # (sigma_pos_frac_of_range) and so grows without limit on a runaway
+    # trajectory.
+    #
+    # None removes the bound entirely, for callers who want unbounded flight.
+    # Strictly positive and finite when set: zero or negative would put every
+    # reachable state outside the domain, and inf/NaN describe no boundary at
+    # all -- None is how the bound is turned off.
+    max_range_m: float | None = Field(default=500.0, gt=0, allow_inf_nan=False)
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)

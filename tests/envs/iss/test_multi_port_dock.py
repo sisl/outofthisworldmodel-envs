@@ -21,7 +21,7 @@ from owm_envs.envs.iss.reward import iss_reward
 
 CFG = ISSConfig()
 GOAL_CFG = ISSConfig(observation={"goal_error": True})
-NO_EVENTS = Events(collision=jnp.array(False), docked=jnp.array(False))
+NO_EVENTS = Events(collision=jnp.array(False), docked=jnp.array(False), escaped=jnp.array(False))
 # The union switch's dock branch (extras[0] == 2), so make_augment takes the
 # dock arm and the port slot is the thing under test.
 _UNION_DOCK_BRANCH = 2.0

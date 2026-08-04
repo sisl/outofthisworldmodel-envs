@@ -1,6 +1,7 @@
 dt = 0.05
 max_steps = 7200
 max_range_m = 500.0
+render_view = "DRAGON_FPV"
 
 [physics]
 mass = 12000.0
@@ -36,6 +37,17 @@ max_distance_m = 0.1
 max_velocity_m_s = 0.5
 max_attitude_error_deg = 5.0
 max_body_rate_rad_s = 0.008727
+
+[sensor_noise]
+enabled = true
+sigma_pos_m = 0.0
+sigma_pos_frac_of_range = 0.01
+sigma_vel_m_s = 0.03
+sigma_att_rad = 5e-05
+sigma_rate_rad_s = 1e-05
+
+[observation]
+goal_error = true
 
 [reward_weights]
 position = -1.0

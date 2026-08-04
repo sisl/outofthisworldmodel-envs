@@ -112,6 +112,52 @@ def test_docking_terminates_and_reports_success():
     assert info["collision"] is False
 
 
+def test_leaving_the_domain_terminates_and_reports_in_info():
+    # max_range_m below the start sphere puts reset itself out of bounds, so
+    # the first step escapes without depending on where the chaser flies.
+    env = ISSEnv(ISSConfig(
+        max_steps=100,
+        max_range_m=50.0,
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        dock=DockConfig(enabled=False),
+    ))
+    env.reset(seed=0)
+    obs, _, terminated, truncated, info = env.step(np.zeros(6, dtype=np.float32))
+    assert terminated is True
+    assert truncated is False
+    assert info["escaped"] is True
+    assert info["success"] is False and info["collision"] is False
+    # The terminal observation is the out-of-bounds state that ended it.
+    assert np.linalg.norm(obs[0:3]) > 50.0
+
+
+def test_info_always_reports_escaped():
+    env = ISSEnv()
+    _, info = env.reset(seed=0)
+    assert info["escaped"] is False
+    _, _, _, _, info = env.step(env.action_space.sample())
+    assert isinstance(info["escaped"], bool)
+
+
+def test_max_range_none_lets_a_far_episode_run_to_truncation():
+    # The start sphere sits beyond the 1000 m default deliberately: starting
+    # inside it, this would pass even if None silently fell back to that
+    # default rather than removing the bound.
+    env = ISSEnv(ISSConfig(
+        max_steps=5,
+        max_range_m=None,
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=2000.0),
+        dock=DockConfig(enabled=False),
+    ))
+    env.reset(seed=0)
+    zero = np.zeros(6, dtype=np.float32)
+    for _ in range(4):
+        _, _, terminated, _, info = env.step(zero)
+        assert terminated is False and info["escaped"] is False
+    _, _, terminated, truncated, _ = env.step(zero)
+    assert terminated is False and truncated is True
+
+
 def test_actions_are_clipped_to_the_action_space():
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     huge = np.full(6, 1e9, dtype=np.float32)

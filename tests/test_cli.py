@@ -104,6 +104,25 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
     assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
 
 
+def test_a_toml_config_file_is_loaded_too(tmp_path):
+    # The shipped env configs under configs/ are TOML, so --config that only
+    # spoke YAML could not load the very files the repo ships to be run.
+    from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
+
+    cfg_path = tmp_path / "env.toml"
+    ISSConfig(physics=PhysicsConfig(start_radius_m=175.0)).to_toml(cfg_path)
+
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
+         "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
+         "--no-lerobot"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
+
+
 def test_summary_reports_the_episode_count_requested(tmp_path):
     out = tmp_path / "run"
     runner.invoke(

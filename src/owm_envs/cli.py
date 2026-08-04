@@ -151,7 +151,10 @@ def generate(
                    "configs/generation_default.yaml is the shipped docking recipe: a union-policy "
                    "train split on the five non-zenith ports and a dock-policy val split on all "
                    "seven, so validation measures the held-out zenith approaches."),
-    config: Optional[Path] = typer.Option(None, help="ISSConfig YAML to load."),
+    config: Optional[Path] = typer.Option(
+        None, help="ISSConfig file to load, YAML or TOML by suffix. The shipped "
+                   "environments are configs/iss_*.toml: iss_default.toml plus the six "
+                   "noise/goal-error variants the public datasets are generated from."),
     noise: Optional[str] = typer.Option(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "
                    "Overrides the --config file's sensor_noise."),
@@ -235,7 +238,7 @@ def generate(
     if gen.num_envs < 1:
         raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
 
-    cfg = ISSConfig.from_yaml(config) if config is not None else ISSConfig()
+    cfg = ISSConfig.load(config) if config is not None else ISSConfig()
     if noise is not None:
         if noise not in PRESETS:
             raise typer.BadParameter(

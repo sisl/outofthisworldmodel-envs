@@ -1,9 +1,10 @@
 """ISS-centered free-flyer dynamics for a Dragon chaser.
 
-State (13D). Per-step outcomes (collision, dock success) are deliberately
-NOT folded into the state as an absorbing terminal flag; `step` returns them
-as `Events` instead, so that collision and dock-success stay distinguishable
-and the Gymnasium adapters can map them onto terminated/truncated/info.
+State (13D). Per-step outcomes (collision, dock success, leaving the domain)
+are deliberately NOT folded into the state as an absorbing terminal flag;
+`step` returns them as `Events` instead, so that the three stay
+distinguishable and the Gymnasium adapters can map them onto
+terminated/truncated/info.
 
   0..2   relative position to ISS, world frame [m]
   3..5   relative velocity, world frame [m/s]
@@ -42,10 +43,20 @@ STATE_LABELS: tuple[str, ...] = (
 
 
 class Events(NamedTuple):
-    """Per-step outcomes. Both are boolean scalars (or boolean arrays under vmap)."""
+    """Per-step outcomes. All three are boolean scalars (or boolean arrays
+    under vmap), and they are independent: a step can raise more than one.
+
+    `escaped` -- the chaser left the spherical domain of radius
+    `cfg.max_range_m` -- is an absorbing outcome like `collision`, not a time
+    limit: consumers map it onto terminated, never truncated. It carries no
+    reward term of its own. The position penalty already scores being far
+    from the dock, and a separate escape bonus or penalty would be a second,
+    unweighted opinion on the same thing.
+    """
 
     collision: jnp.ndarray
     docked: jnp.ndarray
+    escaped: jnp.ndarray
 
 
 class ISSDynamics:
@@ -64,6 +75,8 @@ class ISSDynamics:
         self._angular_damping = jnp.asarray(cfg.physics.angular_damping, dtype=jnp.float32)
         self._chaser_radius = jnp.asarray(cfg.physics.dragon_collision_radius_m, dtype=jnp.float32)
         self._start_radius = jnp.asarray(cfg.physics.start_radius_m, dtype=jnp.float32)
+        if cfg.max_range_m is not None:
+            self._max_range = jnp.asarray(cfg.max_range_m, dtype=jnp.float32)
 
         centers, half_extents = load_collision_boxes(cfg.physics.collision_boxes_path)
         self._box_centers = jnp.asarray(centers, dtype=jnp.float32)
@@ -180,6 +193,20 @@ class ISSDynamics:
 
         return docked
 
+    def _escaped(self, pos_w: jnp.ndarray) -> jnp.ndarray:
+        # The endpoint alone, not the swept segment `_collision` tests: the
+        # domain is a sphere the chaser is inside, so it cannot cross the
+        # boundary and return within one step without being outside at some
+        # sampled position long before -- the tunnelling a thin box invites
+        # has no analogue here.
+        #
+        # `cfg.max_range_m is None` is a static Python value branched on at
+        # trace time, like the optional dock gates: `step` runs under jit/vmap
+        # but the config is not a traced array.
+        if self.cfg.max_range_m is None:
+            return jnp.array(False)
+        return jnp.linalg.norm(pos_w) > self._max_range
+
     def step(
         self,
         state: jnp.ndarray,
@@ -207,6 +234,7 @@ class ISSDynamics:
         events = Events(
             collision=self._collision(s[0:3], s_next[0:3]),
             docked=self._docked(s_next[0:3], s_next[3:6], s_next[6:10], s_next[10:13], target),
+            escaped=self._escaped(s_next[0:3]),
         )
         return s_next, events
 

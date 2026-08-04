@@ -145,7 +145,8 @@ class ISSVectorEnv(VectorEnv):
 
         collision = np.array(events.collision, dtype=bool)
         docked = np.array(events.docked, dtype=bool)
-        terminations = collision | docked
+        escaped = np.array(events.escaped, dtype=bool)
+        terminations = collision | docked | escaped
         truncations = (~terminations) & (self._step_index >= self.cfg.max_steps)
 
         # Sub-envs that autoreset this step report their fresh reset
@@ -162,6 +163,7 @@ class ISSVectorEnv(VectorEnv):
             truncations[autoreset] = False
             collision[autoreset] = False
             docked[autoreset] = False
+            escaped[autoreset] = False
 
         self._states = next_states
         self._needs_reset = terminations | truncations
@@ -171,7 +173,12 @@ class ISSVectorEnv(VectorEnv):
             rewards,
             terminations,
             truncations,
-            {"success": docked, "collision": collision, "state": self._true_states()},
+            {
+                "success": docked,
+                "collision": collision,
+                "escaped": escaped,
+                "state": self._true_states(),
+            },
         )
 
     def _obs(self) -> np.ndarray:
@@ -197,5 +204,6 @@ class ISSVectorEnv(VectorEnv):
         return {
             "success": np.zeros(self.num_envs, dtype=bool),
             "collision": np.zeros(self.num_envs, dtype=bool),
+            "escaped": np.zeros(self.num_envs, dtype=bool),
             "state": self._true_states(),
         }

@@ -108,6 +108,7 @@ class ISSEnv(gym.Env):
         return self._obs(), {
             "success": False,
             "collision": False,
+            "escaped": False,
             "state": self._true_state(),
         }
 
@@ -132,7 +133,8 @@ class ISSEnv(gym.Env):
 
         collision = bool(events.collision)
         docked = bool(events.docked)
-        terminated = collision or docked
+        escaped = bool(events.escaped)
+        terminated = collision or docked or escaped
         truncated = (not terminated) and self._step_index >= self.cfg.max_steps
 
         return (
@@ -140,7 +142,12 @@ class ISSEnv(gym.Env):
             reward,
             terminated,
             truncated,
-            {"success": docked, "collision": collision, "state": self._true_state()},
+            {
+                "success": docked,
+                "collision": collision,
+                "escaped": escaped,
+                "state": self._true_state(),
+            },
         )
 
     def _obs(self) -> np.ndarray:

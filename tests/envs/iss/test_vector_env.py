@@ -117,6 +117,31 @@ def test_terminated_sub_env_autoresets_on_the_next_step():
     np.testing.assert_allclose(rewards, np.zeros(2), atol=1e-6)
 
 
+def test_leaving_the_domain_terminates_every_lane_and_autoresets():
+    # max_range_m below the start sphere puts reset itself out of bounds, so
+    # every lane escapes on its first step regardless of where it flies.
+    env = ISSVectorEnv(num_envs=2, cfg=ISSConfig(
+        max_steps=100,
+        max_range_m=50.0,
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        dock=DockConfig(enabled=False),
+    ))
+    obs, infos = env.reset(seed=0)
+    assert not infos["escaped"].any()
+    zero = np.zeros((2, 6), dtype=np.float32)
+
+    _, _, terminations, truncations, infos = env.step(zero)
+    assert terminations.all()
+    assert not truncations.any()
+    assert infos["escaped"].all()
+    assert not infos["collision"].any() and not infos["success"].any()
+
+    # Autoreset clears the flag along with the termination it caused.
+    _, _, terminations, _, infos = env.step(zero)
+    assert not terminations.any()
+    assert not infos["escaped"].any()
+
+
 def test_autoreset_returns_pure_reset_observation_not_a_stepped_one():
     """On an autoreset step, the returned observation must be the pure reset
     state, not one physics step forward under the caller's action. A zero
