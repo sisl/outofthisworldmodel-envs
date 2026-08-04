@@ -158,13 +158,21 @@ def test_earth_fills_the_lower_half_of_an_fpv_frame_pointed_at_it(renderer):
     # on the horizontal midline, which puts the whole lower half on the planet
     # and the farthest surface of all in the band just below the midline.
     # Earth is far brighter than the starfield, so its presence is measurable
-    # as coverage: that band went from 82% lit under the bug to 99.8% lit.
-    on_the_limb = _state_pitched(_limb_depression_deg(RenderConfig()))
+    # as coverage: that band went from 11% lit under the bug to 100% lit.
+    #
+    # Counted only over the pixels a ray-cast puts on the planet. The band
+    # straddles the limb by a pixel or two, and counting raw brightness there
+    # would let a bright patch of sky stand in for surface -- which is exactly
+    # what happened while the starfield was undimmed.
+    cfg = RenderConfig()
+    on_the_limb = _state_pitched(_limb_depression_deg(cfg))
     frame = renderer.render(on_the_limb, view="DRAGON_FPV")
     height = frame.shape[0]
-    band = frame[height // 2 : height // 2 + height // 8]
-    lit = float((band.mean(axis=-1) > 40).mean())
-    assert lit > 0.97, f"only {lit:.2%} of the surface below the limb is lit"
+    band = slice(height // 2, height // 2 + height // 8)
+    on_earth = _earth_hit_mask(cfg, on_the_limb, *frame.shape[:2])[band]
+    lit = (frame[band].mean(axis=-1) > 40) & on_earth
+    covered = float(lit.sum()) / int(on_earth.sum())
+    assert covered > 0.97, f"only {covered:.2%} of the surface below the limb is lit"
 
 
 
@@ -278,9 +286,9 @@ def test_the_fpv_camera_cannot_see_through_its_own_nose_cone(renderer):
     slices the cone open and the planet shows through the hole. Rather than
     pick a pixel count out of the air, this measures the hull against the same
     scene rendered with a near plane too small to clip anything. At this
-    resolution the camera keeps 98.0% of that reference anywhere in
-    0.30-0.40 m -- the residual is mask-threshold noise -- against 87.0% at
-    0.45 m and 65.3% at 0.50 m.
+    resolution the camera keeps 98% of that reference anywhere in 0.20-0.40 m
+    -- the residual is mask-threshold noise -- against 87.1% at 0.45 m and
+    65.3% at 0.50 m.
     """
     cfg = RenderConfig(image_width=128, image_height=128, fpv_camera_near_m=0.02)
     unclipped = ISSRenderer(cfg)
@@ -326,8 +334,22 @@ def test_the_cloud_deck_is_drawn_between_the_globe_and_the_station(renderer):
     station = _collect_meshes(scene.iss) + _collect_meshes(scene.dragon)
     assert station, "expected the station and capsule to carry meshes"
 
+    glow = [
+        mesh
+        for mesh in _collect_meshes(scene._earth_surface_group.parent)
+        if mesh not in (globe, deck)
+    ]
+    assert glow, "expected the atmospheric shells to be present"
+
     assert globe.material.render_queue < deck.material.render_queue
-    assert deck.material.render_queue < min(m.material.render_queue for m in station)
+    assert deck.material.render_queue < min(m.material.render_queue for m in glow)
+    assert max(m.material.render_queue for m in glow) < min(
+        m.material.render_queue for m in station
+    )
+    # The shells reach past the surface, so depth-testing them clipped the
+    # atmospheric limb away exactly as it clipped the deck.
+    assert not any(m.material.depth_test for m in glow)
+    assert not any(m.material.depth_write for m in glow)
     assert deck.material.depth_test is False
     assert deck.material.depth_write is False
     # Front faces are the near hemisphere from outside the shell; both sides
@@ -400,6 +422,55 @@ def test_the_station_occludes_the_cloud_deck(renderer):
     # rather than with its perimeter.
     bleed = float((cloud_pixels & station).sum()) / int(station.sum())
     assert bleed < 0.005, f"{bleed:.2%} of the station was painted over by cloud"
+
+
+def _sky_only(renderer, state):
+    """Render with every scene object hidden, so the frame is pure starfield."""
+    scene = renderer._iss_scene.scene
+    hidden = [child for child in scene.children if not isinstance(child, gfx.Light)]
+    try:
+        for child in hidden:
+            child.visible = False
+        return renderer.render(state, view="DRAGON_FPV")
+    finally:
+        for child in hidden:
+            child.visible = True
+
+
+def _linear(frame):
+    """sRGB bytes -> linear radiance, which is what the knob scales."""
+    f = frame.astype(np.float64) / 255.0
+    return float(np.where(f <= 0.04045, f / 12.92, ((f + 0.055) / 1.055) ** 2.4).mean())
+
+
+def test_star_brightness_scales_the_starfield(renderer):
+    """The star map is a survey composite, exposed to show the Milky Way rather
+    than as a camera stopped down for a sunlit station would see it. The knob
+    is an exposure multiplier in linear light, applied through the skybox
+    material's opacity over an already-black buffer.
+    """
+    # Well above the limb, so nothing but sky is in shot either way.
+    state = _state_pitched(-60.0)
+    at_default = _sky_only(renderer, state)
+
+    frames = {}
+    for brightness in (1.0, 0.0):
+        r = ISSRenderer(
+            RenderConfig(image_width=128, image_height=128, star_brightness=brightness)
+        )
+        try:
+            frames[brightness] = _sky_only(r, state)
+        finally:
+            r.close()
+
+    assert frames[0.0].max() == 0, "a brightness of 0 must leave the sky black"
+    assert frames[1.0].max() > 0, "a brightness of 1 must leave the sky lit"
+
+    default = RenderConfig().star_brightness
+    assert default < 1.0, "the shipped default must dim the survey map"
+    # Not merely dimmer: dimmer by the factor asked for.
+    ratio = _linear(at_default) / _linear(frames[1.0])
+    assert default * 0.9 < ratio < default * 1.1, f"asked for {default}, got {ratio:.3f}"
 
 
 def test_render_after_close_raises_runtime_error():
