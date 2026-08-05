@@ -191,10 +191,30 @@ class VectorEnvDriver:
         transitions_collected = 0
         zero_action = np.zeros((act_dim,), dtype=np.float32)
 
+        # Episodes mode records by deterministic per-lane quota, not
+        # completion order: keeping the first N episodes to finish would
+        # select for whatever terminates fastest (e.g. collisions over
+        # full-length orbits), silently skewing a policy mixture's
+        # composition. Lane index is independent of outcome, so each lane
+        # contributing its first episodes preserves it.
+        if spec.num_episodes is not None:
+            base_quota, remainder = divmod(spec.num_episodes, num_envs)
+            lane_quota = [
+                base_quota + (1 if lane < remainder else 0) for lane in range(num_envs)
+            ]
+        else:
+            lane_quota = None
+        lane_recorded = [0] * num_envs
+
         def quota_met() -> bool:
             if spec.num_episodes is not None:
                 return len(finished) >= spec.num_episodes
             return transitions_collected >= spec.min_transitions
+
+        def lane_may_record(lane: int) -> bool:
+            if lane_quota is not None:
+                return lane_recorded[lane] < lane_quota[lane]
+            return not quota_met()
 
         action_low = np.asarray(env.single_action_space.low, dtype=np.float32)
         action_high = np.asarray(env.single_action_space.high, dtype=np.float32)
@@ -264,13 +284,16 @@ class VectorEnvDriver:
                 if env_done or horizon_hit:
                     lane_act[lane].append(zero_action.copy())
                     lane_rew[lane].append(0.0)
-                    if not quota_met():
-                        # Whole episodes only, first-crossing included: this
-                        # guard (not just the outer while) matters because
-                        # several lanes can finish within the same step()
-                        # call -- once the quota is met mid-loop, later lanes
-                        # in this same pass must NOT be recorded too.
+                    if lane_may_record(lane):
+                        # Whole episodes only, first-crossing included: in
+                        # transitions mode this guard (not just the outer
+                        # while) matters because several lanes can finish
+                        # within the same step() call -- once the quota is
+                        # met mid-loop, later lanes in this same pass must
+                        # NOT be recorded too. In episodes mode it enforces
+                        # the per-lane quota instead.
                         episode = {
+                            "lane": lane,
                             "obs": np.stack(lane_obs[lane]),
                             "act": np.stack(lane_act[lane]),
                             "rew": np.asarray(lane_rew[lane], dtype=np.float32),
@@ -288,6 +311,7 @@ class VectorEnvDriver:
                         if records_truth:
                             episode["true_state"] = np.stack(lane_true[lane])
                         finished.append(episode)
+                        lane_recorded[lane] += 1
                         transitions_collected += len(lane_obs[lane]) - 1
                     lane_act[lane] = []
                     lane_rew[lane] = []
@@ -336,10 +360,16 @@ class VectorEnvDriver:
                 lane_frozen = [False] * num_envs
                 lane_awaiting_reset = [False] * num_envs
 
-        # The slice is a defensive no-op kept for clarity: the append guard
-        # above already stops recording at quota in both modes, so `finished`
-        # never actually exceeds spec.num_episodes by the time we get here.
-        episodes = finished if spec.num_episodes is None else finished[: spec.num_episodes]
+        # Episodes mode: lane-major order (each lane's episodes chronological,
+        # lanes ascending), matching ScanDriver's quota selection so the two
+        # drivers stay comparable episode-for-episode. The sort is stable, so
+        # within a lane the completion order collected above is preserved.
+        # The per-lane caps mean `finished` holds exactly spec.num_episodes.
+        episodes = (
+            finished
+            if spec.num_episodes is None
+            else sorted(finished, key=lambda episode: episode["lane"])
+        )
         return pack_episodes(
             episodes,
             obs_dim,

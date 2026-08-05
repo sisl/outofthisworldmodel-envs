@@ -231,3 +231,4 @@ src/owm_envs/render/resources/earth/maps/*.part
 logs/
 results/
 outputs/
+trajectories/
