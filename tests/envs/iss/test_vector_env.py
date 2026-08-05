@@ -2,9 +2,10 @@ import jax
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.common.config import DockConfig, PhysicsConfig
+from owm_envs.envs.common.sensing import PRESETS
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.env import ISSEnv
-from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT = dict(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))

@@ -5,11 +5,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import ISSConfig, dock_target
-from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
-from owm_envs.envs.iss.dynamics import Events, ISSDynamics
-from owm_envs.envs.iss.goal import make_augment
-from owm_envs.envs.iss.policies import (
+from owm_envs.envs.common.config import dock_target
+from owm_envs.envs.common.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
+from owm_envs.envs.common.events import Events
+from owm_envs.envs.common.goal import make_augment
+from owm_envs.envs.common.policies import (
     DOCK_SLOT,
     EXTRAS_DIM,
     DockParams,
@@ -17,7 +17,9 @@ from owm_envs.envs.iss.policies import (
     dock_target_selector,
     make_policy,
 )
-from owm_envs.envs.iss.reward import iss_reward
+from owm_envs.envs.common.reward import iss_reward
+from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss.dynamics import ISSDynamics
 
 CFG = ISSConfig()
 GOAL_CFG = ISSConfig(observation={"goal_error": True})

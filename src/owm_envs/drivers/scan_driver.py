@@ -17,12 +17,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..envs.common.goal import make_augment
+from ..envs.common.policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
+from ..envs.common.reward import iss_reward
+from ..envs.common.sensing import NOISE_STREAM, apply_sensor_noise
 from ..envs.iss.config import ISSConfig
 from ..envs.iss.dynamics import ISSDynamics
-from ..envs.iss.goal import make_augment
-from ..envs.iss.policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
-from ..envs.iss.reward import iss_reward
-from ..envs.iss.sensing import NOISE_STREAM, apply_sensor_noise
 from .types import TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0

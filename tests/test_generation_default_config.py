@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from owm_envs.datasets.stats import GenerationConfig
-from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
+from owm_envs.envs.common.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "generation_default.yaml"
 

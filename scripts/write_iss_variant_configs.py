@@ -22,8 +22,9 @@ Usage:
 from pathlib import Path
 
 from owm_envs.datasets.stats import GenerationConfig, SplitSpec
-from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
-from owm_envs.envs.iss.sensing import PRESETS
+from owm_envs.envs.common.config import ObservationConfig
+from owm_envs.envs.common.sensing import PRESETS
+from owm_envs.envs.iss.config import ISSConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 

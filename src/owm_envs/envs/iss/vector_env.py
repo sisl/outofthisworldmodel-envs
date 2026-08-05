@@ -20,12 +20,13 @@ import numpy as np
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
-from .config import ISSConfig, dock_target
+from ..common.config import dock_target
+from ..common.goal import dock_goal_error
+from ..common.reward import iss_reward
+from ..common.sensing import NOISE_STREAM, apply_sensor_noise
+from .config import ISSConfig
 from .dynamics import ISSDynamics
 from .env import _action_space, _observation_space, _render_fps
-from .goal import dock_goal_error
-from .reward import iss_reward
-from .sensing import NOISE_STREAM, apply_sensor_noise
 
 
 class ISSVectorEnv(VectorEnv):

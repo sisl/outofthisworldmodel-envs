@@ -2,8 +2,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig, load_collision_boxes
-from owm_envs.envs.iss.docking_ports import (
+from owm_envs.envs.common.config import PhysicsConfig, load_collision_boxes
+from owm_envs.envs.common.docking_ports import (
     PORT_NAMES,
     PORTS,
     PORTS_BY_NAME,
@@ -11,6 +11,7 @@ from owm_envs.envs.iss.docking_ports import (
     port_pose,
     resolve_port_names,
 )
+from owm_envs.envs.iss.config import ISSConfig
 CFG = ISSConfig()
 CHASER_RADIUS = PhysicsConfig().dragon_collision_radius_m
 

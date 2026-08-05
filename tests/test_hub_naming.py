@@ -24,9 +24,10 @@ from owm_envs.datasets.hub import (
     push_run,
 )
 from owm_envs.datasets.stats import GenerationConfig
-from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
-from owm_envs.envs.iss.policies import PolicyConfig
-from owm_envs.envs.iss.sensing import PRESETS, SensorNoiseConfig
+from owm_envs.envs.common.config import ObservationConfig
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig
+from owm_envs.envs.iss.config import ISSConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 

@@ -5,11 +5,11 @@ import pytest
 from owm_envs.drivers.types import TrajectoryBatch, pack_episodes
 
 
-def _episode(length: int, obs_dim: int = 13, act_dim: int = 6) -> dict:
+def _episode(length: int, obs_dim: int = 13, act_dim: int = 6, state_dim: int = 13) -> dict:
     rng = np.random.default_rng(length)
     return {
         "obs": rng.normal(size=(length, obs_dim)).astype(np.float32),
-        "true_state": rng.normal(size=(length, 13)).astype(np.float32),
+        "true_state": rng.normal(size=(length, state_dim)).astype(np.float32),
         "act": rng.normal(size=(length, act_dim)).astype(np.float32),
         "rew": rng.normal(size=(length,)).astype(np.float32),
         "terminated": True,
@@ -105,16 +105,39 @@ def _rebuild(batch: TrajectoryBatch, true_state: np.ndarray) -> TrajectoryBatch:
     )
 
 
-@pytest.mark.parametrize("shape", [(2, 5, 13), (2, 4, 7)])
-def test_validate_rejects_wrong_true_state_shape(shape):
+def test_validate_rejects_wrong_true_state_time_width():
     batch = pack_episodes(
         [_episode(4), _episode(2)], obs_dim=13, act_dim=6,
         records_policy_ids=False, records_dock_targets=True,
         records_true_state=True,
     )
-    bad = _rebuild(batch, np.zeros(shape, dtype=np.float32))
+    bad = _rebuild(batch, np.zeros((2, 5, 13), dtype=np.float32))
     with pytest.raises(ValueError, match="true_state"):
         bad.validate()
+
+
+def test_a_state_width_other_than_13_packs_and_validates():
+    """`true_state` is state_dim wide and state_dim is per-environment (13 for
+    iss), so only the episode and time axes are pinned to `observations`."""
+    episodes = [_episode(4, state_dim=17), _episode(2, state_dim=17)]
+    batch = pack_episodes(
+        episodes, obs_dim=13, act_dim=6,
+        records_policy_ids=False, records_dock_targets=True,
+        records_true_state=True, state_dim=17,
+    )
+    assert batch.true_state.shape == (2, 4, 17)
+    np.testing.assert_array_equal(batch.true_state[0], episodes[0]["true_state"])
+    batch.validate()
+
+
+def test_pack_rejects_true_state_of_a_different_width_than_state_dim():
+    episode = _episode(4, state_dim=13)
+    with pytest.raises(ValueError, match="true_state"):
+        pack_episodes(
+            [episode], obs_dim=13, act_dim=6,
+            records_policy_ids=False, records_dock_targets=True,
+            records_true_state=True, state_dim=17,
+        )
 
 
 def test_validate_rejects_nonzero_true_state_padding():
@@ -132,9 +155,10 @@ def test_validate_rejects_nonzero_true_state_padding():
 def _scan_batch(noise: str, goal_error: bool):
     from owm_envs.drivers.scan_driver import ScanDriver
     from owm_envs.drivers.types import RolloutSpec
-    from owm_envs.envs.iss.config import ISSConfig, ObservationConfig
-    from owm_envs.envs.iss.policies import PolicyConfig
-    from owm_envs.envs.iss.sensing import PRESETS
+    from owm_envs.envs.common.config import ObservationConfig
+    from owm_envs.envs.common.policies import PolicyConfig
+    from owm_envs.envs.common.sensing import PRESETS
+    from owm_envs.envs.iss.config import ISSConfig
 
     cfg = ISSConfig(
         sensor_noise=PRESETS[noise],
@@ -172,9 +196,9 @@ def test_scan_transitions_mode_records_truth():
     accumulates across chunks), so it needs its own proof that truth survives."""
     from owm_envs.drivers.scan_driver import ScanDriver
     from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.common.policies import PolicyConfig
+    from owm_envs.envs.common.sensing import PRESETS
     from owm_envs.envs.iss.config import ISSConfig
-    from owm_envs.envs.iss.policies import PolicyConfig
-    from owm_envs.envs.iss.sensing import PRESETS
 
     cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["noncooperative"])
     driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="dock"), num_envs=2)
@@ -276,10 +300,10 @@ def test_scan_truth_stays_aligned_across_autoresets():
 
     from owm_envs.drivers.scan_driver import ScanDriver
     from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.common.policies import PolicyConfig
+    from owm_envs.envs.common.sensing import PRESETS
     from owm_envs.envs.iss.config import ISSConfig
     from owm_envs.envs.iss.dynamics import ISSDynamics
-    from owm_envs.envs.iss.policies import PolicyConfig
-    from owm_envs.envs.iss.sensing import PRESETS
 
     cfg = ISSConfig(sensor_noise=PRESETS["noncooperative"])
     driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=1)
@@ -302,8 +326,8 @@ def test_scan_truth_stays_aligned_across_autoresets():
 
 def _vector_driver(cfg, policy_type="random", num_envs=2, goal_error=False):
     from owm_envs.drivers.vector_env_driver import VectorEnvDriver
-    from owm_envs.envs.iss.policies import PolicyConfig
-    from owm_envs.envs.iss.policy_source import ISSPolicySource
+    from owm_envs.envs.common.policies import PolicyConfig
+    from owm_envs.envs.common.policy_source import ISSPolicySource
     from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
     # The goal-error block is appended by the policy source on this path, so
@@ -320,8 +344,8 @@ def _vector_driver(cfg, policy_type="random", num_envs=2, goal_error=False):
 
 def _vector_batch(noise: str, goal_error: bool):
     from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.common.sensing import PRESETS
     from owm_envs.envs.iss.config import ISSConfig
-    from owm_envs.envs.iss.sensing import PRESETS
 
     cfg = ISSConfig(sensor_noise=PRESETS[noise])
     driver = _vector_driver(cfg, goal_error=goal_error)
@@ -374,9 +398,10 @@ def test_vector_truth_stays_aligned_across_resets(env_max_steps, spec_max_steps)
     import jax.numpy as jnp
 
     from owm_envs.drivers.types import RolloutSpec
-    from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
+    from owm_envs.envs.common.config import PhysicsConfig
+    from owm_envs.envs.common.sensing import PRESETS
+    from owm_envs.envs.iss.config import ISSConfig
     from owm_envs.envs.iss.dynamics import ISSDynamics
-    from owm_envs.envs.iss.sensing import PRESETS
 
     # Start radius pinned: with the broad default shell, a state carried
     # across a missed reset would usually still lie inside it after a few
@@ -408,8 +433,8 @@ def test_vector_truth_stays_aligned_across_resets(env_max_steps, spec_max_steps)
 
 def test_vector_transitions_mode_records_truth():
     from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs.common.sensing import PRESETS
     from owm_envs.envs.iss.config import ISSConfig
-    from owm_envs.envs.iss.sensing import PRESETS
 
     cfg = ISSConfig(max_steps=10, sensor_noise=PRESETS["noncooperative"])
     batch = _vector_driver(cfg, policy_type="dock").generate(

@@ -29,10 +29,11 @@ from .datasets.video import (
     parse_view_names,
 )
 from .drivers.types import RolloutSpec
-from .envs.iss.config import ISSConfig, ObservationConfig
-from .envs.iss.docking_ports import PORT_NAMES
-from .envs.iss.policies import DockParams, PolicyConfig
-from .envs.iss.sensing import PRESETS
+from .envs.common.config import ObservationConfig
+from .envs.common.docking_ports import PORT_NAMES
+from .envs.common.policies import DockParams, PolicyConfig
+from .envs.common.sensing import PRESETS
+from .envs.iss.config import ISSConfig
 
 app = typer.Typer(add_completion=False, help="Generate world-model training datasets.")
 
@@ -608,10 +609,9 @@ class _Chosen:
 def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, num_envs: int) -> _Chosen:
     from .drivers.scan_driver import ScanDriver, supports_fused_rollout
     from .drivers.vector_env_driver import VectorEnvDriver
+    from .envs.common.policy_source import ISSPolicySource
     from .envs.iss.dynamics import ISSDynamics
     from .envs.iss.vector_env import ISSVectorEnv
-
-    from .envs.iss.policy_source import ISSPolicySource
 
     def build_vector() -> _Chosen:
         # ISSVectorEnv reads its dock pose straight off ISSConfig and has no

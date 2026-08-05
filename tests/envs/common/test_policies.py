@@ -4,9 +4,10 @@ import numpy as np
 import pytest
 
 from owm_envs.core.quaternion import quat_from_body_z_to
-from owm_envs.envs.iss.config import ControlConfig, DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.common.config import ControlConfig, DockConfig, PhysicsConfig
+from owm_envs.envs.common.policies import EXTRAS_DIM, OrbitParams, PolicyConfig, make_policy
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
-from owm_envs.envs.iss.policies import EXTRAS_DIM, OrbitParams, PolicyConfig, make_policy
 
 CFG = ISSConfig(
     physics=PhysicsConfig(collision_boxes_path=None),
@@ -338,8 +339,8 @@ def test_orbit_controller_and_goal_share_the_reference():
     # policy is actually doing. Both must be built from the same
     # `orbit_reference` call for a given (measured pos, extras, dt).
     from owm_envs.core.quaternion import quat_normalize, quat_to_rotmat
-    from owm_envs.envs.iss.goal import goal_error
-    from owm_envs.envs.iss.policies import orbit_reference
+    from owm_envs.envs.common.goal import goal_error
+    from owm_envs.envs.common.policies import orbit_reference
 
     params = PCFG.orbit
     policy_fn, _ = make_policy(CFG, PCFG, "orbit")
@@ -463,7 +464,7 @@ def test_make_policy_explicit_policy_type_overrides_config():
 
 def test_policy_config_roundtrips_through_yaml(tmp_path):
     # The policy shaped the dataset, so it belongs in the as-run record too.
-    from owm_envs.envs.iss.policies import DockParams, OrbitParams
+    from owm_envs.envs.common.policies import DockParams, OrbitParams
 
     original = PolicyConfig(
         orbit=OrbitParams(radius_range_m=(10.0, 20.0)),

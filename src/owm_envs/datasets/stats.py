@@ -27,8 +27,8 @@ from pydantic import Field, field_validator, model_validator
 
 from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
+from ..envs.common.policies import PolicyConfig
 from ..envs.iss.config import ISSConfig
-from ..envs.iss.policies import PolicyConfig
 from .video import VIEW_NAMES, parse_view_names
 
 _STD_FLOOR = 1e-6

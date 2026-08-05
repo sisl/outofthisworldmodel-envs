@@ -8,10 +8,10 @@ from typer.testing import CliRunner
 
 from owm_envs.cli import app, _parse_split_flags
 from owm_envs.datasets.stats import GenerationConfig, SplitSpec
+from owm_envs.envs.common.docking_ports import PORT_NAMES
+from owm_envs.envs.common.policies import DockParams, PolicyConfig
+from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.docking_ports import PORT_NAMES
-from owm_envs.envs.iss.policies import DockParams, PolicyConfig
-from owm_envs.envs.iss.sensing import PRESETS
 
 runner = CliRunner()
 
@@ -45,7 +45,7 @@ def test_generated_run_records_the_policy_actually_used(tmp_path):
     card = json.loads((out / "dataset_card.json").read_text())
     assert card["splits"]["train"]["policy_type"] == "orbit"
 
-    from owm_envs.envs.iss.policies import PolicyConfig
+    from owm_envs.envs.common.policies import PolicyConfig
 
     assert PolicyConfig.from_yaml(out / "policy_config.yaml").type == "orbit"
 
@@ -89,7 +89,8 @@ def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
 
 
 def test_config_file_is_loaded_and_recorded(tmp_path):
-    from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
+    from owm_envs.envs.common.config import PhysicsConfig
+    from owm_envs.envs.iss.config import ISSConfig
 
     cfg_path = tmp_path / "env.yaml"
     ISSConfig(physics=PhysicsConfig(start_radius_range_m=(175.0, 175.0))).to_yaml(cfg_path)
@@ -108,7 +109,8 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
 def test_a_toml_config_file_is_loaded_too(tmp_path):
     # The shipped env configs under configs/ are TOML, so --config that only
     # spoke YAML could not load the very files the repo ships to be run.
-    from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
+    from owm_envs.envs.common.config import PhysicsConfig
+    from owm_envs.envs.iss.config import ISSConfig
 
     cfg_path = tmp_path / "env.toml"
     ISSConfig(physics=PhysicsConfig(start_radius_range_m=(175.0, 175.0))).to_toml(cfg_path)

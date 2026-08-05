@@ -34,18 +34,22 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-from .config import ISSConfig
-from .dynamics import Events
+from .config import BaseTaskConfig
+from .events import Events
 
 
 def iss_reward(
     state: jnp.ndarray,
     action: jnp.ndarray,
     events: Events,
-    cfg: ISSConfig,
+    cfg: BaseTaskConfig,
     dock_position: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Per-step reward. Returns a float32 scalar (or a batch under vmap).
+
+    `state` is the canonical 13D world-frame relative view
+    `[pos, vel, q_bw, omega]` -- which for the iss env is the state itself,
+    and for an env with a wider state is what `StateLayout.view` extracts.
 
     `dock_position` is this episode's dock goal position -- the (3,) prefix of
     the target row `policies.dock_target_selector` resolved for it. Omitted,

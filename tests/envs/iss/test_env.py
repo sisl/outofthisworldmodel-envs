@@ -5,10 +5,11 @@ import pytest
 from gymnasium.utils.env_checker import check_env
 
 import owm_envs.envs  # noqa: F401  -- triggers registration
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_target
+from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
+from owm_envs.envs.common.goal import dock_goal_error
+from owm_envs.envs.common.sensing import PRESETS
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.env import ISSEnv
-from owm_envs.envs.iss.goal import dock_goal_error
-from owm_envs.envs.iss.sensing import PRESETS
 
 
 def test_passes_the_gymnasium_env_checker():

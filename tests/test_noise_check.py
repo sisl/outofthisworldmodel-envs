@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_sensor_noise import expected_sigmas, report_split, residual_stats  # noqa: E402
 
+from owm_envs.envs.common.sensing import PRESETS  # noqa: E402
 from owm_envs.envs.iss.config import ISSConfig  # noqa: E402
-from owm_envs.envs.iss.sensing import PRESETS  # noqa: E402
 
 
 def _identity_truth(n: int) -> np.ndarray:

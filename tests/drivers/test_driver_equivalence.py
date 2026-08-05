@@ -36,9 +36,10 @@ import pytest
 from owm_envs.drivers.scan_driver import ScanDriver
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, ObservationConfig, PhysicsConfig
-from owm_envs.envs.iss.policies import PolicyConfig
-from owm_envs.envs.iss.policy_source import ISSPolicySource
+from owm_envs.envs.common.config import DockConfig, ObservationConfig, PhysicsConfig
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.common.policy_source import ISSPolicySource
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 START_RADIUS_RANGE_M = ISSConfig().physics.start_radius_range_m
@@ -47,7 +48,7 @@ DETERMINISTIC = PolicyConfig(type="dock")
 
 
 def drivers_for(cfg, num_envs=2):
-    from owm_envs.envs.iss.policy_source import ISSPolicySource
+    from owm_envs.envs.common.policy_source import ISSPolicySource
 
     vec = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
@@ -313,7 +314,7 @@ def test_both_drivers_agree_on_episode_length_distribution_for_a_stochastic_poli
     # logic would still show up as a different length distribution.
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     stochastic = PolicyConfig(type="random")
-    from owm_envs.envs.iss.policy_source import ISSPolicySource
+    from owm_envs.envs.common.policy_source import ISSPolicySource
 
     vec = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=4, cfg=cfg),

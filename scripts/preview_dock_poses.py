@@ -1,6 +1,6 @@
 """Render every candidate docking pose so a goal list can be checked by eye.
 
-For each port in `owm_envs.envs.iss.docking_ports.PORTS` (or a subset) this
+For each port in `owm_envs.envs.common.docking_ports.PORTS` (or a subset) this
 builds the goal state the environment would hold at that port and renders four
 panels of the same scene the dataset pipeline uses:
 
@@ -30,14 +30,15 @@ import pylinalg as la
 import typer
 from PIL import Image, ImageDraw
 
-from owm_envs.envs.iss.config import ISSConfig, load_collision_boxes
-from owm_envs.envs.iss.docking_ports import (
+from owm_envs.envs.common.config import load_collision_boxes
+from owm_envs.envs.common.docking_ports import (
     PORTS,
     PORTS_BY_NAME,
     DockingPort,
     port_pose,
     resolve_port_names,
 )
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.render.iss_scene import RenderConfig
 from owm_envs.render.renderer import ISSRenderer
 from owm_envs.render.view import CameraView

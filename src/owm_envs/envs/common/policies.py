@@ -25,7 +25,7 @@ from ...core.quaternion import (
     quat_normalize,
     quat_to_rotmat,
 )
-from .config import ISSConfig, dock_target
+from .config import BaseTaskConfig, dock_target
 from .docking_ports import DockPort, port_target_rows, resolve_port_entries
 
 PolicyFn = Callable[[jnp.ndarray, jax.Array, jnp.ndarray], jnp.ndarray]
@@ -130,10 +130,11 @@ class DockParams(ConfigModel):
     kp_attitude: float = 800.0
     kd_attitude: float = 16_000.0
     # Ports an episode may be assigned, drawn uniformly at reset. Empty keeps
-    # the single pose in ISSConfig.dock, which is what a config that predates
-    # multi-port support means. `docking_ports.resolve_port_entries` owns what
-    # an entry may be written as; the same field on DockConfig resolves through
-    # it too, so a generation config and an env config mean the same thing.
+    # the single pose in BaseTaskConfig.dock, which is what a config that
+    # predates multi-port support means. `docking_ports.resolve_port_entries`
+    # owns what an entry may be written as; the same field on DockConfig
+    # resolves through it too, so a generation config and an env config mean
+    # the same thing.
     ports: tuple[DockPort, ...] = ()
 
     @field_validator("ports", mode="before")
@@ -143,7 +144,7 @@ class DockParams(ConfigModel):
 
 
 class PolicyConfig(ConfigModel):
-    """Policy settings. A ConfigModel like ISSConfig so the policy that shaped
+    """Policy settings. A ConfigModel like BaseTaskConfig so the policy that shaped
     a dataset is part of its as-run record, not just the environment physics."""
 
     # Which policy make_policy builds. Defaults to "random". Invalid values
@@ -198,7 +199,7 @@ def _attitude_torque(
     )
 
 
-def _build_random(cfg: ISSConfig) -> PolicyFn:
+def _build_random(cfg: BaseTaskConfig) -> PolicyFn:
     low = jnp.array(
         [-cfg.control.limit_force_n] * 3 + [-cfg.control.limit_torque_nm] * 3,
         dtype=jnp.float32,
@@ -241,7 +242,7 @@ def orbit_reference(pos_w, orbit_extras, dt):
     return p_des, v_des, q_des
 
 
-def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasFn]:
+def _build_orbit(cfg: BaseTaskConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasFn]:
     # This "orbit" is not a passively stable relative orbit -- it is a
     # circular trajectory at a commanded angular speed around the target,
     # held by continuous control. That's useful for training precisely
@@ -329,10 +330,10 @@ def _build_orbit(cfg: ISSConfig, params: OrbitParams) -> tuple[PolicyFn, ExtrasF
     return policy_fn, extras_fn
 
 
-def dock_target_table(cfg: ISSConfig, params: DockParams) -> jnp.ndarray:
+def dock_target_table(cfg: BaseTaskConfig, params: DockParams) -> jnp.ndarray:
     """(K, 7) [position, quaternion] rows a dock policy may be assigned.
 
-    One row, the pose in `ISSConfig.dock`, when no ports are configured.
+    One row, the pose in `BaseTaskConfig.dock`, when no ports are configured.
     Otherwise the rows are the configured entries' own poses, in config order
     -- read off the entries rather than re-resolved from the table, so a
     config that pins a port the table no longer knows still flies to it.
@@ -342,14 +343,14 @@ def dock_target_table(cfg: ISSConfig, params: DockParams) -> jnp.ndarray:
     return jnp.asarray(port_target_rows(params.ports), dtype=jnp.float32)
 
 
-def dock_target_selector(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable:
+def dock_target_selector(cfg: BaseTaskConfig, policy_cfg: PolicyConfig) -> Callable:
     """extras -> the (7,) target this episode is docking to.
 
     The dynamics, the goal-error block and the control law all resolve the
     episode's target through this one function, so a multi-port run cannot end
     up regulating to one port while scoring success against another. Policies
     that never dock -- random and orbit, which have no DOCK_SLOT entry --
-    resolve to the `ISSConfig.dock` pose whatever port set is configured, so
+    resolve to the `BaseTaskConfig.dock` pose whatever port set is configured, so
     `Events.docked` keeps meaning for them exactly what it means with no ports
     at all. Resolving them to the port table's first row instead would move
     their success gate onto a port nothing in the episode was flying to.
@@ -362,7 +363,7 @@ def dock_target_selector(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable:
     return lambda extras: targets[extras[slot].astype(jnp.int32)]
 
 
-def _build_dock(cfg: ISSConfig, params: DockParams) -> tuple[PolicyFn, ExtrasFn]:
+def _build_dock(cfg: BaseTaskConfig, params: DockParams) -> tuple[PolicyFn, ExtrasFn]:
     inertia_diag = jnp.asarray(cfg.physics.inertia_diag, dtype=jnp.float32)
     targets = dock_target_table(cfg, params)
     count = int(targets.shape[0])
@@ -392,7 +393,7 @@ def _build_dock(cfg: ISSConfig, params: DockParams) -> tuple[PolicyFn, ExtrasFn]
     return policy_fn, extras_fn
 
 
-def _build_union(cfg: ISSConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, ExtrasFn]:
+def _build_union(cfg: BaseTaskConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, ExtrasFn]:
     weights_raw = jnp.asarray(policy_cfg.union_weights, dtype=jnp.float32)
     total = float(jnp.sum(weights_raw))
     if total <= 0.0:
@@ -429,7 +430,7 @@ def _build_union(cfg: ISSConfig, policy_cfg: PolicyConfig) -> tuple[PolicyFn, Ex
 
 
 def make_policy(
-    cfg: ISSConfig,
+    cfg: BaseTaskConfig,
     policy_cfg: PolicyConfig,
     policy_type: str | None = None,
 ) -> tuple[PolicyFn, ExtrasFn | None]:

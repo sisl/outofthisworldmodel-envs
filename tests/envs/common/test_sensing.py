@@ -5,8 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from owm_envs.core.quaternion import quat_conjugate, quat_multiply
+from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig, apply_sensor_noise
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.sensing import PRESETS, SensorNoiseConfig, apply_sensor_noise
 
 
 def _state(pos=(60.0, -30.0, 20.0)):

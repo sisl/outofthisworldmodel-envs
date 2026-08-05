@@ -3,10 +3,11 @@ import numpy as np
 
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
-from owm_envs.envs.iss.config import ISSConfig, ObservationConfig, dock_target
-from owm_envs.envs.iss.goal import dock_goal_error
-from owm_envs.envs.iss.policies import PolicyConfig
-from owm_envs.envs.iss.policy_source import ISSPolicySource
+from owm_envs.envs.common.config import ObservationConfig, dock_target
+from owm_envs.envs.common.goal import dock_goal_error
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.common.policy_source import ISSPolicySource
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 
