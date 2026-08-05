@@ -93,7 +93,7 @@ def main() -> None:
         ),
         (
             CONFIGS / "generation_trial.yaml",
-            generation_config("num_episodes", 10, "num_episodes", 2),
+            generation_config("num_episodes", 64, "num_episodes", 2),
         ),
     ):
         gen.to_yaml(path)

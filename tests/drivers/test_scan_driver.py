@@ -184,3 +184,31 @@ def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
         previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
         this_initial = batch.observations[i, 0]
         assert not np.allclose(this_initial, previous_terminal)
+
+
+def test_num_episodes_mode_keeps_lane_quota_not_fastest_finishers():
+    # A box over the upper half-space makes lanes that start with z > 0
+    # collide on their first step, while lanes starting below truncate at
+    # max_steps. With spec seed 4, lanes 0-2 start below (slow) and lane 3
+    # above (fast, recycling a new episode every couple of steps).
+    # Keeping the first N episodes to finish would return lane 3's
+    # collisions and silently skew any policy mixture toward whatever
+    # terminates fastest; num_episodes mode must instead keep each lane's
+    # first episodes by deterministic quota -- here lanes 0 and 1 --
+    # regardless of how long they take.
+    driver = make_driver(
+        num_envs=4,
+        physics=dict(
+            collision_boxes_path=[{"center": [0.0, 0.0, 150.0], "size": [400.0, 400.0, 300.0]}],
+            start_radius_range_m=(100.0, 100.0),
+        ),
+        dock=dict(enabled=False),
+    )
+    batch = driver.generate(RolloutSpec(num_episodes=2, max_steps=5, seed=4))
+    batch.validate()
+    assert batch.lengths.tolist() == [6, 6]
+    assert not np.any(batch.terminated)
+    assert np.all(batch.truncated)
+    # Lane-major order: episode 0 is lane 0's start, episode 1 is lane 1's.
+    np.testing.assert_allclose(batch.observations[0, 0, 2], -85.0, atol=1.0)
+    np.testing.assert_allclose(batch.observations[1, 0, 2], -36.0, atol=1.0)

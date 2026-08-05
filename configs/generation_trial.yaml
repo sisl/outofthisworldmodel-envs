@@ -1,6 +1,6 @@
 splits:
   train:
-    num_episodes: 10
+    num_episodes: 64
     min_transitions: null
     max_steps: 12000
     seed: 0

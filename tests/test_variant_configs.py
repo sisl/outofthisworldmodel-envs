@@ -110,7 +110,7 @@ def test_the_500k_recipe_is_sized_in_transitions():
 
 def test_the_trial_recipe_is_a_handful_of_episodes():
     gen = GenerationConfig.from_yaml(CONFIGS / "generation_trial.yaml")
-    assert (gen.splits["train"].num_episodes, gen.splits["val"].num_episodes) == (10, 2)
+    assert (gen.splits["train"].num_episodes, gen.splits["val"].num_episodes) == (64, 2)
     assert gen.splits["train"].min_transitions is None
     assert gen.splits["val"].min_transitions is None
 

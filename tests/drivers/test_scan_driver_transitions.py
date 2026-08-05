@@ -48,11 +48,12 @@ def test_scan_transitions_mode_spans_multiple_chunks():
     np.testing.assert_array_equal(a.lengths, b.lengths)
 
 
-def test_episodes_mode_early_stops_segmentation_at_the_requested_count(monkeypatch):
-    # _run_chunk passes `wanted` straight through to _segment_episodes;
-    # episodes mode must pass spec.num_episodes so segmentation stops once
-    # enough episodes are cut, instead of building (and discarding) a dict
-    # for every episode the chunk completes.
+def test_episodes_mode_passes_the_full_chunk_bound_to_segmentation(monkeypatch):
+    # Episodes mode selects deterministic per-lane quotas from the chunk's
+    # full episode set (see generate), so segmentation must not early-stop
+    # at the requested count -- stopping at the first N completions would
+    # hand quota selection only the fastest-terminating episodes and skew a
+    # policy mixture toward whatever ends soonest.
     captured: list[int] = []
     original = ScanDriver._segment_episodes
 
@@ -66,7 +67,9 @@ def test_episodes_mode_early_stops_segmentation_at_the_requested_count(monkeypat
         RolloutSpec(max_steps=10, seed=0, num_episodes=3)
     )
 
-    assert captured == [3]
+    # horizon = ceil(3 episodes / 2 lanes) * 10 steps = 20; the chunk bound
+    # is num_envs * horizon.
+    assert captured == [2 * 20]
 
 
 def test_transitions_mode_passes_the_full_chunk_bound_to_segmentation(monkeypatch):

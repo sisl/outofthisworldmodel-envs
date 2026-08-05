@@ -91,17 +91,28 @@ class ScanDriver:
         # episodes; seeding mirrors VectorEnvDriver exactly (see _run_chunk).
         base_rng = np.random.default_rng(spec.seed)
         episodes = self._run_chunk(
-            base_rng, runner, sample_extras, spec.num_episodes, records_policy_ids
+            base_rng, runner, sample_extras, self.num_envs * horizon, records_policy_ids
         )
-        if len(episodes) < spec.num_episodes:
-            raise RuntimeError(
-                f"scan horizon produced only {len(episodes)} complete episodes, "
-                f"needed {spec.num_episodes}"
-            )
-        obs_dim = episodes[0]["obs"].shape[-1]
-        act_dim = episodes[0]["act"].shape[-1]
+        # Deterministic per-lane quotas, not completion order: keeping the
+        # first N episodes to finish would select for whatever terminates
+        # fastest (e.g. collisions over full-length orbits), silently skewing
+        # a policy mixture's composition. Lane index is independent of
+        # outcome, so each lane contributing its first episodes preserves it.
+        base_quota, remainder = divmod(spec.num_episodes, self.num_envs)
+        selected: list[dict] = []
+        for lane in range(self.num_envs):
+            quota = base_quota + (1 if lane < remainder else 0)
+            lane_episodes = [e for e in episodes if e["lane"] == lane]
+            if len(lane_episodes) < quota:
+                raise RuntimeError(
+                    f"scan horizon produced only {len(lane_episodes)} complete "
+                    f"episodes on lane {lane}, needed {quota}"
+                )
+            selected.extend(lane_episodes[:quota])
+        obs_dim = selected[0]["obs"].shape[-1]
+        act_dim = selected[0]["act"].shape[-1]
         return pack_episodes(
-            episodes[: spec.num_episodes],
+            selected,
             obs_dim=obs_dim,
             act_dim=act_dim,
             records_policy_ids=records_policy_ids,
@@ -337,18 +348,16 @@ class ScanDriver:
         """Cut the flat per-lane scan output into per-episode dicts, in
         time-major completion order.
 
-        Iterating lane-major (all of lane 0's episodes, then lane 1's, ...)
-        and stopping as soon as `wanted` is reached would exhaust the count
-        from the first few lanes and never touch the rest -- requesting 10
-        episodes over 8 lanes would take 2 each from lanes 0-4 and none from
-        lanes 5-7, biasing the dataset toward a subset of the reset-key
-        stream. Iterating time-major (t outer, lane inner) instead completes
-        episodes in the same order VectorEnvDriver collects them
-        chronologically across lanes, so truncating to `wanted` keeps
-        coverage spread across every lane.
+        Time-major (t outer, lane inner) completes episodes in the same
+        chronological-across-lanes order VectorEnvDriver collects them, which
+        is what the transitions-mode accounting consumes. Episodes mode
+        passes `wanted` large enough that nothing is truncated here and
+        applies its own per-lane quota selection in `generate` -- stopping at
+        `wanted` in completion order would keep only the fastest-terminating
+        episodes and skew a policy mixture.
 
         Each dict also carries "lane", the lane it was cut from. pack_episodes
-        ignores unknown keys; tests use it to check lane coverage.
+        ignores unknown keys; generate's quota selection and tests use it.
         """
         (
             states,
