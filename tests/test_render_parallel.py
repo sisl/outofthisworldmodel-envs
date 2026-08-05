@@ -17,7 +17,13 @@ from .test_true_state import _scan_batch
 
 pytest.importorskip("pygfx", reason="rendering is an optional extra")
 
-from owm_envs.datasets.video import iter_batch_frames, render_batch_frames  # noqa: E402
+from owm_envs.datasets.video import (  # noqa: E402
+    FPV_KEY,
+    iter_batch_frames,
+    render_batch_frames,
+)
+
+FPV = FPV_KEY
 
 
 class _FakeRenderer:
@@ -32,10 +38,10 @@ class _FakeRenderer:
         _FakeRenderer.instances += 1
         self.cfg = cfg
 
-    def render(self, state, action=None, view="DRAGON_FPV"):
+    def render_views(self, state, action=None, views=("DRAGON_FPV",)):
         frame = np.zeros((self.cfg.image_height, self.cfg.image_width, 3), dtype=np.uint8)
         frame[0, 0, 0] = int(state[0])
-        return frame
+        return {view: frame.copy() for view in views}
 
     def close(self):
         _FakeRenderer.closes += 1
@@ -74,7 +80,7 @@ def fake_renderer(monkeypatch):
 
 def test_single_worker_yields_clips_in_episode_order(fake_renderer):
     batch = _fake_batch()
-    clips = list(iter_batch_frames(batch, _Cfg()))
+    clips = [episode[FPV] for episode in iter_batch_frames(batch, _Cfg())]
     assert [clip.shape[0] for clip in clips] == [3, 2, 4]
     assert [int(clip[0, 0, 0, 0]) for clip in clips] == [1, 2, 3]
 
@@ -113,7 +119,7 @@ def test_a_worker_never_downloads_its_own_earth_textures(monkeypatch):
     monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
     from owm_envs.render.iss_scene import RenderConfig
 
-    video._worker_init(RenderConfig().model_dump_json(), "DRAGON_FPV", None)
+    video._worker_init(RenderConfig().model_dump_json(), (FPV,), None)
     assert seen["download_textures"] is False
 
 
@@ -128,7 +134,9 @@ def test_parallel_matches_sequential():
     parallel = list(iter_batch_frames(batch, cfg, workers=2))
     assert len(parallel) == len(sequential)
     for seq, par in zip(sequential, parallel):
-        np.testing.assert_array_equal(seq, par)
+        assert set(seq) == set(par)
+        for key in seq:
+            np.testing.assert_array_equal(seq[key], par[key])
 
 
 def test_abandoning_a_pool_iterator_returns_promptly():
@@ -188,9 +196,12 @@ def _writer():
     return write_lerobot_split
 
 
-def _clips(lengths, size=32):
+def _clips(lengths, size=32, keys=(FPV,)):
     """32x32, not smaller: SVT-AV1 raises SIGFPE encoding a tiny frame."""
-    return [np.zeros((int(length), size, size, 3), dtype=np.uint8) for length in lengths]
+    return [
+        {key: np.zeros((int(length), size, size, 3), dtype=np.uint8) for key in keys}
+        for length in lengths
+    ]
 
 
 def test_writer_accepts_iterator(tmp_path):
@@ -219,7 +230,7 @@ def test_writer_releases_each_clip_before_pulling_the_next(tmp_path):
         for length in batch.lengths:
             clip = np.zeros((int(length), 32, 32, 3), dtype=np.uint8)
             refs.append(weakref.ref(clip))
-            yield clip
+            yield {FPV: clip}
             del clip
             gc.collect()
             # Every clip handed over so far, including the one for the
@@ -259,7 +270,7 @@ def test_writer_rejects_a_mismatched_clip_length_from_an_iterator(tmp_path):
 
     batch = _fake_batch()
     bad = _clips(batch.lengths)
-    bad[1] = np.zeros((bad[1].shape[0] + 1, 32, 32, 3), dtype=np.uint8)
+    bad[1] = {FPV: np.zeros((bad[1][FPV].shape[0] + 1, 32, 32, 3), dtype=np.uint8)}
     with pytest.raises(ValueError, match="length"):
         write_lerobot_split(
             tmp_path / "badlen", "iss/badlen", batch, fps=20, frames=iter(bad)
@@ -281,8 +292,8 @@ def test_writer_closes_the_clip_source_when_an_episode_fails(tmp_path):
 
     def clips():
         try:
-            yield np.zeros((int(batch.lengths[0]), 32, 32, 3), dtype=np.uint8)
-            yield np.zeros((int(batch.lengths[1]) + 1, 32, 32, 3), dtype=np.uint8)
+            yield {FPV: np.zeros((int(batch.lengths[0]), 32, 32, 3), dtype=np.uint8)}
+            yield {FPV: np.zeros((int(batch.lengths[1]) + 1, 32, 32, 3), dtype=np.uint8)}
         finally:
             closed.append(True)
 
@@ -308,7 +319,7 @@ def test_writer_closes_the_clip_source_when_the_first_episode_fails(tmp_path):
 
     def clips():
         try:
-            yield np.zeros((int(batch.lengths[0]) + 1, 32, 32, 3), dtype=np.uint8)
+            yield {FPV: np.zeros((int(batch.lengths[0]) + 1, 32, 32, 3), dtype=np.uint8)}
         finally:
             closed.append(True)
 
@@ -361,7 +372,7 @@ def test_writer_closes_the_clip_source_when_the_feature_cannot_be_declared(tmp_p
 
     def clips():
         try:
-            yield np.zeros((int(batch.lengths[0]), 32, 32), dtype=np.uint8)
+            yield {FPV: np.zeros((int(batch.lengths[0]), 32, 32), dtype=np.uint8)}
         finally:
             closed.append(True)
 
@@ -381,8 +392,8 @@ def test_a_clip_source_that_fails_to_close_does_not_mask_the_write_error(tmp_pat
 
     def clips():
         try:
-            yield np.zeros((int(batch.lengths[0]), 32, 32, 3), dtype=np.uint8)
-            yield np.zeros((int(batch.lengths[1]) + 1, 32, 32, 3), dtype=np.uint8)
+            yield {FPV: np.zeros((int(batch.lengths[0]), 32, 32, 3), dtype=np.uint8)}
+            yield {FPV: np.zeros((int(batch.lengths[1]) + 1, 32, 32, 3), dtype=np.uint8)}
         finally:
             raise RuntimeError("the pool failed to shut down")
 
@@ -397,7 +408,7 @@ def test_writer_rejects_a_mismatched_frame_shape_from_an_iterator(tmp_path):
 
     batch = _fake_batch()
     bad = _clips(batch.lengths)
-    bad[1] = np.zeros((bad[1].shape[0], 64, 64, 3), dtype=np.uint8)
+    bad[1] = {FPV: np.zeros((bad[1][FPV].shape[0], 64, 64, 3), dtype=np.uint8)}
     with pytest.raises(ValueError, match="shape"):
         write_lerobot_split(
             tmp_path / "badshape", "iss/badshape", batch, fps=20, frames=iter(bad)

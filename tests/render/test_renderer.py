@@ -533,6 +533,33 @@ def test_star_brightness_scales_the_starfield(renderer):
     assert default * 0.9 < ratio < default * 1.1, f"asked for {default}, got {ratio:.3f}"
 
 
+def test_render_views_matches_rendering_each_view_on_its_own(renderer):
+    together = renderer.render_views(a_state(), views=VIEWS)
+    assert list(together) == VIEWS
+    for view in VIEWS:
+        np.testing.assert_array_equal(together[view], renderer.render(a_state(), view=view))
+
+
+def test_render_views_poses_the_scene_once_for_all_six(renderer, monkeypatch):
+    # Posing is per-state, not per-camera. Six views that each re-posed the
+    # capsule would do the same work six times for the same frame -- the whole
+    # reason multi-view rendering is worth having as its own call.
+    poses = []
+    real_update = renderer._iss_scene.update
+    monkeypatch.setattr(
+        renderer._iss_scene,
+        "update",
+        lambda state, action=None: (poses.append(1), real_update(state, action))[1],
+    )
+    renderer.render_views(a_state(), views=VIEWS)
+    assert len(poses) == 1
+
+
+def test_render_views_rejects_an_unknown_view(renderer):
+    with pytest.raises(ValueError, match="view"):
+        renderer.render_views(a_state(), views=["DRAGON_FPV", "NADIR"])
+
+
 def test_render_after_close_raises_runtime_error():
     # A closed renderer must fail with a clear, actionable error rather than
     # an AttributeError from internally nulled-out state.
@@ -540,3 +567,10 @@ def test_render_after_close_raises_runtime_error():
     r.close()
     with pytest.raises(RuntimeError, match="closed"):
         r.render(a_state())
+
+
+def test_render_views_rejects_a_bare_view_name(renderer):
+    # A string is a sequence of characters, so this would otherwise be
+    # reported as an unknown view called "D".
+    with pytest.raises(TypeError, match="sequence of view names"):
+        renderer.render_views(a_state(), views="DRAGON_FPV")
