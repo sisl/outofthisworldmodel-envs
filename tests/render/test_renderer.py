@@ -540,3 +540,94 @@ def test_render_after_close_raises_runtime_error():
     r.close()
     with pytest.raises(RuntimeError, match="closed"):
         r.render(a_state())
+
+
+# Four consecutive poses from val episode 1 of the run that showed the defect
+# (logs/trial_coop_goal), copied out of its stored `state_vector` rows rather
+# than invented: the artifact only appears at particular limb geometries, and
+# a pose chosen for looking convenient did not reproduce it.
+_LIMB_ARTIFACT_POSES = (
+    (90.759438, -39.391617, -8.915079, -0.762598, 2.067935, 0.498665,
+     0.654533, -0.243694, -0.699601, 0.150863, 0.305657, -0.533946, 0.241813),
+    (85.982445, -32.487934, -8.551683, -4.352481, 4.753126, -0.535502,
+     0.281803, -0.115844, -0.793397, 0.526962, 0.194769, -0.341299, 0.143757),
+    (85.763176, -32.248665, -8.579208, -4.418416, 4.81745, -0.565676,
+     0.273789, -0.112852, -0.792779, 0.532733, 0.190809, -0.333066, 0.139999),
+    (85.540672, -32.006161, -8.608126, -4.481843, 4.88244, -0.591207,
+     0.265948, -0.10991, -0.792086, 0.538323, 0.186894, -0.324926, 0.136296),
+)
+
+
+def _grow(mask, radius):
+    out = mask.copy()
+    for _ in range(radius):
+        grown = out.copy()
+        grown[1:] |= out[:-1]
+        grown[:-1] |= out[1:]
+        grown[:, 1:] |= out[:, :-1]
+        grown[:, :-1] |= out[:, 1:]
+        out = grown
+    return out
+
+
+def _limb_gap_fraction(frame):
+    """Share of the atmosphere band bitten out by near-black gaps.
+
+    The band is the teal pixels. A gap is darkness with both the band and the
+    lit surface close by -- sky past the band's outer edge is just as dark but
+    has no surface beside it, which is what keeps the starfield out of the
+    count.
+    """
+    rgb = frame.astype(np.int16)
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    band = (b > 60) & (b > r + 25) & (g > r + 10)
+    lit = (rgb.max(axis=-1) > 60) & ~band
+    dark = rgb.max(axis=-1) < 30
+    gaps = dark & _grow(band, 4) & _grow(lit, 4)
+    # Not `max(..., 1)`: a band that vanished entirely would divide into zero
+    # gaps and read as perfect. The caller checks this is a real band first.
+    return float(band.sum()), float(gaps.sum()) / max(int(band.sum()), 1)
+
+
+@pytest.fixture(scope="module")
+def earth_only_renderer():
+    """A renderer with the station and capsule hidden.
+
+    Their silhouettes against the band are dark, lit-adjacent and band-adjacent
+    -- what `_limb_gap_fraction` looks for, and not a defect. Hiding them
+    leaves only Earth and its atmosphere to be measured.
+    """
+    r = ISSRenderer(RenderConfig(image_width=512, image_height=512))
+    scene = r._iss_scene
+    for child in scene.scene.children:
+        if isinstance(child, gfx.Light):
+            continue
+        if child is scene.iss or child is scene.dragon:
+            child.visible = False
+    yield r
+    r.close()
+
+
+@pytest.mark.parametrize("pose", _LIMB_ARTIFACT_POSES)
+def test_the_atmosphere_band_has_no_holes_bitten_out_of_it(earth_only_renderer, pose):
+    """Black polygons used to appear inside the atmosphere band, moving as the
+    pose turned.
+
+    Only the sliver of each glow shell outside the globe's silhouette is ever
+    drawn, and the shells' facets were coarser than that sliver is wide, so
+    they left gaps showing the near-black sky behind. Nothing was drawn in
+    them -- rendered against a red background, they came back red.
+
+    Measured over the reported episode, the band lost up to 0.96% of itself to
+    these; at the shipped tessellation it loses none. The poses are four
+    consecutive frames, so this also covers the defect moving under small
+    rotations.
+    """
+    frame = earth_only_renderer.render(np.array(pose, dtype=np.float32), view="DRAGON_FPV")
+    band, gaps = _limb_gap_fraction(frame)
+    # A band that is not drawn at all has no holes in it either.
+    assert band > 5000, f"only {band:.0f} px of atmosphere band in frame"
+    # Tight enough to name the shipped tessellation rather than merely rule out
+    # the reported defect: 96x48 measured 0.96% here and 192x96 still 0.04%,
+    # against none at the 256x128 that ships.
+    assert gaps < 0.0002, f"{gaps:.2%} of the atmosphere band is punched out"

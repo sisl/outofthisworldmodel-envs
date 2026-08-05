@@ -566,8 +566,26 @@ class ISSScene:
         scales = inner_scale + (outer_scale - inner_scale) * np.power(t, 1.35)
         opacities = np.geomspace(0.020, 0.0008, shell_count).astype(np.float32)
 
+        # 256x128, not the 96x48 a sphere this smooth would otherwise want.
+        # Only the sliver of each shell outside the globe's silhouette is ever
+        # visible -- the rest is depth-rejected -- and at 96x48 the facets
+        # along that sliver are coarser than it is wide, so they leave gaps
+        # that read as black polygons bitten out of the limb, shifting as the
+        # pose turns. Measured over the reported episode, the gaps close
+        # completely at 256x128 (96x48: 0.96% of the band, 128x64: 0.35%,
+        # 192x96: 0.04%, 256x128: none) and both directions matter about
+        # equally, so both are raised. Costs ~17% of a frame, 17.0 -> 19.8 ms
+        # at 512x512, and no extra memory.
+        #
+        # One geometry for all 64 shells, scaled per shell rather than rebuilt
+        # at each radius: they differ only in radius, which is a uniform scale,
+        # so sharing costs nothing and keeps the finer tessellation from
+        # multiplying 64-fold in memory. A Fresnel shader on a single sphere
+        # would be the cheap way to draw this rim, and is the real fix if it
+        # ever needs to get more expensive than it already is.
+        geom = gfx.sphere_geometry(radius=1.0, width_segments=256, height_segments=128)
+
         for scale, base_opacity in zip(scales, opacities):
-            geom = gfx.sphere_geometry(radius=cfg.earth_radius_m * float(scale), width_segments=96, height_segments=48)
             mat = gfx.MeshBasicMaterial(color=color)
             mat.opacity = float(np.clip(base_opacity * cfg.earth_glow_strength, 0.0, 1.0))
             mat.alpha_mode = "add"
@@ -588,6 +606,8 @@ class ISSScene:
             mat.depth_compare = "<="
             shell = gfx.Mesh(geom, mat)
             shell.local.rotation = surface_rotation
+            radius = cfg.earth_radius_m * float(scale)
+            shell.local.scale = (radius, radius, radius)
             earth_group.add(shell)
 
     def _apply_earth_surface_rotation(self) -> None:
