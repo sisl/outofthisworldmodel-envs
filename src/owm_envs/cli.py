@@ -162,7 +162,7 @@ def generate(
              "leaves validation on every port deliberately: training can hold ports out "
              "while validation still measures the held-out ones.",
     ),
-    steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 7200)."),
+    steps: Optional[int] = typer.Option(None, help="Max steps per episode (default 12000)."),
     num_envs: Optional[int] = typer.Option(None, help="Parallel lanes (default 8)."),
     driver: Optional[str] = typer.Option(None, help="auto | scan | vector (default auto)."),
     fps: Optional[int] = typer.Option(None, help="Frames per second recorded in the dataset. "
@@ -299,7 +299,7 @@ def generate(
                 f"cannot read --gen-config {gen_config}: {exc}"
             ) from exc
     else:
-        resolved_steps = steps if steps is not None else 7200
+        resolved_steps = steps if steps is not None else 12_000
         try:
             gen = GenerationConfig(
                 splits=_parse_split_flags(

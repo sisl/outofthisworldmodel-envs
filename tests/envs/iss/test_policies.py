@@ -67,7 +67,9 @@ def test_dock_policy_drives_the_chaser_to_the_dock():
     s = state_at((30.0, 0.0, 0.0))
     force_limit = cfg.control.limit_force_n
     torque_limit = cfg.control.limit_torque_nm
-    for _ in range(2000):
+    # 200 s: the critically-damped approach (wn ~ 0.037 rad/s) needs ~140 s
+    # to bring a 30 m error under 1 m at Draco-class thrust.
+    for _ in range(4000):
         a = policy_fn(s, jax.random.PRNGKey(0), empty)
         a = jnp.concatenate([
             jnp.clip(a[0:3], -force_limit, force_limit),

@@ -1,5 +1,5 @@
 dt = 0.05
-max_steps = 7200
+max_steps = 12000
 max_range_m = 500.0
 
 [physics]
@@ -16,8 +16,8 @@ start_radius_m = 100.0
 collision_boxes_path = "collision_boxes.yaml"
 
 [control]
-limit_force_n = 18000.0
-limit_torque_nm = 90000.0
+limit_force_n = 1600.0
+limit_torque_nm = 2000.0
 
 [dock]
 position = [
