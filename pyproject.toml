@@ -24,10 +24,11 @@ render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow", "trimesh"]
 # huggingface-hub is named here as well as reached through lerobot:
 # datasets/hub.py imports it directly, and a dependency this package calls
 # itself must not be one lerobot is free to drop.
-# plotly is not used by the package itself: scripts/plot_trajectories_3d.py
-# reads a written run's parquet and renders it, so it needs whatever reads
-# those files, and this is the extra that supplies them.
-datasets = ["lerobot>=0.4.4", "huggingface-hub>=0.34.2", "plotly>=6.0"]
+# plotly and matplotlib are not used by the package itself:
+# scripts/plot_trajectories_3d.py reads a written run's parquet and renders
+# it, so it needs whatever reads those files, and this is the extra that
+# supplies them.
+datasets = ["lerobot>=0.4.4", "huggingface-hub>=0.34.2", "plotly>=6.0", "matplotlib>=3.9"]
 
 [project.scripts]
 owm-envs = "owm_envs.cli:app"
