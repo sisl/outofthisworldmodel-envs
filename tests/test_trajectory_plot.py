@@ -15,7 +15,11 @@ import pytest
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "plot_trajectories_3d.py"
 sys.path.insert(0, str(SCRIPT.parent))
 
-from plot_trajectories_3d import dock_positions  # noqa: E402
+from plot_trajectories_3d import (  # noqa: E402
+    classify_outcomes,
+    dock_positions,
+    policy_groups,
+)
 
 
 def test_dock_positions_unpacks_the_nested_lerobot_cell():
@@ -34,6 +38,64 @@ def test_dock_positions_drops_episodes_with_no_target():
     known = np.array([[4.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
     frame = pd.DataFrame({"episode_index": [0, 1], "dock_target": [unknown, known]})
     assert dock_positions(frame).tolist() == [[4.0, 0.0, 0.0]]
+
+
+def _frame(rows):
+    return pd.DataFrame(rows)
+
+
+def _state(pos, vel=(0.0, 0.0, 0.0)):
+    return np.array([*pos, *vel, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+
+META = {"max_range_m": 500.0, "dock_max_distance_m": 0.1,
+        "dock_max_velocity_m_s": 0.5, "split_policy": {}}
+TARGET = np.array([[0.0, -24.5, -2.5, 1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+
+
+def test_outcomes_separate_the_four_ways_an_episode_ends():
+    # Four episodes, one per ending: inside the dock gates, terminated mid-
+    # station (collision), terminated on the domain boundary, and truncated.
+    frame = _frame({
+        "episode_index": [0, 1, 2, 3],
+        "frame_index": [10, 10, 10, 10],
+        "terminated": [True, True, True, False],
+        "state_vector": [
+            _state((0.0, -24.45, -2.5), vel=(0.0, 0.1, 0.0)),
+            _state((5.0, -10.0, 0.0)),
+            _state((500.0, 0.0, 0.0)),
+            _state((80.0, 0.0, 0.0)),
+        ],
+        "dock_target": [TARGET] * 4,
+    })
+    outcomes = classify_outcomes(frame, META, "state_vector")
+    assert outcomes.to_dict() == {0: "docked", 1: "collision", 2: "escaped", 3: "timeout"}
+
+
+def test_dock_gate_needs_low_speed_not_just_proximity():
+    # At the port but above the velocity gate: that termination was a
+    # collision with the station, not a successful dock.
+    frame = _frame({
+        "episode_index": [0],
+        "frame_index": [10],
+        "terminated": [True],
+        "state_vector": [_state((0.0, -24.45, -2.5), vel=(0.0, 2.0, 0.0))],
+        "dock_target": [TARGET],
+    })
+    assert classify_outcomes(frame, META, "state_vector").to_dict() == {0: "collision"}
+
+
+def test_union_split_groups_episodes_by_recorded_policy_id():
+    frame = _frame({
+        "episode_index": [0, 1, 2],
+        "policy_id": [np.array([2]), np.array([0]), np.array([2])],
+    })
+    assert policy_groups(frame, "union") == {"dock": [0, 2], "random": [1]}
+
+
+def test_non_union_split_is_one_group_named_by_its_policy():
+    frame = _frame({"episode_index": [0, 1], "policy_id": [np.array([0])] * 2})
+    assert policy_groups(frame, "dock") == {"dock": [0, 1]}
 
 
 @pytest.mark.parametrize("flag", ["--max-points", "--max-episodes"])
