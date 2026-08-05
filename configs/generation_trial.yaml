@@ -2,7 +2,7 @@ splits:
   train:
     num_episodes: 64
     min_transitions: null
-    max_steps: 12000
+    max_steps: 7200
     seed: 0
     policy:
       type: union
@@ -10,9 +10,9 @@ splits:
       orbit:
         radius_range_m:
         - 80.0
-        - 150.0
+        - 130.0
         speed_fraction_range:
-        - 0.6
+        - 0.75
         - 1.0
         thrust_utilization: 0.6
         kp_position: 16.0
@@ -82,7 +82,7 @@ splits:
   val:
     num_episodes: 2
     min_transitions: null
-    max_steps: 12000
+    max_steps: 7200
     seed: 1
     policy:
       type: dock
@@ -90,9 +90,9 @@ splits:
       orbit:
         radius_range_m:
         - 80.0
-        - 150.0
+        - 130.0
         speed_fraction_range:
-        - 0.6
+        - 0.75
         - 1.0
         thrust_utilization: 0.6
         kp_position: 16.0

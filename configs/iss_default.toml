@@ -1,5 +1,5 @@
 dt = 0.05
-max_steps = 12000
+max_steps = 7200
 max_range_m = 750.0
 
 [physics]

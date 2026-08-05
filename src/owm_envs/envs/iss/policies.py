@@ -58,8 +58,8 @@ class OrbitParams(ConfigModel):
     # Floor clears the station's largest extremity (the array corners reach
     # ~71 m from the origin, plus the 2.25 m chaser radius); ceiling keeps
     # the slowest sampled orbit's period, plus its fly-in from a start as
-    # far as 500 m out, inside the 600 s episode at Draco-class thrust.
-    radius_range_m: tuple[float, float] = (80.0, 150.0)
+    # far as 500 m out, inside the 360 s episode at Draco-class thrust.
+    radius_range_m: tuple[float, float] = (80.0, 130.0)
     # Rate is a fraction of the fastest orbit the thrusters can actually hold
     # at the sampled radius, not an absolute rad/s. Holding radius R at rate w
     # needs a sustained centripetal force m*w^2*R, so the feasible rate falls
@@ -67,9 +67,10 @@ class OrbitParams(ConfigModel):
     # enough for 150 m makes 80 m orbits crawl, and one fast enough for 80 m
     # is unreachable further out. Expressing it as a fraction makes
     # feasibility intrinsic -- further-out orbits are automatically slower.
-    # The 0.6 floor guarantees at least one full revolution per episode at
-    # every radius in the shipped range.
-    speed_fraction_range: tuple[float, float] = (0.6, 1.0)
+    # The 0.75 floor guarantees at least one full revolution per episode at
+    # every radius in the shipped range within the 360 s horizon (the
+    # slowest combination, 130 m at 0.75, has a ~340 s period).
+    speed_fraction_range: tuple[float, float] = (0.75, 1.0)
     # Fraction of the per-axis force limit committed to that centripetal
     # force. The remainder is the PD's headroom to correct errors with; at 1.0
     # the whole budget goes to holding the circle and the fly-in transient
@@ -174,7 +175,8 @@ class DockParams(ConfigModel):
     # the 1600 N limit and critically damped. From the nearest starts the
     # approach peaks at ~1.4 m/s and settles into the 0.1 m dock gate in
     # ~250 s; from 500 m the fly-in saturates, peaks near ~6 m/s, and still
-    # docks with a ~300 s median inside the 600 s horizon.
+    # docks with a ~300 s median and a 320 s worst case, inside the 360 s
+    # horizon.
     kp_position: float = 16.0
     kd_velocity: float = 880.0
     kp_attitude: float = 800.0

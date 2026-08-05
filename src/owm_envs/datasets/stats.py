@@ -100,7 +100,7 @@ class SplitSpec(ConfigModel):
     # Matches ISSConfig.max_steps: the drivers roll to whichever of the two
     # is smaller, so a lower default here would silently truncate episodes
     # below the horizon the environment was sized for.
-    max_steps: int = Field(default=12_000, ge=1)
+    max_steps: int = Field(default=7200, ge=1)
     seed: int = Field(default=0, ge=0)
     # None inherits the run-level policy. Set it to give this split its own
     # -- e.g. a dock-only val split against a union-policy train split.
