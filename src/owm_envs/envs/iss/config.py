@@ -173,18 +173,18 @@ class ISSConfig(ConfigModel):
     # also a divisor -- the recorded frame rate is 1/dt -- so zero would raise
     # rather than produce a wrong number.
     dt: float = Field(default=0.05, gt=0, allow_inf_nan=False)
-    # 12000 * 0.05 = 600 s. Sized for the orbit policy's slowest commanded
-    # circle at Draco-class thrust: a 150 m orbit at the minimum speed
-    # fraction has a ~450 s period, plus the fly-in from a start as far as
-    # 500 m out, so anything much shorter ends before a revolution
-    # completes. A critically-damped dock approach settles into the gate in
-    # ~250 s from the nearest starts and ~300 s median from the farthest,
-    # comfortably inside the same horizon.
+    # 7200 * 0.05 = 360 s: the shortest horizon that still lets every dock
+    # episode resolve -- the critically-damped approach docks or collides
+    # by 320 s worst-case from any start in the 100-500 m shell. The orbit
+    # policy's radius and speed ranges are sized (see OrbitParams) so the
+    # slowest commanded circle closes >= 1 revolution, fly-in included,
+    # inside the same window. Shorter episodes mean more distinct
+    # trajectories per transition budget.
     #
     # The renderer draws Earth as a full textured globe, so however far the
     # ground track runs there is always surface under it; episode length is
     # bounded by the control problem alone, not by the map.
-    max_steps: int = 12000
+    max_steps: int = 7200
     # Radius of the spherical domain, measured from the ISS origin. A chaser
     # whose post-step position lies outside it has left the scenario, and the
     # episode terminates there rather than running out the horizon.

@@ -18,7 +18,7 @@ from owm_envs.envs.iss.config import (
 def test_default_config_matches_expected_values():
     cfg = ISSConfig()
     assert cfg.dt == 0.05
-    assert cfg.max_steps == 12000
+    assert cfg.max_steps == 7200
     assert cfg.physics.mass == 12000.0
     assert cfg.physics.inertia_diag == (80000.0, 80000.0, 50000.0)
     assert cfg.physics.start_radius_range_m == (100.0, 500.0)
