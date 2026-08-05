@@ -55,24 +55,36 @@ _MAX_RADIUS_M = 1e6
 
 
 class OrbitParams(ConfigModel):
-    radius_range_m: tuple[float, float] = (60.0, 400.0)
+    # Floor clears the station's largest extremity (the array corners reach
+    # ~71 m from the origin, plus the 2.25 m chaser radius); ceiling keeps
+    # the slowest sampled orbit's period, plus its fly-in from the 100 m
+    # start sphere, inside the 600 s episode at Draco-class thrust.
+    radius_range_m: tuple[float, float] = (80.0, 150.0)
     # Rate is a fraction of the fastest orbit the thrusters can actually hold
     # at the sampled radius, not an absolute rad/s. Holding radius R at rate w
     # needs a sustained centripetal force m*w^2*R, so the feasible rate falls
-    # as 1/sqrt(R) and no single absolute range serves 60-500 m: a floor low
-    # enough for 500 m makes 60 m orbits crawl, and one fast enough for 60 m is
-    # unreachable past ~111 m. Expressing it as a fraction makes feasibility
-    # intrinsic -- further-out orbits are automatically slower.
-    speed_fraction_range: tuple[float, float] = (0.4, 1.0)
+    # as 1/sqrt(R) and no single absolute range serves 80-150 m: a floor low
+    # enough for 150 m makes 80 m orbits crawl, and one fast enough for 80 m
+    # is unreachable further out. Expressing it as a fraction makes
+    # feasibility intrinsic -- further-out orbits are automatically slower.
+    # The 0.6 floor guarantees at least one full revolution per episode at
+    # every radius in the shipped range.
+    speed_fraction_range: tuple[float, float] = (0.6, 1.0)
     # Fraction of the per-axis force limit committed to that centripetal
     # force. The remainder is the PD's headroom to correct errors with; at 1.0
     # the whole budget goes to holding the circle and the fly-in transient
     # saturates.
     thrust_utilization: float = Field(default=0.6, gt=0.0, le=1.0)
-    kp_position: float = 1080.0
-    kd_velocity: float = 1500.0
-    kp_attitude: float = 54_000.0
-    kd_attitude: float = 47_000.0
+    # Position PD sized against the 1600 N per-axis limit and 12 t mass:
+    # kp*100 m = 1600 N, so the law is unsaturated from the start sphere in,
+    # and kd = 2*sqrt(kp*m) is critical damping (wn ~ 0.037 rad/s).
+    kp_position: float = 16.0
+    kd_velocity: float = 880.0
+    # Attitude PD in the _attitude_torque normalisation (torque per rad on
+    # the largest inertia axis): wn = sqrt(kp/I_max) ~ 0.1 rad/s, critically
+    # damped, briefly saturating the 2000 N*m limit only for errors > ~2.5 rad.
+    kp_attitude: float = 800.0
+    kd_attitude: float = 16_000.0
 
     @field_validator("speed_fraction_range")
     @classmethod
@@ -157,10 +169,13 @@ def _verify_against_table(port: DockPort) -> None:
 
 
 class DockParams(ConfigModel):
-    kp_position: float = 1080.0
-    kd_velocity: float = 7200.0
-    kp_attitude: float = 54_000.0
-    kd_attitude: float = 132_000.0
+    # Same sizing rationale as OrbitParams: unsaturated from the 100 m start
+    # sphere against the 1600 N limit, critically damped, settling into the
+    # 0.1 m dock gate in ~250 s with a ~1.4 m/s peak approach speed.
+    kp_position: float = 16.0
+    kd_velocity: float = 880.0
+    kp_attitude: float = 800.0
+    kd_attitude: float = 16_000.0
     # Ports an episode may be assigned, drawn uniformly at reset. Empty keeps
     # the single pose in ISSConfig.dock, which is what a config that predates
     # multi-port support means.

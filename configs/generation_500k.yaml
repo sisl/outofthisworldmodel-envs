@@ -2,28 +2,28 @@ splits:
   train:
     num_episodes: null
     min_transitions: 500000
-    max_steps: 7200
+    max_steps: 12000
     seed: 0
     policy:
       type: union
       observe: measurement
       orbit:
         radius_range_m:
-        - 60.0
-        - 400.0
+        - 80.0
+        - 150.0
         speed_fraction_range:
-        - 0.4
+        - 0.6
         - 1.0
         thrust_utilization: 0.6
-        kp_position: 1080.0
-        kd_velocity: 1500.0
-        kp_attitude: 54000.0
-        kd_attitude: 47000.0
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
       dock:
-        kp_position: 1080.0
-        kd_velocity: 7200.0
-        kp_attitude: 54000.0
-        kd_attitude: 132000.0
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
         ports:
         - name: harmony_fwd_pma2
           position:
@@ -82,28 +82,28 @@ splits:
   val:
     num_episodes: null
     min_transitions: 50000
-    max_steps: 7200
+    max_steps: 12000
     seed: 1
     policy:
       type: dock
       observe: measurement
       orbit:
         radius_range_m:
-        - 60.0
-        - 400.0
+        - 80.0
+        - 150.0
         speed_fraction_range:
-        - 0.4
+        - 0.6
         - 1.0
         thrust_utilization: 0.6
-        kp_position: 1080.0
-        kd_velocity: 1500.0
-        kp_attitude: 54000.0
-        kd_attitude: 47000.0
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
       dock:
-        kp_position: 1080.0
-        kd_velocity: 7200.0
-        kp_attitude: 54000.0
-        kd_attitude: 132000.0
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
         ports:
         - name: harmony_fwd_pma2
           position:

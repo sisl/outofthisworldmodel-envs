@@ -91,17 +91,18 @@ class PhysicsConfig(ConfigModel):
 class ControlConfig(ConfigModel):
     """Actuator limits.
 
-    9x the baseline (was 2000 N / 10000 N*m). Traversal time scales as
-    1/sqrt(F_max), so 9x force gives ~3x faster chaser motion. Not physically
-    realistic for a real Dragon -- purely a synthetic-dataset variety knob.
+    Sized to a real Dragon's Draco RCS: one Draco produces ~400 N, and a
+    proximity-ops translation fires ~4 of the 16 in a given body direction,
+    so 1600 N per axis (~0.13 m/s^2 at 12 t). Torque from a Draco couple at
+    a ~2.5 m arm gives ~2000 N*m (~0.025 rad/s^2 about the transverse axes).
     """
 
     # Strictly positive and finite: the orbit policy divides its rate bound by
     # the force limit, so zero would command a stationary "orbit" and a
     # negative or non-finite value would poison every sampled rate. A chaser
     # with no thrust is also not a scenario any policy here can express.
-    limit_force_n: float = Field(default=18_000.0, gt=0, allow_inf_nan=False)
-    limit_torque_nm: float = Field(default=90_000.0, gt=0, allow_inf_nan=False)
+    limit_force_n: float = Field(default=1600.0, gt=0, allow_inf_nan=False)
+    limit_torque_nm: float = Field(default=2000.0, gt=0, allow_inf_nan=False)
 
 
 class DockConfig(ConfigModel):
@@ -155,15 +156,17 @@ class ISSConfig(ConfigModel):
     # also a divisor -- the recorded frame rate is 1/dt -- so zero would raise
     # rather than produce a wrong number.
     dt: float = Field(default=0.05, gt=0, allow_inf_nan=False)
-    # 7200 * 0.05 = 360 s. Sized for the orbit policy's largest commanded
-    # circle: at 500 m the chaser needs ~198 s to fly out from the start sphere
-    # and settle, and the fastest holdable orbit there has a ~148 s period, so
-    # anything shorter ends before a revolution completes.
+    # 12000 * 0.05 = 600 s. Sized for the orbit policy's slowest commanded
+    # circle at Draco-class thrust: a 150 m orbit at the minimum speed
+    # fraction has a ~450 s period, plus tens of seconds of fly-in from the
+    # 100 m start sphere, so anything much shorter ends before a revolution
+    # completes. A critically-damped dock approach from 100 m settles into
+    # the gate in ~250 s, comfortably inside the same horizon.
     #
     # The renderer draws Earth as a full textured globe, so however far the
     # ground track runs there is always surface under it; episode length is
     # bounded by the control problem alone, not by the map.
-    max_steps: int = 7200
+    max_steps: int = 12000
     # Radius of the spherical domain, measured from the ISS origin. A chaser
     # whose post-step position lies outside it has left the scenario, and the
     # episode terminates there rather than running out the horizon.

@@ -18,13 +18,13 @@ from owm_envs.envs.iss.config import (
 def test_default_config_matches_expected_values():
     cfg = ISSConfig()
     assert cfg.dt == 0.05
-    assert cfg.max_steps == 7200
+    assert cfg.max_steps == 12000
     assert cfg.physics.mass == 12000.0
     assert cfg.physics.inertia_diag == (80000.0, 80000.0, 50000.0)
     assert cfg.physics.start_radius_m == 100.0
-    # 9x actuator limits -- deliberately unphysical, a dataset-variety knob.
-    assert cfg.control.limit_force_n == 18000.0
-    assert cfg.control.limit_torque_nm == 90000.0
+    # Draco-class actuator limits: ~4x400 N per axis, couple torque ~2000 N*m.
+    assert cfg.control.limit_force_n == 1600.0
+    assert cfg.control.limit_torque_nm == 2000.0
     assert cfg.dock.enabled is True
     assert cfg.dock.max_distance_m == 0.1
     assert cfg.dock.max_velocity_m_s == 0.5

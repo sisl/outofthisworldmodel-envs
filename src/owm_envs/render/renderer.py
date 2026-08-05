@@ -50,12 +50,12 @@ _TORQUE_RING_SEGMENTS = 32
 
 # The overlays read a 6D body-frame action as [force_xyz, torque_xyz] and
 # scale arrow length / ring radius against these. They mirror ISSConfig's
-# default actuator limits (18 kN / 90 kN*m) purely to give the visualization
+# default actuator limits (1.6 kN / 2 kN*m) purely to give the visualization
 # a sensible default scale -- the renderer has no dependency on that config,
 # so an action from a differently-tuned control config will just saturate
 # the overlay rather than misrepresent it.
-_DEFAULT_MAX_FORCE_N = 18_000.0
-_DEFAULT_MAX_TORQUE_NM = 90_000.0
+_DEFAULT_MAX_FORCE_N = 1600.0
+_DEFAULT_MAX_TORQUE_NM = 2000.0
 
 
 def _unit(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:
