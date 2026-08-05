@@ -374,11 +374,18 @@ def test_vector_truth_stays_aligned_across_resets(env_max_steps, spec_max_steps)
     import jax.numpy as jnp
 
     from owm_envs.drivers.types import RolloutSpec
-    from owm_envs.envs.iss.config import ISSConfig
+    from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
     from owm_envs.envs.iss.dynamics import ISSDynamics
     from owm_envs.envs.iss.sensing import PRESETS
 
-    cfg = ISSConfig(max_steps=env_max_steps, sensor_noise=PRESETS["noncooperative"])
+    # Start radius pinned: with the broad default shell, a state carried
+    # across a missed reset would usually still lie inside it after a few
+    # steps, so only an exact radius makes this assertion discriminating.
+    cfg = ISSConfig(
+        max_steps=env_max_steps,
+        sensor_noise=PRESETS["noncooperative"],
+        physics=PhysicsConfig(start_radius_range_m=(100.0, 100.0)),
+    )
     driver = _vector_driver(cfg, num_envs=1)
     batch = driver.generate(RolloutSpec(num_episodes=3, max_steps=spec_max_steps, seed=0))
     dynamics = ISSDynamics(cfg)
@@ -388,12 +395,12 @@ def test_vector_truth_stays_aligned_across_resets(env_max_steps, spec_max_steps)
         length = int(batch.lengths[i])
         assert length > 1
         true = batch.true_state[i, :length]
-        # Every episode's truth must begin inside the start shell: a lane
+        # Every episode's truth must begin on the pinned start sphere: a lane
         # that carried the previous episode's final state across a reset
         # would essentially never land there by chance.
-        low, high = cfg.physics.start_radius_range_m
-        radius0 = np.linalg.norm(true[0, 0:3])
-        assert low * (1 - 1e-4) <= radius0 <= high * (1 + 1e-4)
+        np.testing.assert_allclose(
+            np.linalg.norm(true[0, 0:3]), cfg.physics.start_radius_range_m[0], rtol=1e-4
+        )
         for t in range(length - 1):
             stepped, _ = dynamics.step(jnp.asarray(true[t]), jnp.asarray(batch.actions[i, t]))
             np.testing.assert_allclose(np.asarray(stepped), true[t + 1], rtol=1e-4, atol=1e-4)
