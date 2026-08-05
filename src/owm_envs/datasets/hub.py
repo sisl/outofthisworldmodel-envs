@@ -289,7 +289,7 @@ configs:
 # {name}
 
 Docking approaches to the International Space Station: a 12-tonne Dragon-class chaser
-manoeuvring from a 100 m start sphere to a station docking port, under rigid-body
+manoeuvring from starts between 100 m and 500 m out to a station docking port, under rigid-body
 free-flyer dynamics and against the station's 318-box collision hull. Generated with
 [owm-envs](https://github.com/sisl/outofthisworldmodel-envs) for world-model training,
 at {card["fps"]} Hz (dt = {card["dt"]} s).

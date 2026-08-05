@@ -78,7 +78,8 @@ def test_collision_terminates_and_reports_in_info():
         max_steps=100,
         # A box covering the whole start sphere guarantees an immediate hit.
         physics=PhysicsConfig(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=DockConfig(enabled=False),
     ))
@@ -94,7 +95,7 @@ def test_collision_terminates_and_reports_in_info():
 def test_docking_terminates_and_reports_success():
     env = ISSEnv(ISSConfig(
         max_steps=100,
-        physics=PhysicsConfig(collision_boxes_path=None),
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(100.0, 100.0)),
         # Dock target at the start sphere radius, so reset lands essentially on it.
         # Attitude/rate gates off: this test isolates distance/speed, and reset's
         # nose-at-ISS attitude does not generally match dock's docking-port
@@ -118,7 +119,7 @@ def test_leaving_the_domain_terminates_and_reports_in_info():
     env = ISSEnv(ISSConfig(
         max_steps=100,
         max_range_m=50.0,
-        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(100.0, 100.0)),
         dock=DockConfig(enabled=False),
     ))
     env.reset(seed=0)
@@ -146,7 +147,7 @@ def test_max_range_none_lets_a_far_episode_run_to_truncation():
     env = ISSEnv(ISSConfig(
         max_steps=5,
         max_range_m=None,
-        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=2000.0),
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(2000.0, 2000.0)),
         dock=DockConfig(enabled=False),
     ))
     env.reset(seed=0)

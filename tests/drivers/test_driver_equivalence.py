@@ -41,7 +41,7 @@ from owm_envs.envs.iss.policies import PolicyConfig
 from owm_envs.envs.iss.policy_source import ISSPolicySource
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
-START_RADIUS_M = ISSConfig().physics.start_radius_m
+START_RADIUS_RANGE_M = ISSConfig().physics.start_radius_range_m
 
 DETERMINISTIC = PolicyConfig(type="dock")
 
@@ -169,7 +169,8 @@ def test_scan_and_vector_agree_structurally_on_goal_blocks_for_union():
 def test_both_drivers_agree_when_episodes_terminate_on_collision():
     cfg = ISSConfig(
         physics=PhysicsConfig(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=DockConfig(enabled=False),
     )
@@ -213,16 +214,17 @@ def _assert_truth_recorded(batch):
 
 
 def _assert_every_episode_starts_from_a_reset(batch):
-    """Every episode's first observation must lie on the start sphere.
+    """Every episode's first observation must lie inside the start shell.
 
     A cheap, strong check that catches a driver silently starting a "new"
     episode from wherever the previous one happened to leave the physics,
     instead of from a real reset -- that state would essentially never sit
-    exactly on the sphere by chance.
+    inside the shell by chance.
     """
+    low, high = START_RADIUS_RANGE_M
     for i in range(batch.num_episodes):
         radius = np.linalg.norm(batch.observations[i, 0, 0:3])
-        np.testing.assert_allclose(radius, START_RADIUS_M, rtol=1e-4)
+        assert low * (1 - 1e-4) <= radius <= high * (1 + 1e-4)
 
 
 def test_both_drivers_agree_structurally_with_many_episodes_per_lane():
@@ -281,7 +283,8 @@ def test_both_drivers_agree_structurally_when_episodes_terminate_early():
     # 6 requested episodes -- again past the one-episode-per-lane regime.
     cfg = ISSConfig(
         physics=PhysicsConfig(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=DockConfig(enabled=False),
     )

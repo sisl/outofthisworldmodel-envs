@@ -413,7 +413,7 @@ def test_escape_is_jit_and_vmap_compatible():
 
 
 def test_reset_places_chaser_on_the_start_sphere():
-    dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_m=100.0)))
+    dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_range_m=(100.0, 100.0))))
     s = dyn.reset(jax.random.PRNGKey(0))
     assert s.shape == (13,)
     assert np.isclose(float(jnp.linalg.norm(s[0:3])), 100.0, atol=1e-3)
@@ -425,7 +425,7 @@ def test_reset_places_chaser_on_the_start_sphere():
 def test_reset_points_body_z_at_the_iss():
     from owm_envs.core.quaternion import rotate_body_to_world
 
-    dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_m=100.0)))
+    dyn = ISSDynamics(ISSConfig(physics=PhysicsConfig(start_radius_range_m=(100.0, 100.0))))
     s = dyn.reset(jax.random.PRNGKey(3))
     nose_world = rotate_body_to_world(s[6:10], jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32))
     to_iss = -s[0:3] / jnp.linalg.norm(s[0:3])

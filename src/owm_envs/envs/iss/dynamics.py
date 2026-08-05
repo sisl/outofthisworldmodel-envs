@@ -74,7 +74,9 @@ class ISSDynamics:
         self._linear_damping = jnp.asarray(cfg.physics.linear_damping, dtype=jnp.float32)
         self._angular_damping = jnp.asarray(cfg.physics.angular_damping, dtype=jnp.float32)
         self._chaser_radius = jnp.asarray(cfg.physics.dragon_collision_radius_m, dtype=jnp.float32)
-        self._start_radius = jnp.asarray(cfg.physics.start_radius_m, dtype=jnp.float32)
+        start_low, start_high = cfg.physics.start_radius_range_m
+        self._start_radius_low = jnp.asarray(start_low, dtype=jnp.float32)
+        self._start_radius_high = jnp.asarray(start_high, dtype=jnp.float32)
         if cfg.max_range_m is not None:
             self._max_range = jnp.asarray(cfg.max_range_m, dtype=jnp.float32)
 
@@ -239,10 +241,18 @@ class ISSDynamics:
         return s_next, events
 
     def reset(self, key: jax.Array) -> jnp.ndarray:
-        """Uniform random point on the start sphere, at rest, nose pointed at the ISS."""
-        raw = jax.random.normal(key, (3,), dtype=jnp.float32)
+        """Uniform direction, uniform radius in the start range, at rest, nose at the ISS."""
+        key_direction, key_radius = jax.random.split(key)
+        raw = jax.random.normal(key_direction, (3,), dtype=jnp.float32)
         direction = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
-        pos = direction * self._start_radius
+        radius = jax.random.uniform(
+            key_radius,
+            (),
+            dtype=jnp.float32,
+            minval=self._start_radius_low,
+            maxval=self._start_radius_high,
+        )
+        pos = direction * radius
         nose_to_iss = -direction
         q_bw = quat_from_body_z_to(nose_to_iss)
         return jnp.concatenate(
