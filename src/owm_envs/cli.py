@@ -23,7 +23,6 @@ from pydantic import ValidationError
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
 from .datasets.video import (
     COMPOSITE_VIEWS,
-    FPV_KEY,
     OUTPUT_KEYS,
     VIEW_NAMES,
     keys_for_names,
@@ -421,16 +420,12 @@ def generate(
                 batch, render_cfg, keys=view_keys,
                 workers=render_workers, gpu_index=gpu_index,
             )
-            # Tapped on the way past rather than rendered again: each episode's
-            # egocentric clip is also written on its own under media/, which is
-            # the one-video-per-rollout shape that reviewers and the training
-            # side's tooling expect. Auxiliary files, not dataset features.
-            # Only when the run renders that view at all -- `--render-views
-            # iss_top` produces no fpv clip to tee.
-            if FPV_KEY in view_keys:
-                frames = tee_episode_clips(
-                    frames, out / "media" / "fpv" / name, resolved_fps
-                )
+            # Tapped on the way past rather than rendered again: every view's
+            # clips are also written per episode under media/<view>/<split>/,
+            # which is the one-video-per-rollout shape that reviewers and the
+            # training side's tooling expect. Auxiliary files, not dataset
+            # features; see tee_episode_clips for what they cost.
+            frames = tee_episode_clips(frames, out / "media", name, resolved_fps)
         if lerobot:
             from .datasets.lerobot_writer import write_lerobot_split
 

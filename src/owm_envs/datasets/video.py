@@ -415,18 +415,26 @@ def iter_batch_frames(
 
 def tee_episode_clips(
     frames: Iterator[dict[str, np.ndarray]],
-    media_dir: Any,
+    media_root: Any,
+    split: str,
     fps: int,
-    key: str = FPV_KEY,
 ) -> Iterator[dict[str, np.ndarray]]:
-    """Write each episode's `key` clip to its own mp4, and pass it along.
+    """Write every view's per-episode mp4 under `media_root`, and pass it along.
 
     The dataset stores video the way lerobot does, concatenated into chunk
     files that need its index to cut back apart. One file per episode is what
     anyone reviewing a run actually reaches for, and what the training side's
-    own tooling writes, so a copy goes to `media_dir/ep_%04d.mp4`. These are
-    auxiliary files, deliberately not dataset features: nothing reads them
-    back, and a consumer that wants frames should use the feature.
+    own tooling writes, so a copy of each view goes to
+    `media_root/<view>/<split>/ep_%04d.mp4` -- the view named by the tail of
+    its feature key. Whatever the run rendered gets a copy; there is no second
+    selection here, since a view worth a dataset feature is worth reviewing.
+
+    These are auxiliary files, deliberately not dataset features: nothing reads
+    them back, and a consumer that wants frames should use the feature. They
+    are not free -- the same frames encoded a second time, and `push` ships
+    them with the run -- but they are much cheaper than a second copy: cut per
+    episode and encoded at imageio's libx264 defaults, they came to a fifth of
+    the dataset's own video on a measured seven-view run.
 
     A tee rather than a second render: the clips are already in hand on their
     way to the writer, and re-rendering an episode to look at it would double
@@ -435,16 +443,15 @@ def tee_episode_clips(
     Standing between the render pool and the writer makes this responsible for
     both of the properties that chain already had. It must not hold an episode
     while the next one is produced -- that is the one-episode video bound, and
-    with a composite alongside the training view there is twice as much of it
-    to hold -- and closing it must close the pool behind it, since the writer
-    now closes this rather than the iterator that owns the workers.
+    with every view rendered there is a multiple of it to hold -- and closing
+    it must close the pool behind it, since the writer now closes this rather
+    than the iterator that owns the workers.
     """
     from pathlib import Path
 
     import imageio.v3 as iio
 
-    media_dir = Path(media_dir)
-    media_dir.mkdir(parents=True, exist_ok=True)
+    media_root = Path(media_root)
     source = iter(frames)
     episode = 0
     try:
@@ -453,27 +460,35 @@ def tee_episode_clips(
                 clips = next(source)
             except StopIteration:
                 return
-            path = media_dir / f"ep_{episode:04d}.mp4"
-            try:
-                iio.imwrite(
-                    path,
-                    clips[key],
-                    fps=fps,
-                    codec="libx264",
-                    # yuv420p and even dimensions: the default yuv444p is rejected
-                    # by most players, and libx264 cannot subsample an odd frame.
-                    pixelformat="yuv420p",
-                    macro_block_size=2,
-                )
-            except Exception as error:
-                # These clips are auxiliary, so failing to write one must never
-                # take down the dataset write running downstream of this -- that
-                # would strand the episodes already on disk. Per episode rather
-                # than latching off, since whatever failed here may not recur.
-                warnings.warn(
-                    f"could not write debug clip {path}: {error!r}",
-                    stacklevel=2,
-                )
+            # Indexed rather than unpacked: a `for key, clip in ...` binding
+            # outlives the loop and would hold one view of this episode across
+            # the next `next(source)`, on top of the episode itself.
+            for key in clips:
+                path = media_root / key.rsplit(".", 1)[-1] / split / f"ep_{episode:04d}.mp4"
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    iio.imwrite(
+                        path,
+                        clips[key],
+                        fps=fps,
+                        codec="libx264",
+                        # yuv420p and even dimensions: the default yuv444p is
+                        # rejected by most players, and libx264 cannot
+                        # subsample an odd frame.
+                        pixelformat="yuv420p",
+                        macro_block_size=2,
+                    )
+                except Exception as error:
+                    # These clips are auxiliary, so failing to write one must
+                    # never take down the dataset write running downstream of
+                    # this -- that would strand the episodes already on disk.
+                    # Per clip rather than latching off: whatever failed may
+                    # not recur, and it says nothing about the other views of
+                    # the same episode, which are separate files.
+                    warnings.warn(
+                        f"could not write debug clip {path}: {error!r}",
+                        stacklevel=2,
+                    )
             yield clips
             # Before pulling the next episode, not after: `for clips in source`
             # would keep this one bound across that call and hold two at once.

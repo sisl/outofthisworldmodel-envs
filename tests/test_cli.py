@@ -1100,9 +1100,9 @@ def test_render_views_restricts_a_run_to_what_it_asked_for(tmp_path, monkeypatch
 
 
 def test_a_run_without_the_fpv_view_still_completes(tmp_path, monkeypatch):
-    """The media tee copies the fpv clip, so a run that never rendered fpv has
-    nothing for it to copy. Asking for another view alone is a legitimate run,
-    not a broken one, and it must not be charged a rollout to find that out."""
+    """Asking for another view alone is a legitimate run, not a broken one:
+    the media tee copies whatever it is handed rather than reaching for fpv,
+    so the media tree follows the run's views and grows no others."""
     pytest.importorskip("lerobot", reason="--render requires the datasets extra")
 
     seen = {}
@@ -1114,7 +1114,32 @@ def test_a_run_without_the_fpv_view_still_completes(tmp_path, monkeypatch):
     ])
     assert result.exit_code == 0, result.output
     assert seen["keys"] == ("observation.images.iss_top",)
-    assert not (out / "media").exists(), "wrote a media clip for a view it never rendered"
+    assert [p.name for p in (out / "media").iterdir()] == ["iss_top"]
+    assert (out / "media" / "iss_top" / "train" / "ep_0000.mp4").exists()
+
+
+def test_a_rendered_run_writes_a_media_tree_for_every_view(tmp_path, monkeypatch):
+    """The default renders all seven, so a run directory carries seven trees of
+    per-episode copies alongside the dataset's own chunk files, and `push`
+    ships them with it."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+    from owm_envs.datasets.video import OUTPUT_KEYS
+
+    seen = {}
+    _record_render_keys(monkeypatch, seen)
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--steps", "4", "--split", "train:2:0",
+        "--num-envs", "1", "--render",
+    ])
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in (out / "media").iterdir()) == sorted(
+        key.rsplit(".", 1)[-1] for key in OUTPUT_KEYS
+    )
+    for key in OUTPUT_KEYS:
+        view = key.rsplit(".", 1)[-1]
+        clips = sorted(p.name for p in (out / "media" / view / "train").glob("*.mp4"))
+        assert clips == ["ep_0000.mp4", "ep_0001.mp4"], f"{view} is missing per-episode clips"
 
 
 def test_the_as_run_config_records_the_views_the_dataset_was_built_with(tmp_path, monkeypatch):

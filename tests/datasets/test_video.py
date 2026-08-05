@@ -237,7 +237,7 @@ def test_the_media_tee_releases_each_episode_before_pulling_the_next(tmp_path):
     # Consumed the way the writer consumes: each episode is let go of before
     # the next is asked for. A `for` loop would keep its own binding alive
     # across the request and measure the consumer rather than the tee.
-    tee = tee_episode_clips(clips(), tmp_path / "media", fps=20)
+    tee = tee_episode_clips(clips(), tmp_path / "media", "train", fps=20)
     while True:
         try:
             episode = next(tee)
@@ -268,21 +268,65 @@ def test_closing_the_media_tee_closes_the_render_pool_behind_it(tmp_path):
             closed.append(True)
 
     clips = source()
-    tee = tee_episode_clips(clips, tmp_path / "media", fps=20)
+    tee = tee_episode_clips(clips, tmp_path / "media", "train", fps=20)
     next(tee)
     tee.close()
     assert closed == [True], "the tee did not close the iterator behind it"
 
 
+def test_the_media_tee_writes_one_clip_per_episode_for_every_view(tmp_path):
+    """Every view the run rendered gets its own per-episode copies, laid out
+    media/<view>/<split>/ so one view's clips sit together in playback order.
+    A reviewer opening a run reaches for these, not the lerobot chunk files.
+    """
+    from owm_envs.datasets.video import OUTPUT_KEYS, tee_episode_clips
+
+    episodes = 3
+    clips = (
+        {key: np.zeros((4, 32, 32, 3), dtype=np.uint8) for key in OUTPUT_KEYS}
+        for _ in range(episodes)
+    )
+    media = tmp_path / "media"
+    for _ in tee_episode_clips(clips, media, "train", fps=20):
+        pass
+
+    assert sorted(p.name for p in media.iterdir()) == sorted(
+        key.rsplit(".", 1)[-1] for key in OUTPUT_KEYS
+    )
+    for key in OUTPUT_KEYS:
+        view = key.rsplit(".", 1)[-1]
+        assert sorted(p.name for p in (media / view / "train").glob("*.mp4")) == [
+            f"ep_{i:04d}.mp4" for i in range(episodes)
+        ], f"{view} did not get one clip per episode"
+
+
+def test_the_media_tee_writes_only_the_views_the_run_rendered(tmp_path):
+    """No second selection here: the tee copies what it is handed, so a run
+    restricted to one view must not leave empty directories for the rest."""
+    from owm_envs.datasets.video import tee_episode_clips
+
+    media = tmp_path / "media"
+    clips = ({FPV_KEY: np.zeros((4, 32, 32, 3), dtype=np.uint8)} for _ in range(2))
+    for _ in tee_episode_clips(clips, media, "val", fps=20):
+        pass
+
+    assert [p.name for p in media.iterdir()] == ["fpv"]
+    assert sorted(p.name for p in (media / "fpv" / "val").glob("*.mp4")) == [
+        "ep_0000.mp4",
+        "ep_0001.mp4",
+    ]
+
+
 def test_a_failing_debug_clip_does_not_abort_the_dataset_write(tmp_path, monkeypatch):
-    """The per-episode mp4 is auxiliary -- nothing reads it back -- so letting
-    an encoder or filesystem failure on one out of the tee would abort the
-    split write and strand the episodes already on disk, spending the dataset
-    on a debug convenience.
+    """The per-episode mp4s are auxiliary -- nothing reads them back -- so
+    letting an encoder or filesystem failure on one out of the tee would abort
+    the split write and strand the episodes already on disk, spending the
+    dataset on a debug convenience.
 
     Driven through the real writer because that is what the failure would take
-    down. The boundary is per episode rather than a switch thrown on the first
-    failure: the clips after the bad one are still worth having.
+    down. The boundary is per clip, not per episode and not a switch thrown on
+    the first failure: one view failing says nothing about the other views of
+    the same episode, which are separate files, nor about later episodes.
     """
     pytest.importorskip("lerobot", reason="lerobot is an optional extra")
 
@@ -294,23 +338,29 @@ def test_a_failing_debug_clip_does_not_abort_the_dataset_write(tmp_path, monkeyp
 
     encode = iio.imwrite
 
+    # One view of one episode: the narrowest possible failure, so anything
+    # else that goes missing is the boundary being wider than it should be.
     def failing_encode(path, *args, **kwargs):
-        if str(path).endswith("ep_0001.mp4"):
+        if str(path).endswith("dragon_iso/train/ep_0001.mp4"):
             raise OSError("encoder went away")
         return encode(path, *args, **kwargs)
 
     monkeypatch.setattr("imageio.v3.imwrite", failing_encode)
 
     lengths = (3, 2, 4)
+    keys = (FPV_KEY, "observation.images.dragon_iso", COMPOSITE_KEY)
     media = tmp_path / "media"
-    clips = ({FPV_KEY: np.zeros((length, 32, 32, 3), dtype=np.uint8)} for length in lengths)
-    with pytest.warns(UserWarning, match=r"ep_0001\.mp4.*encoder went away"):
+    clips = (
+        {key: np.zeros((length, 32, 32, 3), dtype=np.uint8) for key in keys}
+        for length in lengths
+    )
+    with pytest.warns(UserWarning, match=r"dragon_iso/train/ep_0001\.mp4.*encoder went away"):
         write_lerobot_split(
             tmp_path / "split",
             "iss/split",
             small_batch(lengths),
             fps=20,
-            frames=tee_episode_clips(clips, media, fps=20),
+            frames=tee_episode_clips(clips, media, "train", fps=20),
         )
 
     ds = LeRobotDataset("iss/split", root=tmp_path / "split")
@@ -324,7 +374,12 @@ def test_a_failing_debug_clip_does_not_abort_the_dataset_write(tmp_path, monkeyp
         frame = ds[start][FPV_KEY]
         assert frame.shape[-2:] == (32, 32), f"episode {episode} did not decode"
 
-    assert sorted(path.name for path in media.glob("*.mp4")) == [
-        "ep_0000.mp4",
-        "ep_0002.mp4",
-    ], "the clip after the failure was not written"
+    def written(view):
+        return sorted(path.name for path in (media / view / "train").glob("*.mp4"))
+
+    every_episode = ["ep_0000.mp4", "ep_0001.mp4", "ep_0002.mp4"]
+    assert written("dragon_iso") == ["ep_0000.mp4", "ep_0002.mp4"], (
+        "the clip after the failure was not written"
+    )
+    assert written("fpv") == every_episode, "a sibling view lost a clip to another view's failure"
+    assert written("composite") == every_episode, "a sibling view lost a clip"
