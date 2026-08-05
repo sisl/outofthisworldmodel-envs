@@ -203,10 +203,10 @@ class ISSConfig(ConfigModel):
 
     # Which of the renderer's six fixed views `ISSEnv.render()` uses:
     # "DRAGON_ISO", "DRAGON_TOP", "DRAGON_FPV", "ISS_ISO", "ISS_TOP", or
-    # "ISS_FPV" (renderer.ViewName). The first-person view matches the image
-    # modality datasets record (the dataset writer's --render-view default),
-    # so live rendering through the Gymnasium adapters shows the same view a
-    # world model trains on.
+    # "ISS_FPV" (renderer.ViewName). The first-person view is what datasets
+    # record as observation.images.fpv, the key training reads whatever else a
+    # run rendered, so live rendering through the Gymnasium adapters shows the
+    # same view a world model trains on.
     render_view: str = "DRAGON_FPV"
     # Graphics settings for `ISSEnv.render()`, as a plain dict of
     # `owm_envs.render.iss_scene.RenderConfig` fields (e.g. {"image_width":

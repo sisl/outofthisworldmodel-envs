@@ -1,9 +1,24 @@
-"""Renders one episode's stored states into an egocentric video clip.
+"""Renders one episode's stored states into video clips.
 
 Kept separate from `lerobot_writer.py` so that module stays the sole lerobot
 call site: rendering needs `owm_envs.render`, an optional extra of its own,
 so the import here is lazy -- nothing in this package may pull in pygfx at
 module level outside the render package itself.
+
+This module also owns which dataset feature a clip is written as: the renderer
+knows nothing about datasets, and the writer takes whatever keys it is handed.
+
+Each named camera has a feature of its own, and `observation.images.composite`
+is a seventh: one frame tiling all six, for scrubbing a run without opening
+six streams side by side. `observation.images.fpv` is the egocentric training
+view -- downstream training configs name that key directly, and quickdraw reads
+exactly one camera per run -- so it keeps its name and meaning whatever else is
+asked for, and the extra keys are additive.
+
+Which of them a run produces is the caller's choice, because they are not
+priced alike: the six cameras come from one pose apiece, so asking for more
+views costs draws rather than poses, while every key asked for is a video
+stream of its own to encode and store.
 """
 
 from __future__ import annotations
@@ -11,23 +26,179 @@ from __future__ import annotations
 import itertools
 import multiprocessing as mp
 import os
+import warnings
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 import numpy as np
 
 from ..drivers.types import TrajectoryBatch
+
+FPV_VIEW = "DRAGON_FPV"
+FPV_KEY = "observation.images.fpv"
+COMPOSITE_KEY = "observation.images.composite"
+
+# Row-major tile order for the composite: the capsule's three views above the
+# station's three, each row reading first-person, isometric, top-down. Also the
+# order every per-view key is reported in, so a run's features read the same
+# way its mosaic does.
+COMPOSITE_VIEWS: tuple[str, ...] = (
+    "DRAGON_FPV",
+    "DRAGON_ISO",
+    "DRAGON_TOP",
+    "ISS_FPV",
+    "ISS_ISO",
+    "ISS_TOP",
+)
+COMPOSITE_COLUMNS = 3
+COMPOSITE_ROWS = 2
+
+# `DRAGON_FPV` is `observation.images.fpv` rather than `dragon_fpv`: that key
+# is the training contract, named directly by downstream configs, and renaming
+# it to match its siblings would break every one of them for tidiness.
+VIEW_KEYS: dict[str, str] = {
+    "DRAGON_FPV": FPV_KEY,
+    "DRAGON_ISO": "observation.images.dragon_iso",
+    "DRAGON_TOP": "observation.images.dragon_top",
+    "ISS_FPV": "observation.images.iss_fpv",
+    "ISS_ISO": "observation.images.iss_iso",
+    "ISS_TOP": "observation.images.iss_top",
+}
+KEY_VIEWS: dict[str, str] = {key: view for view, key in VIEW_KEYS.items()}
+
+OUTPUT_KEYS: tuple[str, ...] = tuple(VIEW_KEYS[view] for view in COMPOSITE_VIEWS) + (
+    COMPOSITE_KEY,
+)
+
+
+# The short tail of each key -- `fpv`, `iss_top`, `composite` -- which is how
+# a run selects views on the command line and in a generation config. The keys
+# themselves are the dataset's interface; these are the names people type.
+VIEW_NAMES: tuple[str, ...] = tuple(key.rsplit(".", 1)[-1] for key in OUTPUT_KEYS)
+_KEYS_BY_NAME: dict[str, str] = dict(zip(VIEW_NAMES, OUTPUT_KEYS))
+
+
+def parse_view_names(spec: str | Sequence[str]) -> tuple[str, ...]:
+    """A view selection -> the short names it means, canonically ordered.
+
+    Takes either a comma-joined string or a sequence, since the same selection
+    arrives from a command line as one and from a config file as the other.
+    `all` stands for every name, and an empty selection means the same rather
+    than nothing: a run rendering no view would pay the render cost and write
+    no video for it.
+
+    Ordered by `OUTPUT_KEYS` rather than by how it was written, so two runs
+    asking for the same set record and declare it identically.
+    """
+    parts = spec.replace("+", ",").split(",") if isinstance(spec, str) else list(spec)
+    names = [name for part in parts if (name := str(part).strip().lower())]
+    # Checked even when `all` is among them: `all,typo` is a typo the caller
+    # wants to hear about, and reading `all` first would swallow it.
+    unknown = [name for name in names if name != "all" and name not in _KEYS_BY_NAME]
+    if unknown:
+        raise ValueError(
+            f"unknown view {unknown[0]!r}; expected 'all' or a comma-joined list of "
+            f"{', '.join(VIEW_NAMES)}"
+        )
+    if not names or "all" in names:
+        return VIEW_NAMES
+    wanted = set(names)
+    return tuple(name for name in VIEW_NAMES if name in wanted)
+
+
+def keys_for_names(names: str | Sequence[str]) -> tuple[str, ...]:
+    """A view selection -> the dataset feature keys it writes."""
+    return tuple(_KEYS_BY_NAME[name] for name in parse_view_names(names))
+
+
+def views_for(keys: Sequence[str]) -> tuple[str, ...]:
+    """Which cameras have to be drawn to produce `keys`.
+
+    The composite is not a camera: it needs all six drawn whether or not their
+    own keys were asked for. Reported in `COMPOSITE_VIEWS` order so a frame's
+    draws do not reshuffle with the order the keys arrived in.
+    """
+    unknown = [key for key in keys if key not in KEY_VIEWS and key != COMPOSITE_KEY]
+    if unknown:
+        raise ValueError(f"unknown video feature {unknown[0]!r}; expected one of {OUTPUT_KEYS}")
+    if COMPOSITE_KEY in keys:
+        return COMPOSITE_VIEWS
+    wanted = {KEY_VIEWS[key] for key in keys}
+    return tuple(view for view in COMPOSITE_VIEWS if view in wanted)
+
+
+def _episode_state(batch: TrajectoryBatch, episode_index: int, t: int) -> np.ndarray:
+    # Pose the TRUE state whenever the batch carries one: the camera must not
+    # shake with navigation error, and an observation carrying the goal-error
+    # block is not renderable geometry (25 dims into a renderer that poses
+    # 13). The fallback is measured, not true -- see `render_episode_frames`.
+    if batch.true_state is not None:
+        return batch.true_state[episode_index, t]
+    return batch.observations[episode_index, t][:13]
+
+
+def tile_views(rendered: dict[str, np.ndarray], height: int, width: int) -> np.ndarray:
+    """Tile the six named views into one `(height, width, 3)` uint8 frame.
+
+    The mosaic is deliberately the same size as a single view rather than six
+    times it: this is a debug artifact, and a feature six times the area would
+    cost more to store and encode than the training view it sits beside. Each
+    view is downscaled into its cell, which for a square render config is not
+    the view's own aspect -- the picture is squeezed horizontally. That is the
+    trade for keeping the whole field of view of all six; cropping to fit would
+    lose the edges instead.
+
+    Cell edges are proportional rather than a fixed tile size, so neighbours
+    may differ by a pixel and the six of them cover the frame exactly. Flooring
+    to a common size instead leaves a black strip whenever the width does not
+    divide by three -- 512 px, the default, is one such width.
+    """
+    from PIL import Image
+
+    rows = [round(i * height / COMPOSITE_ROWS) for i in range(COMPOSITE_ROWS + 1)]
+    columns = [round(i * width / COMPOSITE_COLUMNS) for i in range(COMPOSITE_COLUMNS + 1)]
+    frame = np.empty((height, width, 3), dtype=np.uint8)
+    for index, view in enumerate(COMPOSITE_VIEWS):
+        row, column = divmod(index, COMPOSITE_COLUMNS)
+        top, bottom = rows[row], rows[row + 1]
+        left, right = columns[column], columns[column + 1]
+        tile = Image.fromarray(rendered[view]).resize(
+            (right - left, bottom - top), Image.BILINEAR
+        )
+        frame[top:bottom, left:right] = np.asarray(tile)
+    return frame
+
+
+def _fill_frame(
+    clips: dict[str, np.ndarray],
+    rendered: dict[str, np.ndarray],
+    t: int,
+    keys: Sequence[str],
+    height: int,
+    width: int,
+) -> None:
+    """Write frame `t` of every requested key from one frame's draws."""
+    for key in keys:
+        if key == COMPOSITE_KEY:
+            clips[key][t] = tile_views(rendered, height, width)
+        else:
+            clips[key][t] = rendered[KEY_VIEWS[key]]
 
 
 def render_episode_frames(
     batch: TrajectoryBatch,
     episode_index: int,
     cfg: Any,
-    view: str = "DRAGON_FPV",
+    keys: Sequence[str] = (FPV_KEY,),
     renderer: Any | None = None,
-) -> np.ndarray:
-    """Render one episode's true states to an `(L, H, W, 3)` uint8 clip.
+) -> dict[str, np.ndarray]:
+    """Render one episode to `(L, H, W, 3)` uint8 clips, keyed by feature name.
+
+    `keys` names the features to produce, out of `OUTPUT_KEYS`. Only the
+    cameras they need are drawn, so the per-frame cost tracks the number of
+    distinct views asked for rather than the number of keys -- except that
+    `observation.images.composite` needs all six whatever else is requested.
 
     `L` is `batch.lengths[episode_index]` -- only real, non-padded frames are
     rendered. `cfg` is an `owm_envs.render.iss_scene.RenderConfig`.
@@ -45,37 +216,35 @@ def render_episode_frames(
     omitted, a renderer is built and closed just for this one episode.
     """
     length = int(batch.lengths[episode_index])
+    views = views_for(keys)
     owns_renderer = renderer is None
     if owns_renderer:
         from ..render.renderer import ISSRenderer
 
         renderer = ISSRenderer(cfg)
     try:
-        frames = np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
+        clips = {
+            key: np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
+            for key in keys
+        }
         for t in range(length):
-            # Pose the TRUE state whenever the batch carries one: the camera
-            # must not shake with navigation error, and an observation
-            # carrying the goal-error block is not renderable geometry (25
-            # dims into a renderer that poses 13). The fallback is measured,
-            # not true -- see this function's docstring.
-            if batch.true_state is not None:
-                state = batch.true_state[episode_index, t]
-            else:
-                state = batch.observations[episode_index, t][:13]
+            state = _episode_state(batch, episode_index, t)
             action = batch.actions[episode_index, t]
-            frames[t] = renderer.render(state, action=action, view=view)
+            # One pose serves every view of this frame.
+            rendered = renderer.render_views(state, action=action, views=views)
+            _fill_frame(clips, rendered, t, keys, cfg.image_height, cfg.image_width)
     finally:
         if owns_renderer:
             renderer.close()
-    return frames
+    return clips
 
 
 def render_batch_frames(
     batch: TrajectoryBatch,
     cfg: Any,
-    view: str = "DRAGON_FPV",
-) -> list[np.ndarray]:
-    """Render every episode in `batch` to an `(L, H, W, 3)` uint8 clip.
+    keys: Sequence[str] = (FPV_KEY,),
+) -> list[dict[str, np.ndarray]]:
+    """Render every episode in `batch` to its clips, keyed by feature name.
 
     Builds one `ISSRenderer` for the whole batch and reuses it across
     episodes, then closes it exactly once -- see `render_episode_frames`'s
@@ -86,7 +255,7 @@ def render_batch_frames(
     renderer = ISSRenderer(cfg)
     try:
         return [
-            render_episode_frames(batch, i, cfg, view=view, renderer=renderer)
+            render_episode_frames(batch, i, cfg, keys=keys, renderer=renderer)
             for i in range(batch.num_episodes)
         ]
     finally:
@@ -95,10 +264,10 @@ def render_batch_frames(
 
 _WORKER_RENDERER: Any = None
 _WORKER_CFG: Any = None
-_WORKER_VIEW: str = "DRAGON_FPV"
+_WORKER_KEYS: tuple[str, ...] = (FPV_KEY,)
 
 
-def _worker_init(cfg_json: str, view: str, gpu_index: int | None) -> None:
+def _worker_init(cfg_json: str, keys: Sequence[str], gpu_index: int | None) -> None:
     """Build this worker's own renderer, once, at pool start-up.
 
     The GPU is chosen first and exactly once: pygfx pins one shared wgpu
@@ -119,9 +288,9 @@ def _worker_init(cfg_json: str, view: str, gpu_index: int | None) -> None:
     from ..render.iss_scene import RenderConfig
     from ..render.renderer import ISSRenderer
 
-    global _WORKER_RENDERER, _WORKER_CFG, _WORKER_VIEW
+    global _WORKER_RENDERER, _WORKER_CFG, _WORKER_KEYS
     _WORKER_CFG = RenderConfig.model_validate_json(cfg_json)
-    _WORKER_VIEW = view
+    _WORKER_KEYS = tuple(keys)
     # Downloads off: the parent resolved all three Earth textures before the
     # pool started. A worker allowed to fetch its own would put them back the
     # moment the parent's fetch failed -- every worker retrying the same
@@ -130,7 +299,7 @@ def _worker_init(cfg_json: str, view: str, gpu_index: int | None) -> None:
     _WORKER_RENDERER = ISSRenderer(_WORKER_CFG, download_textures=False)
 
 
-def _worker_render(payload: tuple[np.ndarray, np.ndarray, int]) -> np.ndarray:
+def _worker_render(payload: tuple[np.ndarray, np.ndarray, int]) -> dict[str, np.ndarray]:
     """Render one episode from its own states and actions.
 
     Takes the trimmed arrays rather than a batch and an index: only this
@@ -138,26 +307,30 @@ def _worker_render(payload: tuple[np.ndarray, np.ndarray, int]) -> np.ndarray:
     batch once per episode.
     """
     states, actions, length = payload
-    frames = np.empty(
-        (length, _WORKER_CFG.image_height, _WORKER_CFG.image_width, 3), dtype=np.uint8
-    )
+    keys = _WORKER_KEYS
+    views = views_for(keys)
+    height, width = _WORKER_CFG.image_height, _WORKER_CFG.image_width
+    clips = {key: np.empty((length, height, width, 3), dtype=np.uint8) for key in keys}
     for t in range(length):
-        frames[t] = _WORKER_RENDERER.render(states[t], action=actions[t], view=_WORKER_VIEW)
-    return frames
+        rendered = _WORKER_RENDERER.render_views(states[t], action=actions[t], views=views)
+        _fill_frame(clips, rendered, t, keys, height, width)
+    return clips
 
 
 def iter_batch_frames(
     batch: TrajectoryBatch,
     cfg: Any,
-    view: str = "DRAGON_FPV",
+    keys: Sequence[str] = (FPV_KEY,),
     workers: int = 1,
     gpu_index: int | None = None,
-) -> Iterator[np.ndarray]:
-    """Yield each episode's `(L, H, W, 3)` uint8 clip, in episode order.
+) -> Iterator[dict[str, np.ndarray]]:
+    """Yield each episode's clips, keyed by feature name, in episode order.
 
-    Streams: a consumer that writes each clip and drops it holds one episode
-    at a time, not the whole split. At 500k frames of 256x256x3 the whole
-    split is ~98 GB, so materialising it is not an option.
+    Streams: a consumer that writes each episode's clips and drops them holds
+    one episode at a time, not the whole split. At 500k frames of 256x256x3 a
+    single view over the whole split is ~98 GB, so materialising it is not an
+    option; every extra view multiplies that, and the per-episode bound with
+    it.
 
     `workers` > 1 renders episodes in a spawn-context process pool, each
     worker owning its own renderer (~1.9 GiB of VRAM each). The context must
@@ -194,7 +367,9 @@ def iter_batch_frames(
         renderer = ISSRenderer(cfg)
         try:
             for episode in range(batch.num_episodes):
-                yield render_episode_frames(batch, episode, cfg, view=view, renderer=renderer)
+                yield render_episode_frames(
+                    batch, episode, cfg, keys=keys, renderer=renderer
+                )
         finally:
             renderer.close()
         return
@@ -209,7 +384,7 @@ def iter_batch_frames(
         max_workers=workers,
         mp_context=mp.get_context("spawn"),
         initializer=_worker_init,
-        initargs=(cfg.model_dump_json(), view, gpu_index),
+        initargs=(cfg.model_dump_json(), tuple(keys), gpu_index),
     )
     try:
         episodes = iter(range(batch.num_episodes))
@@ -236,3 +411,90 @@ def iter_batch_frames(
         # which marks even the spare that no worker has picked up as
         # running, so `cancel_futures` usually has nothing left to cancel.
         executor.shutdown(cancel_futures=True)
+
+
+def tee_episode_clips(
+    frames: Iterator[dict[str, np.ndarray]],
+    media_root: Any,
+    split: str,
+    fps: int,
+) -> Iterator[dict[str, np.ndarray]]:
+    """Write every view's per-episode mp4 under `media_root`, and pass it along.
+
+    The dataset stores video the way lerobot does, concatenated into chunk
+    files that need its index to cut back apart. One file per episode is what
+    anyone reviewing a run actually reaches for, and what the training side's
+    own tooling writes, so a copy of each view goes to
+    `media_root/<view>/<split>/ep_%04d.mp4` -- the view named by the tail of
+    its feature key. Whatever the run rendered gets a copy; there is no second
+    selection here, since a view worth a dataset feature is worth reviewing.
+
+    These are auxiliary files, deliberately not dataset features: nothing reads
+    them back, and a consumer that wants frames should use the feature. They
+    are not free -- the same frames encoded a second time, and `push` ships
+    them with the run -- but they are much cheaper than a second copy: cut per
+    episode and encoded at imageio's libx264 defaults, they came to a fifth of
+    the dataset's own video on a measured seven-view run.
+
+    A tee rather than a second render: the clips are already in hand on their
+    way to the writer, and re-rendering an episode to look at it would double
+    the cost of the whole run.
+
+    Standing between the render pool and the writer makes this responsible for
+    both of the properties that chain already had. It must not hold an episode
+    while the next one is produced -- that is the one-episode video bound, and
+    with every view rendered there is a multiple of it to hold -- and closing
+    it must close the pool behind it, since the writer now closes this rather
+    than the iterator that owns the workers.
+    """
+    from pathlib import Path
+
+    import imageio.v3 as iio
+
+    media_root = Path(media_root)
+    source = iter(frames)
+    episode = 0
+    try:
+        while True:
+            try:
+                clips = next(source)
+            except StopIteration:
+                return
+            # Indexed rather than unpacked: a `for key, clip in ...` binding
+            # outlives the loop and would hold one view of this episode across
+            # the next `next(source)`, on top of the episode itself.
+            for key in clips:
+                path = media_root / key.rsplit(".", 1)[-1] / split / f"ep_{episode:04d}.mp4"
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    iio.imwrite(
+                        path,
+                        clips[key],
+                        fps=fps,
+                        codec="libx264",
+                        # yuv420p and even dimensions: the default yuv444p is
+                        # rejected by most players, and libx264 cannot
+                        # subsample an odd frame.
+                        pixelformat="yuv420p",
+                        macro_block_size=2,
+                    )
+                except Exception as error:
+                    # These clips are auxiliary, so failing to write one must
+                    # never take down the dataset write running downstream of
+                    # this -- that would strand the episodes already on disk.
+                    # Per clip rather than latching off: whatever failed may
+                    # not recur, and it says nothing about the other views of
+                    # the same episode, which are separate files.
+                    warnings.warn(
+                        f"could not write debug clip {path}: {error!r}",
+                        stacklevel=2,
+                    )
+            yield clips
+            # Before pulling the next episode, not after: `for clips in source`
+            # would keep this one bound across that call and hold two at once.
+            del clips
+            episode += 1
+    finally:
+        close = getattr(source, "close", None)
+        if close is not None:
+            close()

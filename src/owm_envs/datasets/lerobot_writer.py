@@ -86,28 +86,35 @@ index `[0, 0]`. `dock_target` takes the same `Array2D` path at (1, 7), which
 is not a special case at all -- it reads back as a (1, 7) array, and callers
 want the row rather than a scalar anyway.
 
-One further feature, `observation.images.fpv`, carries an egocentric video
-clip per episode. It is only declared when the caller passes `frames` -- per-
-episode `(L, H, W, 3)` uint8 clips, one per episode in `batch`, each `L`
-matching that episode's `lengths[i]` exactly. `frames` may be a sequence or
-any iterable, and the iterable form is what makes a large split writable at
-all: clips are pulled one episode at a time, so a 500k-frame split holds one
-episode of video in RAM rather than the ~98 GB the whole split would take.
-Frame rendering itself does not happen here; it lives in
-`datasets/video.py`, kept out of this file because rendering needs
-`owm_envs.render` (an optional extra of its own) and this file's only job is
-staying the sole lerobot call site.
+Video features carry one clip per episode per camera view. They are only
+declared when the caller passes `frames` -- one mapping per episode in
+`batch`, from feature name to that episode's `(L, H, W, 3)` uint8 clip, each
+`L` matching that episode's `lengths[i]` exactly. Every episode must offer
+the same set of feature names, since the schema is fixed from the first one.
+`frames` may be a sequence or any iterable, and the iterable form is what
+makes a large split writable at all: clips are pulled one episode at a time,
+so a 500k-frame split holds one episode of video in RAM rather than the
+~98 GB per view the whole split would take.
+
+The feature names themselves are the caller's: this file writes what it is
+given rather than knowing which camera produced it. `datasets/video.py` owns
+that mapping, and rendering lives there too -- kept out of this file because
+rendering needs `owm_envs.render` (an optional extra of its own) and this
+file's only job is staying the sole lerobot call site.
 """
 
 from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
+from typing import Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
 from ..drivers.types import TrajectoryBatch
+
+# One episode's video: feature name -> that episode's (L, H, W, 3) uint8 clip.
+Clips = Mapping[str, np.ndarray]
 
 # "the iterator had nothing left", distinct from a clip that is itself None --
 # which is a caller bug worth the AttributeError it earns, not an end of input.
@@ -120,25 +127,27 @@ def write_lerobot_split(
     batch: TrajectoryBatch,
     fps: int,
     task_name: str = "iss_docking",
-    frames: Sequence[np.ndarray] | Iterable[np.ndarray] | None = None,
+    frames: Sequence[Clips] | Iterable[Clips] | None = None,
 ) -> Path:
     """Write one TrajectoryBatch as a LeRobotDataset on disk. Returns its root.
 
     Only real frames are written; padding past each episode's length is skipped.
 
-    `frames`, when given, is one `(L, H, W, 3)` uint8 clip per episode in
-    `batch`, aligned 1:1 with that episode's stored observations -- `L` must
-    equal `batch.lengths[i]`, or a ValueError names the mismatching episode.
+    `frames`, when given, is one `{feature name: (L, H, W, 3) uint8 clip}`
+    mapping per episode in `batch`, aligned 1:1 with that episode's stored
+    observations -- `L` must equal `batch.lengths[i]`, or a ValueError names
+    the mismatching episode. Episode 0's keys fix the schema; a later episode
+    offering different ones is an error rather than a sparser dataset.
 
     A sequence is checked in full before anything is written. Any other
-    iterable is consumed one clip per episode as the episodes are written,
+    iterable is consumed one episode at a time as the episodes are written,
     which is what keeps a large split's video off the heap; its clips can
     therefore only be checked as they arrive, so a mismatch there surfaces
     with the earlier episodes already on disk.
     """
     batch.validate()
-    clips: Iterator[np.ndarray] | None = None
-    frame_shape: tuple[int, ...] | None = None
+    clips: Iterator[Clips] | None = None
+    frame_shapes: dict[str, tuple[int, ...]] | None = None
     root = Path(root)
     # Bound before the try so the failure path can tell "the dataset exists and
     # needs finalizing" from "we never got as far as creating one".
@@ -148,7 +157,7 @@ def write_lerobot_split(
     # one that has to be closed however this call ends -- closing the hand-back
     # would not do: a generator that has never been started runs no code when
     # it is closed, which is exactly its state if set-up fails.
-    source: Iterator[np.ndarray] | None = (
+    source: Iterator[Clips] | None = (
         iter(frames) if frames is not None and not isinstance(frames, Sequence) else None
     )
 
@@ -161,12 +170,12 @@ def write_lerobot_split(
         if frames is not None:
             if isinstance(frames, Sequence):
                 _validate_frames(frames, batch)
-                # Derived from the actual clip, not assumed square: the
+                # Derived from the actual clips, not assumed square: the
                 # renderer returns (H, W, 3), and H need not equal W.
-                frame_shape = np.asarray(frames[0]).shape[1:]
+                frame_shapes = _shapes_of(frames[0])
                 clips = iter(frames)
             else:
-                frame_shape, clips = _peek_frame_shape(source)
+                frame_shapes, clips = _peek_frame_shapes(source)
 
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -197,9 +206,9 @@ def write_lerobot_split(
                 "shape": (batch.true_state.shape[-1],),
                 "names": None,
             }
-        if frame_shape is not None:
-            height, width, channels = frame_shape
-            features["observation.images.fpv"] = {
+        for key, shape in (frame_shapes or {}).items():
+            height, width, channels = shape
+            features[key] = {
                 "dtype": "video",
                 "shape": (int(height), int(width), int(channels)),
                 "names": ["height", "width", "channels"],
@@ -214,7 +223,7 @@ def write_lerobot_split(
         )
 
         for episode in range(batch.num_episodes):
-            _write_episode(dataset, batch, episode, clips, frame_shape, task_name)
+            _write_episode(dataset, batch, episode, clips, frame_shapes, task_name)
 
         # lerobot writes the parquet footers and meta/episodes only here, so a
         # split that is never finalized is not a loadable dataset -- loading it
@@ -266,7 +275,7 @@ def write_lerobot_split(
     return root
 
 
-def _close(source: Iterator[np.ndarray] | None) -> None:
+def _close(source: Iterator[Clips] | None) -> None:
     """Close `source` if it is the kind of iterator that can be closed."""
     if source is not None and hasattr(source, "close"):
         source.close()
@@ -276,20 +285,21 @@ def _write_episode(
     dataset,
     batch: TrajectoryBatch,
     episode: int,
-    clips: Iterator[np.ndarray] | None,
-    frame_shape: tuple[int, ...] | None,
+    clips: Iterator[Clips] | None,
+    frame_shapes: dict[str, tuple[int, ...]] | None,
     task_name: str,
 ) -> None:
     """Add one episode's real frames to `dataset` and save it.
 
-    This episode's clip is pulled here, and both it and the frame dict that
-    holds a VIEW into it (np.asarray of a uint8 slice does not copy) die with
-    this call. That is what bounds the writer at one episode of video: a
-    caller that kept either alive would hold this clip while the next one is
-    produced -- 2.8 GiB rather than 1.4 for a 7200-step episode at 256x256.
+    This episode's clips are pulled here, and both they and the frame dict
+    that holds VIEWS into them (np.asarray of a uint8 slice does not copy) die
+    with this call. That is what bounds the writer at one episode of video: a
+    caller that kept either alive would hold this episode while the next one
+    is produced -- 2.8 GiB rather than 1.4 for a single 7200-step view at
+    256x256, and that much again per extra view.
     """
     length = int(batch.lengths[episode])
-    clip = _next_clip(clips, episode, length, frame_shape) if clips is not None else None
+    clip = _next_clip(clips, episode, length, frame_shapes) if clips is not None else None
     terminated = bool(batch.terminated[episode])
     truncated = bool(batch.truncated[episode])
     policy_id = int(batch.policy_ids[episode]) if batch.policy_ids is not None else 0
@@ -317,33 +327,38 @@ def _write_episode(
                 batch.true_state[episode, t], dtype=np.float32
             )
         if clip is not None:
-            frame["observation.images.fpv"] = np.asarray(clip[t], dtype=np.uint8)
+            for key, view_clip in clip.items():
+                frame[key] = np.asarray(view_clip[t], dtype=np.uint8)
         dataset.add_frame(frame)
     dataset.save_episode()
 
 
-def _peek_frame_shape(
-    clips: Iterator[np.ndarray],
-) -> tuple[tuple[int, ...], Iterator[np.ndarray]]:
-    """Read the frame shape off the first clip and put that clip back.
+def _shapes_of(clip: Clips) -> dict[str, tuple[int, ...]]:
+    return {key: np.asarray(view_clip).shape[1:] for key, view_clip in clip.items()}
 
-    The video feature has to be declared before the first `add_frame`, and
-    its shape comes from a real clip rather than from the render config, so
-    one clip must be pulled up front.
+
+def _peek_frame_shapes(
+    clips: Iterator[Clips],
+) -> tuple[dict[str, tuple[int, ...]], Iterator[Clips]]:
+    """Read the per-view frame shapes off the first episode and put it back.
+
+    The video features have to be declared before the first `add_frame`, and
+    their shapes come from real clips rather than from the render config, so
+    one episode must be pulled up front.
     """
     head = next(clips, _MISSING)
     if head is _MISSING:
         raise ValueError("frames is empty; expected one clip per episode")
-    head = np.asarray(head)
-    return head.shape[1:], _hand_back(head, clips)
+    return _shapes_of(head), _hand_back(head, clips)
 
 
-def _hand_back(head: np.ndarray, clips: Iterator[np.ndarray]) -> Iterator[np.ndarray]:
-    """Yield the already-pulled clip, then the rest.
+def _hand_back(head: Clips, clips: Iterator[Clips]) -> Iterator[Clips]:
+    """Yield the already-pulled episode's clips, then the rest.
 
     `itertools.chain((head,), clips)` would do the same but keeps `head` in
     its argument tuple for the whole write, pinning one episode of video --
-    on a 7200-step episode at 256x256 that is 1.4 GiB held for nothing.
+    on a 7200-step episode at 256x256 that is 1.4 GiB per view held for
+    nothing.
 
     This owns nothing but `head`; `clips` is closed by the caller, which holds
     it directly for exactly that reason.
@@ -354,34 +369,40 @@ def _hand_back(head: np.ndarray, clips: Iterator[np.ndarray]) -> Iterator[np.nda
 
 
 def _next_clip(
-    clips: Iterator[np.ndarray],
+    clips: Iterator[Clips],
     episode: int,
     length: int,
-    frame_shape: tuple[int, ...],
-) -> np.ndarray:
-    """Pull episode `episode`'s clip and check it against that episode.
+    frame_shapes: dict[str, tuple[int, ...]],
+) -> Clips:
+    """Pull episode `episode`'s clips and check them against that episode.
 
-    Same two checks as `_validate_frames`, applied as the clip arrives --
-    the only point at which a lazily produced clip can be checked at all.
+    Same checks as `_validate_frames`, applied as the clips arrive -- the only
+    point at which a lazily produced episode can be checked at all.
     """
     clip = next(clips, _MISSING)
     if clip is _MISSING:
         raise ValueError(f"frames ran out after {episode} clips; batch has more episodes")
-    clip = np.asarray(clip)
-    if int(clip.shape[0]) != length:
+    if set(clip) != set(frame_shapes):
         raise ValueError(
-            f"episode {episode}: frame clip length {int(clip.shape[0])} does not "
-            f"match batch length {length}"
+            f"episode {episode}: video features {sorted(clip)} do not match "
+            f"episode 0's {sorted(frame_shapes)}"
         )
-    if clip.shape[1:] != frame_shape:
-        raise ValueError(
-            f"episode {episode}: frame shape {clip.shape[1:]} does not "
-            f"match episode 0's frame shape {frame_shape}"
-        )
+    for key, shape in frame_shapes.items():
+        view_clip = np.asarray(clip[key])
+        if int(view_clip.shape[0]) != length:
+            raise ValueError(
+                f"episode {episode}: {key} clip length {int(view_clip.shape[0])} does "
+                f"not match batch length {length}"
+            )
+        if view_clip.shape[1:] != shape:
+            raise ValueError(
+                f"episode {episode}: {key} frame shape {view_clip.shape[1:]} does not "
+                f"match episode 0's frame shape {shape}"
+            )
     return clip
 
 
-def _validate_frames(frames: Sequence[np.ndarray], batch: TrajectoryBatch) -> None:
+def _validate_frames(frames: Sequence[Clips], batch: TrajectoryBatch) -> None:
     """Raise ValueError if `frames` doesn't align 1:1 with `batch`'s episodes.
 
     A clip shorter or longer than its episode would silently desynchronise
@@ -392,9 +413,9 @@ def _validate_frames(frames: Sequence[np.ndarray], batch: TrajectoryBatch) -> No
         raise ValueError(
             f"frames has {len(frames)} episodes, batch has {batch.num_episodes}"
         )
-    # The declared feature shape comes from episode 0's clip, so every other
-    # clip's frame shape (H, W, C) must agree with it too.
-    expected_frame_shape = np.asarray(frames[0]).shape[1:]
+    # The declared features and their shapes come from episode 0, so every
+    # other episode has to offer the same views at the same (H, W, C).
+    expected = _shapes_of(frames[0])
     clips = iter(frames)
     for episode in range(batch.num_episodes):
-        _next_clip(clips, episode, int(batch.lengths[episode]), expected_frame_shape)
+        _next_clip(clips, episode, int(batch.lengths[episode]), expected)

@@ -452,6 +452,69 @@ def test_code_provenance_degrades_when_git_is_unavailable(monkeypatch):
     assert prov["git_dirty"] is None
 
 
+def test_render_views_defaults_to_fpv_and_composite():
+    # The recipe carries the view selection so a run directory records what it
+    # was built with. The default ships the training view plus the tiled
+    # composite of every view; the individual views stay selectable by name.
+    assert list(GenerationConfig().render_views) == ["fpv", "composite"]
+
+
+def test_render_views_is_stored_resolved_and_canonically_ordered():
+    # 'all' in a committed recipe would mean whatever 'all' meant the day it
+    # ran, so it is resolved on the way in; and two recipes naming the same
+    # views must compare equal however they were written.
+    from owm_envs.datasets.video import VIEW_NAMES
+
+    assert tuple(GenerationConfig(render_views="all").render_views) == VIEW_NAMES
+    assert GenerationConfig(render_views="composite,fpv").render_views == ["fpv", "composite"]
+    assert (
+        GenerationConfig(render_views=["fpv", "composite"])
+        == GenerationConfig(render_views="composite, fpv")
+    )
+
+
+def test_an_unknown_render_view_is_rejected_by_the_config():
+    # A typo in a committed recipe would otherwise surface as a missing video
+    # feature after the run, not as a failure to load the file.
+    with pytest.raises(ValueError, match="dragon_fvp"):
+        GenerationConfig(render_views="fpv,dragon_fvp")
+
+
+def test_a_recipe_written_before_the_field_existed_still_loads(tmp_path):
+    # Published run directories carry an as-run generation_config.yaml, and
+    # hub.py reads them back. One written before this field existed has to
+    # keep loading rather than fail validation on a key it never had.
+    old = tmp_path / "gen.yaml"
+    old.write_text(
+        "splits:\n"
+        "  train:\n"
+        "    num_episodes: 2\n"
+        "    max_steps: 8\n"
+        "    seed: 0\n"
+        "num_envs: 4\n"
+        "fps: null\n"
+        "driver: auto\n"
+    )
+    loaded = GenerationConfig.from_yaml(old)
+    assert list(loaded.render_views) == ["fpv", "composite"]
+    assert loaded.num_envs == 4
+
+
+def test_render_views_resolves_iterables_pydantic_would_otherwise_coerce():
+    # A set or a generator is accepted for a list field, so one that skipped
+    # resolution here would be stored unvalidated and in whatever order it
+    # happened to iterate in -- both of the things this field guarantees.
+    from owm_envs.datasets.video import VIEW_NAMES
+
+    assert GenerationConfig(render_views=iter(["composite", "fpv"])).render_views == [
+        "fpv",
+        "composite",
+    ]
+    assert tuple(GenerationConfig(render_views={"all"}).render_views) == VIEW_NAMES
+    with pytest.raises(ValueError, match="bogus"):
+        GenerationConfig(render_views={"bogus"})
+
+
 def test_negative_split_seed_is_rejected():
     with pytest.raises(ValueError):
         SplitSpec(num_episodes=2, seed=-1)

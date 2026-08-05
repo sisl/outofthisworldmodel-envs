@@ -227,9 +227,9 @@ class _StateCapturingRenderer:
     def __init__(self):
         self.states = []
 
-    def render(self, state, action=None, view="DRAGON_FPV"):
+    def render_views(self, state, action=None, views=("DRAGON_FPV",)):
         self.states.append(np.asarray(state))
-        return np.zeros((4, 4, 3), dtype=np.uint8)
+        return {view: np.zeros((4, 4, 3), dtype=np.uint8) for view in views}
 
 
 class _TinyRenderConfig:
@@ -258,8 +258,8 @@ def test_video_renders_truth_for_goal_error_batch():
     from owm_envs.render.iss_scene import RenderConfig
 
     batch = _scan_batch("noncooperative", goal_error=True)  # 25-dim obs
-    frames = render_episode_frames(batch, 0, RenderConfig(image_width=64, image_height=64))
-    assert frames.shape[1:] == (64, 64, 3)
+    clips = render_episode_frames(batch, 0, RenderConfig(image_width=64, image_height=64))
+    assert [clip.shape[1:] for clip in clips.values()] == [(64, 64, 3)]
 
 
 def test_scan_truth_stays_aligned_across_autoresets():

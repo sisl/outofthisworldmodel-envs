@@ -21,6 +21,13 @@ import yaml
 from pydantic import ValidationError
 
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
+from .datasets.video import (
+    COMPOSITE_VIEWS,
+    OUTPUT_KEYS,
+    VIEW_NAMES,
+    keys_for_names,
+    parse_view_names,
+)
 from .drivers.types import RolloutSpec
 from .envs.iss.config import ISSConfig, ObservationConfig
 from .envs.iss.docking_ports import PORT_NAMES
@@ -51,6 +58,18 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
     """
     names = tuple(n for n in ports.replace("+", ",").split(",") if n)
     return PolicyConfig(type=policy, observe=observe, dock=DockParams(ports=names))
+
+
+def _parse_render_views(spec: str) -> list[str]:
+    """`--render-views` -> the view names to record in the generation config.
+
+    The parsing itself belongs to the datasets package, which owns the keys; a
+    bad value is a usage error here rather than the ValueError it is there.
+    """
+    try:
+        return list(parse_view_names(spec))
+    except ValueError as exc:
+        raise typer.BadParameter(f"--render-views: {exc}") from exc
 
 
 def _parse_split_flags(
@@ -184,7 +203,20 @@ def generate(
         "--render/--no-render",
         help="Render an egocentric video feed (slow: ~0.1 s/frame; off by default).",
     ),
-    render_view: str = typer.Option("DRAGON_FPV", help="Camera view to render, when --render is set."),
+    render_views: Optional[str] = typer.Option(
+        None,
+        help="Which video features --render writes; exclusive with --gen-config, which "
+             "carries its own. 'all' (the default) is every one of the "
+             f"{len(COMPOSITE_VIEWS)} named cameras under its own key, plus the "
+             f"composite tiling them into one frame -- {len(OUTPUT_KEYS)} video streams "
+             f"per split. Or a comma-joined list of {', '.join(VIEW_NAMES)} to write "
+             "fewer. The default costs six draws per frame rather than one, and stores "
+             f"{len(OUTPUT_KEYS)} encoded streams rather than one, so pass "
+             "'--render-views fpv' for a lean training run: that writes the egocentric "
+             f"view alone, under {OUTPUT_KEYS[0]}, which is the key training reads. "
+             "Any run that includes fpv also gets a per-episode copy of that clip "
+             "under media/fpv/<split>/.",
+    ),
     render_workers: int = typer.Option(
         1,
         help="Parallel render worker processes (episodes fan out across them). "
@@ -209,6 +241,19 @@ def generate(
 
     if render_workers < 1:
         raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
+
+    # Both checked before the GPU is touched: a usage error must cost a usage
+    # error, not an adapter probe -- which pins a device for the process --
+    # followed by one.
+    if render_views is not None:
+        _parse_render_views(render_views)
+    if gen_config is not None and any(
+        v is not None for v in (split, steps, num_envs, driver, fps, render_views)
+    ):
+        raise typer.BadParameter(
+            "--gen-config is exclusive with "
+            "--split/--steps/--num-envs/--driver/--fps/--render-views"
+        )
 
     if render:
         from .render.device import check_gpu_index, select_gpu
@@ -245,10 +290,6 @@ def generate(
             ) from exc
 
     if gen_config is not None:
-        if any(v is not None for v in (split, steps, num_envs, driver, fps)):
-            raise typer.BadParameter(
-                "--gen-config is exclusive with --split/--steps/--num-envs/--driver/--fps"
-            )
         try:
             gen = GenerationConfig.from_yaml(gen_config)
         except ValidationError as exc:
@@ -267,12 +308,22 @@ def generate(
                 num_envs=num_envs if num_envs is not None else 8,
                 fps=fps,
                 driver=driver if driver is not None else "auto",
+                render_views=(
+                    _parse_render_views(render_views)
+                    if render_views is not None
+                    else list(VIEW_NAMES)
+                ),
             )
         except ValidationError as exc:
             raise typer.BadParameter(str(exc)) from exc
 
     if gen.num_envs < 1:
         raise typer.BadParameter(f"num_envs must be >= 1, got {gen.num_envs}")
+
+    # From the recipe, not the flag: --gen-config carries its own selection,
+    # and the as-run copy of that recipe is what records which views a dataset
+    # was built with.
+    view_keys = keys_for_names(gen.render_views)
 
     try:
         cfg = ISSConfig.load(config) if config is not None else ISSConfig()
@@ -347,7 +398,7 @@ def generate(
     for name, batch in batches.items():
         frames = None
         if render:
-            from .datasets.video import iter_batch_frames
+            from .datasets.video import iter_batch_frames, tee_episode_clips
             from .render.iss_scene import RenderConfig
 
             render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
@@ -356,13 +407,25 @@ def generate(
             # resolution and scene, and extra workers scale sub-linearly, so
             # any duration printed here would be a prediction this code
             # cannot make. How many workers to spend is the operator's call.
-            typer.echo(f"[render] {name}: {total} frames, {render_workers} worker(s)")
-            # Lazy: the writer pulls one episode's clip at a time. Rendering
-            # a whole split first would need ~98 GB of RAM at 500k frames.
+            typer.echo(
+                f"[render] {name}: {total} frames, "
+                f"{len(view_keys)} video feature(s) "
+                f"({', '.join(key.rsplit('.', 1)[-1] for key in view_keys)}), "
+                f"{render_workers} worker(s)"
+            )
+            # Lazy: the writer pulls one episode's clips at a time. Rendering
+            # a whole split first would need ~98 GB of RAM per feature at 500k
+            # frames.
             frames = iter_batch_frames(
-                batch, render_cfg, view=render_view,
+                batch, render_cfg, keys=view_keys,
                 workers=render_workers, gpu_index=gpu_index,
             )
+            # Tapped on the way past rather than rendered again: every view's
+            # clips are also written per episode under media/<view>/<split>/,
+            # which is the one-video-per-rollout shape that reviewers and the
+            # training side's tooling expect. Auxiliary files, not dataset
+            # features; see tee_episode_clips for what they cost.
+            frames = tee_episode_clips(frames, out / "media", name, resolved_fps)
         if lerobot:
             from .datasets.lerobot_writer import write_lerobot_split
 
