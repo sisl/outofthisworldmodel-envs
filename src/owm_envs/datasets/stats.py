@@ -130,8 +130,11 @@ class GenerationConfig(ConfigModel):
     # the physics, and two runs of one environment can legitimately differ
     # here. Stored resolved rather than as 'all', so the as-run copy names the
     # views a dataset actually has whatever the default was the day it ran. A
-    # run without --render ignores it.
-    render_views: list[str] = Field(default_factory=lambda: list(VIEW_NAMES))
+    # run without --render ignores it. The default is the training view plus
+    # the tiled composite of every view -- the individual views stay
+    # selectable ('all', or any subset by name) without shipping seven video
+    # features in every dataset.
+    render_views: list[str] = Field(default_factory=lambda: ["fpv", "composite"])
 
     @field_validator("render_views", mode="before")
     @classmethod

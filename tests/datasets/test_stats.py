@@ -452,13 +452,11 @@ def test_code_provenance_degrades_when_git_is_unavailable(monkeypatch):
     assert prov["git_dirty"] is None
 
 
-def test_render_views_defaults_to_every_view():
+def test_render_views_defaults_to_fpv_and_composite():
     # The recipe carries the view selection so a run directory records what it
-    # was built with; the default has to be the same full set the CLI renders.
-    from owm_envs.datasets.video import VIEW_NAMES
-
-    assert tuple(GenerationConfig().render_views) == VIEW_NAMES
-    assert len(VIEW_NAMES) == 7
+    # was built with. The default ships the training view plus the tiled
+    # composite of every view; the individual views stay selectable by name.
+    assert list(GenerationConfig().render_views) == ["fpv", "composite"]
 
 
 def test_render_views_is_stored_resolved_and_canonically_ordered():
@@ -486,8 +484,6 @@ def test_a_recipe_written_before_the_field_existed_still_loads(tmp_path):
     # Published run directories carry an as-run generation_config.yaml, and
     # hub.py reads them back. One written before this field existed has to
     # keep loading rather than fail validation on a key it never had.
-    from owm_envs.datasets.video import VIEW_NAMES
-
     old = tmp_path / "gen.yaml"
     old.write_text(
         "splits:\n"
@@ -500,7 +496,7 @@ def test_a_recipe_written_before_the_field_existed_still_loads(tmp_path):
         "driver: auto\n"
     )
     loaded = GenerationConfig.from_yaml(old)
-    assert tuple(loaded.render_views) == VIEW_NAMES
+    assert list(loaded.render_views) == ["fpv", "composite"]
     assert loaded.num_envs == 4
 
 
