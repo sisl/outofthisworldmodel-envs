@@ -92,7 +92,7 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
     from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
 
     cfg_path = tmp_path / "env.yaml"
-    ISSConfig(physics=PhysicsConfig(start_radius_m=175.0)).to_yaml(cfg_path)
+    ISSConfig(physics=PhysicsConfig(start_radius_range_m=(175.0, 175.0))).to_yaml(cfg_path)
 
     out = tmp_path / "run"
     result = runner.invoke(
@@ -102,7 +102,7 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
          "--no-lerobot"],
     )
     assert result.exit_code == 0, result.stdout
-    assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
+    assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_range_m == (175.0, 175.0)
 
 
 def test_a_toml_config_file_is_loaded_too(tmp_path):
@@ -111,7 +111,7 @@ def test_a_toml_config_file_is_loaded_too(tmp_path):
     from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
 
     cfg_path = tmp_path / "env.toml"
-    ISSConfig(physics=PhysicsConfig(start_radius_m=175.0)).to_toml(cfg_path)
+    ISSConfig(physics=PhysicsConfig(start_radius_range_m=(175.0, 175.0))).to_toml(cfg_path)
 
     out = tmp_path / "run"
     result = runner.invoke(
@@ -121,7 +121,7 @@ def test_a_toml_config_file_is_loaded_too(tmp_path):
          "--no-lerobot"],
     )
     assert result.exit_code == 0, result.stdout
-    assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_m == 175.0
+    assert ISSConfig.from_yaml(out / "env_config.yaml").physics.start_radius_range_m == (175.0, 175.0)
 
 
 @pytest.mark.parametrize("filename, text, expected", [

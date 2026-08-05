@@ -64,7 +64,11 @@ class PhysicsConfig(ConfigModel):
     # far side of the sphere) but zero is a valid degenerate case. Still
     # excludes inf/NaN, which are as meaningless here as they are for mass.
     dragon_collision_radius_m: float = Field(default=2.25, ge=0, allow_inf_nan=False)
-    start_radius_m: float = Field(default=100.0, ge=0, allow_inf_nan=False)
+    # Episodes start at a uniformly sampled radius in this closed interval,
+    # so some trajectories begin near the station and others must first fly
+    # in from up to 500 m out. A degenerate (r, r) range reproduces the old
+    # fixed start sphere.
+    start_radius_range_m: tuple[float, float] = (100.0, 500.0)
 
     # A path to a YAML file (relative paths resolve against the cwd first,
     # then this package's resources directory, so the default below finds
@@ -74,6 +78,19 @@ class PhysicsConfig(ConfigModel):
     # of collision geometry entirely -- which emits a warning, since a
     # silently collision-free environment can never terminate on collision.
     collision_boxes_path: str | list[dict] | None = DEFAULT_COLLISION_BOXES_FILENAME
+
+    @field_validator("start_radius_range_m")
+    @classmethod
+    def _start_radius_range_is_ordered(
+        cls, value: tuple[float, float]
+    ) -> tuple[float, float]:
+        # reset() feeds the interval to a uniform sample; a reversed, negative,
+        # or non-finite bound would silently place the chaser somewhere
+        # geometrically meaningless rather than fail to load.
+        low, high = value
+        if not (math.isfinite(low) and math.isfinite(high)) or low < 0 or high < low:
+            raise ValueError("start_radius_range_m must be finite with 0 <= min <= max")
+        return value
 
     @field_validator("inertia_diag")
     @classmethod
@@ -158,10 +175,11 @@ class ISSConfig(ConfigModel):
     dt: float = Field(default=0.05, gt=0, allow_inf_nan=False)
     # 12000 * 0.05 = 600 s. Sized for the orbit policy's slowest commanded
     # circle at Draco-class thrust: a 150 m orbit at the minimum speed
-    # fraction has a ~450 s period, plus tens of seconds of fly-in from the
-    # 100 m start sphere, so anything much shorter ends before a revolution
-    # completes. A critically-damped dock approach from 100 m settles into
-    # the gate in ~250 s, comfortably inside the same horizon.
+    # fraction has a ~450 s period, plus the fly-in from a start as far as
+    # 500 m out, so anything much shorter ends before a revolution
+    # completes. A critically-damped dock approach settles into the gate in
+    # ~250 s from the nearest starts and ~300 s median from the farthest,
+    # comfortably inside the same horizon.
     #
     # The renderer draws Earth as a full textured globe, so however far the
     # ground track runs there is always surface under it; episode length is
@@ -171,12 +189,12 @@ class ISSConfig(ConfigModel):
     # whose post-step position lies outside it has left the scenario, and the
     # episode terminates there rather than running out the horizon.
     #
-    # 1 km is 2x the largest radius anything here is meant to reach: episodes
-    # start on the 100 m sphere and the orbit policy commands circles out to
-    # 500 m. Its purpose is the random policy, whose undirected walk otherwise
-    # spends the full 360 s horizon drifting away from the station recording
-    # nothing but empty space. It also bounds the non-cooperative sensor
-    # noise, whose position error is proportional to range
+    # 750 m is 1.5x the farthest start radius (500 m), so even an episode
+    # that begins at the outer edge has room to maneuver before it is out of
+    # bounds. Its purpose is the random policy, whose undirected walk
+    # otherwise spends the full horizon drifting away from the station
+    # recording nothing but empty space. It also bounds the non-cooperative
+    # sensor noise, whose position error is proportional to range
     # (sigma_pos_frac_of_range) and so grows without limit on a runaway
     # trajectory.
     #
@@ -184,7 +202,7 @@ class ISSConfig(ConfigModel):
     # Strictly positive and finite when set: zero or negative would put every
     # reachable state outside the domain, and inf/NaN describe no boundary at
     # all -- None is how the bound is turned off.
-    max_range_m: float | None = Field(default=500.0, gt=0, allow_inf_nan=False)
+    max_range_m: float | None = Field(default=750.0, gt=0, allow_inf_nan=False)
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)

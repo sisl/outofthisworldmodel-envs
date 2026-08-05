@@ -208,7 +208,7 @@ def test_run_metadata_write_emits_every_expected_file(tmp_path):
 
 def test_as_run_configs_round_trip(tmp_path):
     # The whole point of the as-run record: reload it and get the same config.
-    cfg = ISSConfig(physics=PhysicsConfig(start_radius_m=250.0))
+    cfg = ISSConfig(physics=PhysicsConfig(start_radius_range_m=(250.0, 250.0)))
     policy_cfg = PolicyConfig(type="orbit")
     build_run_metadata(
         cfg=cfg, policy_cfg=policy_cfg,

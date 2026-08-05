@@ -82,13 +82,13 @@ def test_the_goal_tag_in_the_filename_means_that_observation(noise_tag, goal_tag
 
 @pytest.mark.parametrize("goal_tag", list(wvc.GOAL_TAGS))
 @pytest.mark.parametrize("noise_tag", list(wvc.NOISE_TAGS))
-def test_every_variant_bounds_the_domain_at_500_metres(noise_tag, goal_tag):
+def test_every_variant_bounds_the_domain_at_750_metres(noise_tag, goal_tag):
     # Spelled out rather than left to the whole-config comparison above: the
     # bound decides how long a runaway episode runs, so all six published
     # datasets have to share it or their episode-length distributions differ
     # on an axis their names do not name.
     cfg = ISSConfig.from_toml(CONFIGS / f"iss_{noise_tag}_{goal_tag}.toml")
-    assert cfg.max_range_m == 500.0
+    assert cfg.max_range_m == 750.0
 
 
 @pytest.fixture(scope="module")

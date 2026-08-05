@@ -21,7 +21,7 @@ def test_default_config_matches_expected_values():
     assert cfg.max_steps == 12000
     assert cfg.physics.mass == 12000.0
     assert cfg.physics.inertia_diag == (80000.0, 80000.0, 50000.0)
-    assert cfg.physics.start_radius_m == 100.0
+    assert cfg.physics.start_radius_range_m == (100.0, 500.0)
     # Draco-class actuator limits: ~4x400 N per axis, couple torque ~2000 N*m.
     assert cfg.control.limit_force_n == 1600.0
     assert cfg.control.limit_torque_nm == 2000.0
@@ -30,14 +30,14 @@ def test_default_config_matches_expected_values():
     assert cfg.dock.max_velocity_m_s == 0.5
 
 
-def test_max_range_defaults_to_a_kilometre():
-    assert ISSConfig().max_range_m == 500.0
+def test_max_range_defaults_to_750_metres():
+    assert ISSConfig().max_range_m == 750.0
 
 
 def test_max_range_explicit_none_survives_toml_roundtrip(tmp_path):
-    # max_range_m defaults to 1000.0, not None, so an explicit None has to go
+    # max_range_m defaults to 750.0, not None, so an explicit None has to go
     # through ConfigModel's explicit-null machinery: omitting it the way TOML
-    # omits any None would silently resurrect the 1 km bound on load and
+    # omits any None would silently resurrect the default bound on load and
     # terminate episodes a caller deliberately let run unbounded.
     original = ISSConfig(max_range_m=None)
     path = tmp_path / "run_config.toml"
@@ -68,7 +68,7 @@ def test_config_is_frozen():
 
 def test_config_roundtrips_through_yaml(tmp_path):
     original = ISSConfig(
-        dt=0.02, max_steps=500, physics=PhysicsConfig(start_radius_m=250.0)
+        dt=0.02, max_steps=500, physics=PhysicsConfig(start_radius_range_m=(250.0, 250.0))
     )
     path = tmp_path / "run_config.yaml"
     original.to_yaml(path)
@@ -291,18 +291,21 @@ def test_negative_or_non_finite_collision_radius_is_rejected(radius):
         PhysicsConfig(dragon_collision_radius_m=radius)
 
 
-@pytest.mark.parametrize("radius", [-1.0, float("inf"), float("nan")])
-def test_negative_or_non_finite_start_radius_is_rejected(radius):
+@pytest.mark.parametrize(
+    "radius_range",
+    [(-1.0, 1.0), (float("inf"), float("inf")), (float("nan"), 1.0), (200.0, 100.0)],
+)
+def test_negative_reversed_or_non_finite_start_radius_range_is_rejected(radius_range):
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
-        PhysicsConfig(start_radius_m=radius)
+        PhysicsConfig(start_radius_range_m=radius_range)
 
 
 def test_zero_collision_radius_and_start_radius_are_still_allowed():
     # These are degenerate but not physically impossible, unlike mass/inertia
     # dividing by zero -- only negative values are meaningless for a radius.
-    PhysicsConfig(dragon_collision_radius_m=0.0, start_radius_m=0.0)
+    PhysicsConfig(dragon_collision_radius_m=0.0, start_radius_range_m=(0.0, 0.0))
 
 
 def test_non_positive_mass_is_rejected_at_toml_load(tmp_path):

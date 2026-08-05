@@ -56,7 +56,8 @@ def test_free_flight_episodes_truncate_at_max_steps():
 def test_collision_terminates_episodes_early():
     driver = make_driver(
         physics=dict(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=dict(enabled=False),
     )
@@ -73,7 +74,7 @@ def test_leaving_the_domain_terminates_episodes_early():
     # random policy happens to fly.
     cfg = ISSConfig(
         max_range_m=50.0,
-        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=100.0),
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(100.0, 100.0)),
         dock=DockConfig(enabled=False),
     )
     driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2)
@@ -96,7 +97,7 @@ def test_max_range_none_lets_a_far_episode_run_to_truncation():
     # default rather than removing the bound.
     cfg = ISSConfig(
         max_range_m=None,
-        physics=PhysicsConfig(collision_boxes_path=None, start_radius_m=2000.0),
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(2000.0, 2000.0)),
         dock=DockConfig(enabled=False),
     )
     driver = ScanDriver(cfg=cfg, policy_cfg=PolicyConfig(type="random"), num_envs=2)
@@ -175,8 +176,9 @@ def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
     assert np.all(batch.truncated)
 
     for i in range(batch.num_episodes):
+        low, high = cfg.physics.start_radius_range_m
         radius = np.linalg.norm(batch.observations[i, 0, 0:3])
-        np.testing.assert_allclose(radius, cfg.physics.start_radius_m, rtol=1e-4)
+        assert low * (1 - 1e-4) <= radius <= high * (1 + 1e-4)
 
     for i in range(1, batch.num_episodes):
         previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]

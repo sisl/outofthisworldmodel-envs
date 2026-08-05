@@ -104,7 +104,8 @@ def test_free_flight_episodes_run_to_max_steps_and_truncate():
 def test_collision_terminates_episodes_early():
     driver = make_driver(
         physics=dict(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=dict(enabled=False),
     )
@@ -121,7 +122,8 @@ def test_terminal_state_is_stored_with_a_padded_final_action():
     # final slot so observations and actions stay equal length.
     driver = make_driver(
         physics=dict(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=dict(enabled=False),
     )
@@ -147,7 +149,8 @@ def test_is_deterministic_in_the_seed():
 def test_padding_past_episode_length_is_zero():
     driver = make_driver(
         physics=dict(
-            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}]
+            collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [400.0, 400.0, 400.0]}],
+            start_radius_range_m=(100.0, 100.0),
         ),
         dock=dict(enabled=False),
     )
@@ -271,11 +274,12 @@ def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
     assert np.all(batch.truncated)
 
     for i in range(batch.num_episodes):
-        # Every reset places the chaser on the start sphere -- a strong,
+        # Every reset places the chaser inside the start shell -- a strong,
         # cheap check that this episode really began from env.reset() and
         # not mid-flight.
+        low, high = cfg.physics.start_radius_range_m
         radius = np.linalg.norm(batch.observations[i, 0, 0:3])
-        np.testing.assert_allclose(radius, cfg.physics.start_radius_m, rtol=1e-4)
+        assert low * (1 - 1e-4) <= radius <= high * (1 + 1e-4)
 
     for i in range(1, batch.num_episodes):
         previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
