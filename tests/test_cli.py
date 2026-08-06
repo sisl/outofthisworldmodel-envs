@@ -30,6 +30,25 @@ def test_env_flag_rejects_unknown(tmp_path):
     assert "unknown environment" in result.output
 
 
+def test_env_flag_rejects_empty(tmp_path):
+    result = runner.invoke(
+        app, ["generate", "--out", str(tmp_path / "x"), "--env", ""]
+    )
+    assert result.exit_code != 0
+    assert "unknown environment" in result.output
+
+
+def test_env_flag_accepts_iss(tmp_path):
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss",
+        "--split", "train:1:0", "--steps", "5", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = GenerationConfig.from_yaml(out / "generation_config.yaml")
+    assert recorded.env == "iss"
+
+
 def test_config_flag_is_gone(tmp_path):
     result = runner.invoke(
         app, ["generate", "--out", str(tmp_path / "x"), "--config", "z.toml"]
@@ -99,7 +118,7 @@ def test_resolve_driver_vector_path_does_not_double_augment():
 
     cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
     chosen = _resolve_driver(
-        "vector", cfg, PolicyConfig(type="dock"), num_envs=2, spec=ENV_REGISTRY["iss"]
+        "vector", cfg, PolicyConfig(type="dock"), num_envs=2, env_spec=ENV_REGISTRY["iss"]
     )
     batch = chosen.driver.generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
     assert batch.observations.shape[-1] == 25
@@ -136,8 +155,8 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
 
 
 def test_a_toml_config_file_is_loaded_too(tmp_path):
-    # The shipped env configs under configs/ are TOML, so --config that only
-    # spoke YAML could not load the very files the repo ships to be run.
+    # The shipped env configs under configs/ are TOML, so --env-config that
+    # only spoke YAML could not load the very files the repo ships to be run.
     from owm_envs.envs.common.config import PhysicsConfig
     from owm_envs.envs.iss.config import ISSConfig
 

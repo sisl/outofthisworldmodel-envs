@@ -11,6 +11,10 @@ def test_registry_has_iss():
     assert spec.layout.state_dim == 13
 
 
+def test_registry_keys_match_their_spec_name():
+    assert all(k == s.name for k, s in ENV_REGISTRY.items())
+
+
 def test_spec_pieces_compose():
     spec = ENV_REGISTRY["iss"]
     cfg = spec.config_cls()

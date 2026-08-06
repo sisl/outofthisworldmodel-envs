@@ -202,7 +202,8 @@ def generate(
     fps: Optional[int] = typer.Option(None, help="Frames per second recorded in the dataset. "
                                       "Defaults to the simulation rate, 1/dt."),
     gen_config: Optional[Path] = typer.Option(
-        None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps. "
+        None, help="GenerationConfig YAML; exclusive with "
+                   "--env/--split/--steps/--num-envs/--driver/--fps/--render-views. "
                    "configs/generation_default.yaml is the shipped docking recipe: a union-policy "
                    "train split on five ports and a dock-policy val split on all "
                    "eight, so validation measures the held-out approaches (both zenith "
@@ -288,6 +289,9 @@ def generate(
             "--gen-config is exclusive with "
             "--env/--split/--steps/--num-envs/--driver/--fps/--render-views"
         )
+    if env is not None and env not in ENV_REGISTRY:
+        raise typer.BadParameter(
+            f"unknown environment '{env}'; available: {', '.join(ENV_REGISTRY)}")
 
     if render:
         from .render.device import check_gpu_index, select_gpu
@@ -360,7 +364,7 @@ def generate(
     # was built with.
     view_keys = keys_for_names(gen.render_views)
 
-    env_name = gen.env if gen_config is not None else (env or "iss")
+    env_name = gen.env
     if env_name not in ENV_REGISTRY:
         raise typer.BadParameter(
             f"unknown environment '{env_name}'; available: {', '.join(ENV_REGISTRY)}"
@@ -617,7 +621,7 @@ class _Chosen:
 
 
 def _resolve_driver(
-    requested: str, cfg: BaseTaskConfig, policy_cfg: PolicyConfig, num_envs: int, spec: EnvSpec
+    requested: str, cfg: BaseTaskConfig, policy_cfg: PolicyConfig, num_envs: int, env_spec: EnvSpec
 ) -> _Chosen:
     from .drivers.scan_driver import ScanDriver, supports_fused_rollout
     from .drivers.vector_env_driver import VectorEnvDriver
@@ -649,14 +653,14 @@ def _resolve_driver(
         return _Chosen(
             "vector",
             VectorEnvDriver(
-                env_factory=lambda: spec.make_vector_env(num_envs, env_cfg),
-                policy_source=TaskPolicySource(cfg, policy_cfg, view=spec.view),
+                env_factory=lambda: env_spec.make_vector_env(num_envs, env_cfg),
+                policy_source=TaskPolicySource(cfg, policy_cfg, view=env_spec.view),
             ),
         )
 
     def build_scan() -> _Chosen:
         return _Chosen(
-            "scan", ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=num_envs, env_spec=spec)
+            "scan", ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=num_envs, env_spec=env_spec)
         )
 
     if requested == "vector":
@@ -665,5 +669,5 @@ def _resolve_driver(
         return build_scan()
     if requested == "auto":
         # The capability check that lets a future non-JAX backend work unchanged.
-        return build_scan() if supports_fused_rollout(spec.make_dynamics(cfg)) else build_vector()
+        return build_scan() if supports_fused_rollout(env_spec.make_dynamics(cfg)) else build_vector()
     raise typer.BadParameter(f"unknown driver '{requested}'; use auto, scan or vector")

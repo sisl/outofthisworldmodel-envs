@@ -17,6 +17,7 @@ effect of the package's own __init__ chain.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -60,13 +61,16 @@ def _build_env_registry() -> dict[str, EnvSpec]:
 
 
 _env_registry_cache: dict[str, EnvSpec] | None = None
+_REGISTRY_LOCK = threading.Lock()
 
 
 def __getattr__(name: str) -> Any:
     global _env_registry_cache
     if name == "ENV_REGISTRY":
         if _env_registry_cache is None:
-            _env_registry_cache = _build_env_registry()
+            with _REGISTRY_LOCK:
+                if _env_registry_cache is None:
+                    _env_registry_cache = _build_env_registry()
         return _env_registry_cache
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
