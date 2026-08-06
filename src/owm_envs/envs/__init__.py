@@ -46,6 +46,9 @@ def _build_env_registry() -> dict[str, EnvSpec]:
     from .iss.config import ISSConfig
     from .iss.dynamics import ISSDynamics
     from .iss.vector_env import ISSVectorEnv
+    from .iss_hcw.config import HCW_LAYOUT, HCWConfig
+    from .iss_hcw.dynamics import HCWDynamics
+    from .iss_hcw.vector_env import HCWVectorEnv
 
     return {
         "iss": EnvSpec(
@@ -56,6 +59,15 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=ISSDynamics,
             make_vector_env=lambda num_envs, cfg: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
             view=ISS_LAYOUT.slice_view,
+        ),
+        "iss-hcw": EnvSpec(
+            name="iss-hcw",
+            gym_id="ISS-HCW-Docking-v0",
+            config_cls=HCWConfig,
+            layout=HCW_LAYOUT,
+            make_dynamics=HCWDynamics,
+            make_vector_env=lambda num_envs, cfg: HCWVectorEnv(num_envs=num_envs, cfg=cfg),
+            view=HCW_LAYOUT.slice_view,
         ),
     }
 
@@ -78,4 +90,9 @@ def __getattr__(name: str) -> Any:
 register(
     id="ISS-Docking-v0",
     entry_point="owm_envs.envs.iss.env:ISSEnv",
+)
+
+register(
+    id="ISS-HCW-Docking-v0",
+    entry_point="owm_envs.envs.iss_hcw.env:HCWEnv",
 )
