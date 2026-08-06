@@ -427,6 +427,53 @@ def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
         assert not (out / name).exists(), f"{name} survived a failed render"
 
 
+@pytest.mark.parametrize("source", ["flag", "recipe"])
+def test_render_is_refused_for_a_non_iss_environment(tmp_path, monkeypatch, source):
+    """Rendering reads the recorded true_state rows as iss-layout poses, so an
+    iss-hcw row -- whose first two elements are an epoch, not a position --
+    would come out as silently wrong video rather than an error. Refused for
+    both ways the env can be named, and before the GPU is probed: selecting an
+    adapter pins one for the whole process, which is real cost to spend on an
+    invocation that was never going to run."""
+    probed = []
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: probed.append(index))
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: probed.append(index))
+
+    if source == "flag":
+        args = ["--env", "iss-hcw", "--steps", "4", "--split", "train:1:0"]
+    else:
+        recipe = tmp_path / "gen.yaml"
+        GenerationConfig(
+            env="iss-hcw",
+            splits={"train": SplitSpec(num_episodes=1, max_steps=4, seed=0)},
+            num_envs=1,
+        ).to_yaml(recipe)
+        args = ["--gen-config", str(recipe)]
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, ["generate", "--out", str(out), *args, "--render"])
+    assert result.exit_code != 0
+    assert "--render" in result.output and "iss-hcw" in result.output
+    assert probed == [], "probed the GPU for an invocation that was a usage error"
+    assert not out.exists(), "the check must precede the rollout"
+
+
+def test_render_stays_available_for_iss(tmp_path, monkeypatch):
+    """The guard must discriminate: one that refused every --render would
+    satisfy the test above without being right."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    def stop(index):
+        raise RuntimeError("stop-after-select")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", stop)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--env", "iss", "--steps", "4",
+        "--split", "train:1:0", "--render",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
+
+
 def test_render_without_lerobot_is_rejected(tmp_path):
     # --render with --no-lerobot would render every frame and then throw them
     # all away -- nothing consumes them. This must fail fast, before paying
