@@ -26,10 +26,19 @@ f32 and hand back f32 values which the f64 accumulators then absorb. That is
 tolerable precisely because those quantities are re-derived from the state
 each step rather than summed into it, so the ~1e-7 relative perturbation
 stays a perturbation instead of biasing a running total the way the epoch's
-did. Measured against the same equations of motion written entirely in f64,
-over a full 7200-step episode with a tumbling, drifting chaser: 3.4e-7 m of
-position, 2.8e-6 rad of attitude, 2.0e-9 rad/s of body rate -- five orders
-below the tightest dock gate (0.1 m, 5 deg, 0.0087 rad/s).
+did. The quaternion is the one exception to that argument and does not get to
+hide behind it: `quat_normalize` runs through astrojax's f32-pinned
+`Quaternion`, and its result IS written back into the state, so 4 of the 15
+elements are stored at f32 grain every step. What saves it is that the
+rounding is bounded rather than directional -- 1 - |q| measured step by step
+alternates sign at the 1e-8 level instead of accumulating -- so it stays a
+per-step quantization and not a second epoch-style bias.
+
+Measured against the same equations of motion written entirely in f64, over a
+full 7200-step episode with a tumbling, drifting chaser, everything above
+comes to 3.4e-7 m of position, 2.8e-6 rad of attitude, and 2.0e-9 rad/s of
+body rate -- five orders below the tightest dock gate (0.1 m, 5 deg, 0.0087
+rad/s).
 
 Per-step structure: the epoch prefix advances OUTSIDE the integrator, since a
 day rollover is not smooth; translation and attitude integrate with the shared

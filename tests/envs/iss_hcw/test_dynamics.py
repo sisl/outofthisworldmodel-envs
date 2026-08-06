@@ -9,7 +9,7 @@ from owm_envs.envs.common.config import dock_target
 from owm_envs.envs.common.epoch_state import seconds_between
 from owm_envs.envs.common.orbit import RTN_FROM_WORLD
 from owm_envs.envs.iss_hcw.config import HCWConfig
-from owm_envs.envs.iss_hcw.dynamics import HCWDynamics
+from owm_envs.envs.iss_hcw.dynamics import STATE_LABELS, HCWDynamics
 
 ZERO_ACTION = jnp.zeros(6, jnp.float64)
 
@@ -42,8 +42,11 @@ def test_translation_matches_hcw_stm_quarter_orbit():
     x_ref = hcw_stm(steps * cfg.dt, n) @ x0
     rel_end_rtn = jnp.concatenate([R @ end[2:5], R @ end[5:8]])
     # RK4 at dt=0.05 over ~28k steps: the tolerance covers integration error
-    # plus astrojax's f32-pinned STM/derivative evaluation, both far below it.
-    np.testing.assert_allclose(np.asarray(rel_end_rtn), np.asarray(x_ref), rtol=2e-3, atol=0.5)
+    # plus astrojax's f32-pinned STM/derivative evaluation, both far below it
+    # (worst channel 4.2e-5 m). atol has to stay tight enough to constrain the
+    # cross-track channel, which passes through zero here and so is governed
+    # by atol alone rather than by rtol; at 1e-3 it keeps ~3 orders of margin.
+    np.testing.assert_allclose(np.asarray(rel_end_rtn), np.asarray(x_ref), rtol=2e-3, atol=1e-3)
 
 
 def test_cw_sign_probes():
@@ -123,8 +126,11 @@ def test_free_precession_matches_the_axisymmetric_rate():
     np.testing.assert_allclose(
         np.arctan2(float(end[13]), float(end[12])), -lam * duration, atol=5e-3
     )
-    # Renormalized every step, so RK4's norm drift never accumulates.
-    np.testing.assert_allclose(float(jnp.linalg.norm(end[8:12])), 1.0, atol=1e-12)
+    # Renormalized every step, so RK4's norm drift never accumulates. The
+    # floor is f32, not f64: `quat_normalize` goes through astrojax's
+    # f32-pinned Quaternion, so |q| lands within ~1e-8 of 1 and stays there.
+    # rtol=0 because numpy's 1e-7 default would otherwise be doing the work.
+    np.testing.assert_allclose(float(jnp.linalg.norm(end[8:12])), 1.0, rtol=0, atol=1e-7)
 
 
 def test_epoch_advances_and_rolls_over():
@@ -156,6 +162,14 @@ def test_epoch_prefix_stays_exact_over_a_long_rollout():
     end = _rollout(dyn, s, steps)
     elapsed = float(seconds_between(end[0:2], s[0:2]))
     assert elapsed == pytest.approx(steps * cfg.dt, abs=1e-6)
+
+
+def test_interface_dimensions():
+    dyn = HCWDynamics(_free_flight_cfg())
+    assert dyn.state_dim == 15
+    assert dyn.action_dim == 6
+    assert dyn.reset(jax.random.PRNGKey(0)).shape == (15,)
+    assert len(STATE_LABELS) == 15
 
 
 def test_state_stays_float64():
