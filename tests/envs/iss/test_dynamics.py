@@ -3,7 +3,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.common.config import DockConfig, PhysicsConfig, default_collision_boxes_path
+from owm_envs.envs.common.config import (
+    DockConfig,
+    PhysicsConfig,
+    default_collision_boxes_path,
+)
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.dynamics import STATE_LABELS, ISSDynamics
 

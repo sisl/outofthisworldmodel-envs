@@ -49,7 +49,8 @@ def iss_reward(
 
     `state` is the canonical 13D world-frame relative view
     `[pos, vel, q_bw, omega]` -- which for the iss env is the state itself,
-    and for an env with a wider state is what `StateLayout.view` extracts.
+    and for an env with a wider state is what `StateLayout.slice_view`
+    extracts.
 
     `dock_position` is this episode's dock goal position -- the (3,) prefix of
     the target row `policies.dock_target_selector` resolved for it. Omitted,

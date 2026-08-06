@@ -3,7 +3,8 @@
 The layout drives state labels, dataset state widths, and per-slice sensor
 noise. Task-layer functions (reward, goal, policies, event checks) never
 index raw state directly -- they consume the canonical 13D world-frame
-relative view `[pos(3), vel(3), q_bw(4), omega(3)]` that `view()` extracts.
+relative view `[pos(3), vel(3), q_bw(4), omega(3)]`, which `slice_view()`
+extracts for envs whose raw slices already hold it.
 """
 
 from __future__ import annotations
@@ -42,12 +43,20 @@ class StateLayout:
                 and self.quat.stop == self.omega.start):
             raise ValueError("pos/vel/quat/omega must be contiguous, in that order")
 
-    def view(self, state: jnp.ndarray) -> jnp.ndarray:
-        """The canonical 13D relative view: `[pos, vel, quat, omega]`.
+    def slice_view(self, state: jnp.ndarray) -> jnp.ndarray:
+        """The canonical 13D relative view, sliced straight out of `state`.
 
         The four slices are contiguous (enforced above), so this is a single
         slice -- for the iss layout it selects the whole state, and XLA sees
         the same values either way, which is what keeps iss bit-identical.
+
+        This is correct ONLY when the env's raw pos/vel/quat/omega slices
+        already hold world-frame relative quantities, as the iss layout's
+        do. An env whose slices hold absolute or inertial state -- a future
+        iss-numerical, say, carrying chief and deputy orbital elements --
+        must NOT use this: slicing would hand the task layer inertial
+        numbers labelled as relative ones. Such envs supply a computed view
+        through the registry and the task layer consumes that instead.
         """
         return state[..., self.pos.start : self.omega.stop]
 

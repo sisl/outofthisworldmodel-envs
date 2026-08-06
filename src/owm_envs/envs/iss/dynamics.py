@@ -38,7 +38,6 @@ STATE_LABELS: tuple[str, ...] = ISS_LAYOUT.labels
 
 class ISSDynamics:
     def __init__(self, cfg: ISSConfig):
-        self.cfg = cfg
         self.state_dim = 13
         self.action_dim = 6
 
