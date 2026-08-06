@@ -117,9 +117,10 @@ _SEGMENT_DOC = {
     # parenthesis: these phrases are comma-joined into a list of segments, and
     # a trailing clause on the first one reads as another list item.
     "epoch": "epoch as [Julian day, seconds of day] ({width}; UTC, the day "
-             "number exact and the float32 seconds-of-day quantized to between "
-             "0.5 ms and 7.8 ms depending on the time of day, which still "
-             "leaves 6.4 ulps between consecutive frames at a 50 ms step)",
+             "number exact and the float32 seconds-of-day quantized to its own "
+             "ulp, which coarsens through the day from well under 0.5 ms to "
+             "7.8 ms -- a 50 ms step spans at least 6.4 of those ulps, so "
+             "consecutive frames stay distinct)",
     "pos": "position ({width}, m)",
     "vel": "velocity ({width}, m/s)",
     "quat": "attitude quaternion ({width}, w-first, body to world)",
@@ -195,38 +196,47 @@ def _state_vector_doc(layout: StateLayout) -> str:
     """The truth column's meaning, and the obs-minus-truth identity that makes
     it worth writing, at THIS env's offsets.
 
-    The identity holds over the relative view alone, which is the whole state
-    for `iss` but sits behind an epoch prefix for `iss-hcw` -- quoting the iss
-    offsets for both would give an expression whose operands do not even line
-    up. Within that view it holds over the additive channels only: attitude
-    noise is a composed rotation (`envs/common/sensing.py`), so subtracting
-    the quaternion columns recovers nothing a reader could compare to a sigma.
+    The identity holds over the additive channels of the relative view, and
+    the expression names their slices rather than the view as a whole. Both
+    halves of that matter. The view is the whole state for `iss` but sits
+    behind an epoch prefix for `iss-hcw`, so one set of offsets cannot serve
+    both; and the four quaternion columns sit in the middle of the view while
+    carrying a COMPOSED rotation (`envs/common/sensing.py`), so an expression
+    spanning them would tell a reader to subtract four numbers whose
+    difference is not a noise draw at all.
     """
     start, stop = layout.pos.start, layout.omega.stop
-    if start == 0 and stop == layout.state_dim:
-        identity = f"`observation_vector[:{stop}] - state_vector`"
-        untouched = ""
-    else:
-        identity = (
-            f"`observation_vector[{start}:{stop}] - state_vector[{start}:{stop}]`"
+    # pos and vel are contiguous (StateLayout enforces it); omega sits on the
+    # far side of the quaternion, so the additive part of the view is two
+    # ranges, never one.
+    translation = f"{layout.pos.start}:{layout.vel.stop}"
+    rate = f"{layout.omega.start}:{layout.omega.stop}"
+    identity = (
+        f"`observation_vector[{translation}] - state_vector[{translation}]` and "
+        f"`observation_vector[{rate}] - state_vector[{rate}]`"
+    )
+    outside = [
+        _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+        for field, sl in _segments(layout)
+        if sl.stop <= start or sl.start >= stop
+    ]
+    untouched = (
+        (
+            f". The sensor model only ever draws over the relative view, so the "
+            f"rest of the row -- {', '.join(outside)} -- is identical in the two "
+            f"channels"
         )
-        outside = [
-            _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
-            for field, sl in _segments(layout)
-            if sl.stop <= start or sl.start >= stop
-        ]
-        untouched = (
-            f". The sensor model only ever draws over that range, so the rest of "
-            f"the row -- {', '.join(outside)} -- is identical in the two channels"
-        )
+        if outside
+        else ""
+    )
     return (
         "the TRUE dynamics state at that frame, before the sensor model touched it. "
-        "Over the ADDITIVE channels -- position, velocity and body rate -- "
-        f"{identity} is exactly the realized noise draw, so the measurement model "
+        "Over the ADDITIVE channels -- position and velocity, and body rate -- "
+        f"{identity} are exactly the realized noise draws, so the measurement model "
         "can be measured back off the data rather than trusted from the config. "
-        "The four quaternion columns are not additive: attitude error is a small "
-        "rotation composed onto the true attitude and then resolved onto the same "
-        "hemisphere, so that draw is recovered as "
+        "The four quaternion columns between them are not additive: attitude error "
+        "is a small rotation composed onto the true attitude and then resolved onto "
+        "the same hemisphere, so that draw is recovered as "
         "`quat_multiply(quat_conjugate(state_quat), observation_quat)` rather than "
         "as a difference"
         f"{untouched}"

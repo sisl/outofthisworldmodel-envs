@@ -288,9 +288,12 @@ def test_the_card_gives_the_epochs_timescale_and_recorded_grain(tmp_path):
     # columns are only useful against an ephemeris.
     card = _card(_hcw_run(tmp_path))
     assert "UTC, the day number exact" in card
-    assert "quantized to between 0.5 ms and 7.8 ms depending on the time of day" in card
-    # Coarse, but not so coarse that two frames of a 20 Hz run collide.
-    assert "6.4 ulps between consecutive frames at a 50 ms step" in card
+    assert "coarsens through the day from well under 0.5 ms to 7.8 ms" in card
+    # Coarse, but not so coarse that two frames of a 20 Hz run collide. The
+    # claim is about what the STEP spans, not about the gap between two
+    # rounded timestamps, which is a whole number of ulps either side of it;
+    # and 6.4 is the span at the coarsest ulp of the day, so it is a floor.
+    assert "a 50 ms step spans at least 6.4 of those ulps" in card
 
 
 def test_the_card_gives_the_noise_identity_at_this_envs_offsets(tmp_path):
@@ -298,14 +301,18 @@ def test_the_card_gives_the_noise_identity_at_this_envs_offsets(tmp_path):
     # behind the epoch prefix here. Quoting the iss offsets would print an
     # expression whose two operands are not even the same width.
     card = _card(_hcw_run(tmp_path))
-    assert "`observation_vector[2:15] - state_vector[2:15]`" in card
+    assert "`observation_vector[2:8] - state_vector[2:8]`" in card
+    assert "`observation_vector[12:15] - state_vector[12:15]`" in card
+    # Never one range spanning the quaternion columns, at these offsets or
+    # at the iss ones.
+    assert "observation_vector[2:15]" not in card
     assert "observation_vector[:13]" not in card
     # And it has to say why the epoch columns are exempt rather than leave a
     # reader to wonder whether the sensor model touched them -- the epoch
     # phrase is the one named as untouched, so the tail of that phrase is what
     # ties the two together.
     assert "epoch as [Julian day, seconds of day] (2;" in card
-    assert "at a 50 ms step) -- is identical in the two channels" in card
+    assert "consecutive frames stay distinct) -- is identical in the two channels" in card
 
 
 @pytest.mark.parametrize("write", [_write_run, _hcw_run], ids=["iss", "iss-hcw"])
@@ -316,7 +323,7 @@ def test_the_card_confines_the_noise_identity_to_the_additive_channels(tmp_path,
     # would send anyone measuring the model back off the data to a number that
     # means nothing.
     card = _card(write(tmp_path))
-    assert "Over the ADDITIVE channels -- position, velocity and body rate --" in card
+    assert "Over the ADDITIVE channels -- position and velocity, and body rate --" in card
     assert "`quat_multiply(quat_conjugate(state_quat), observation_quat)`" in card
 
 
@@ -350,7 +357,8 @@ def test_the_iss_card_still_reads_as_it_did(tmp_path):
         "position (3, m), velocity (3, m/s), attitude quaternion (4, w-first, body to "
         "world) and body rate (3, rad/s), all station-relative"
     ) in card
-    assert "`observation_vector[:13] - state_vector`" in card
+    assert "`observation_vector[0:6] - state_vector[0:6]`" in card
+    assert "`observation_vector[10:13] - state_vector[10:13]`" in card
     assert (
         "manoeuvring from starts between 100 m and 500 m out to a station docking port,\n"
         "under rigid-body free-flyer dynamics and against the station's 318-box "
@@ -384,7 +392,7 @@ def test_the_card_documents_the_truth_channel(tmp_path):
     card = _card(_write_run(tmp_path))
     assert "`state_vector`" in card
     # The obs-minus-truth identity is the whole reason the column is written.
-    assert "observation_vector[:13] - state_vector" in card
+    assert "observation_vector[0:6] - state_vector[0:6]" in card
 
 
 def test_the_card_omits_the_truth_channel_when_the_run_has_none(tmp_path):
