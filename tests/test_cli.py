@@ -4,6 +4,7 @@ import re
 
 import pytest
 import typer
+import yaml
 from typer.testing import CliRunner
 
 from owm_envs.cli import app, _parse_split_flags
@@ -12,6 +13,7 @@ from owm_envs.envs.common.docking_ports import PORT_NAMES
 from owm_envs.envs.common.policies import DockParams, PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_hcw.config import HCWConfig
 
 runner = CliRunner()
 
@@ -47,6 +49,27 @@ def test_env_flag_accepts_iss(tmp_path):
     assert result.exit_code == 0, result.output
     recorded = GenerationConfig.from_yaml(out / "generation_config.yaml")
     assert recorded.env == "iss"
+
+
+def test_env_flag_accepts_iss_hcw(tmp_path):
+    # The whole pipeline under a second environment, not just the registry
+    # lookup: a 15-wide float64 state through the driver, the packer's state
+    # widths, the statistics and the as-run record. `--steps 20` keeps the
+    # f64 scan cheap -- what is under test is the wiring, not the horizon.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-hcw",
+        "--split", "train:2:0", "--steps", "20", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert GenerationConfig.from_yaml(out / "generation_config.yaml").env == "iss-hcw"
+    # The as-run config has to be the HCW one: an ISSConfig would round-trip
+    # through this file quite happily, silently dropping the reference orbit
+    # the trajectories were actually flown against.
+    assert "orbit" in yaml.safe_load((out / "env_config.yaml").read_text())
+    recorded = HCWConfig.from_yaml(out / "env_config.yaml")
+    assert recorded.orbit.epoch == HCWConfig().orbit.epoch
+    assert json.loads((out / "dataset_card.json").read_text())["env"] == "iss-hcw"
 
 
 def test_config_flag_is_gone(tmp_path):
