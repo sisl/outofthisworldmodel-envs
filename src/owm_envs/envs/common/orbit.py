@@ -9,15 +9,35 @@ and an `Epoch` directly, so they compose with `ReferenceOrbit` without
 depending on its instance.
 
 Dtype policy: astrojax's own float dtype config (`astrojax.config`) defaults
-to f32 and is deliberately NOT flipped here -- `state_koe_to_eci`,
-`rotation_eci_to_rtn`, `sun_position`, `moon_position`, and `eclipse_conical`
-all return astrojax-dtype (f32) arrays regardless of this package's
-`jax_enable_x64` flag. The accepted error budget for everything this module
-produces is chief ECI reconstruction ~0.5 m and sun/moon directions ~1e-7
-rad -- orders below what lighting, eclipse, and gravity-gradient geometry
-need. The f64 element math in `ReferenceOrbit` feeding into astrojax is fine
-on its own terms, but callers must not expect f64 precision back out. The
-dominant gravity term for dynamics always comes from
+to f32 and is deliberately NOT flipped here. `state_koe_to_eci`,
+`rotation_eci_to_rtn`, and `eclipse_conical` honour that config and return
+f32 regardless of this package's `jax_enable_x64` flag. `sun_position` and
+`moon_position` evaluate at that dtype too, but still hand back f64 under
+x64: their closing ecliptic->equatorial rotation is built by `Rx` from a
+Python-float obliquity, so the matmul promotes. That extra width is an
+artefact of the last operation, not information.
+
+Every public function in this module therefore narrows to the astrojax dtype
+on the way out, so none of them advertises f64 for an f32-information value.
+Intermediate arithmetic still runs at the widest width available -- see
+`sun_direction_world`, where the chief offset is subtracted before the
+narrowing. The f64 element math in `ReferenceOrbit` feeding into astrojax is
+fine on its own terms, but callers must not expect f64 precision back out.
+
+Error budget -- two independent terms, and only the first is about dtype:
+
+* Numerical. Against an f64 reference over one orbit, chief ECI
+  reconstruction differs by ~0.6 m median / ~4 m max, and the sun direction
+  by ~6e-6 rad median / ~2e-5 rad max. The narrowing above adds ~1e-7 rad to
+  that, i.e. nothing.
+* Model. astrojax's sun and moon are Montenbruck & Gill low-precision
+  analytical ephemerides, documented at ~0.1 deg (~2e-3 rad). This dominates
+  the numerical term by two orders of magnitude and is the real accuracy of
+  every sun/moon quantity here. It is ample for lighting, eclipse, and the
+  moon's apparent-size swing, none of which are metrology -- but nothing
+  downstream should treat these directions as better than ~0.1 deg.
+
+The dominant gravity term for dynamics always comes from
 `envs/common/zonal_gravity.py` (f64), never from astrojax's point-mass
 helpers, which cast to astrojax's dtype.
 """
@@ -26,6 +46,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+from astrojax import config as astrojax_config
 from astrojax.coordinates.keplerian import state_koe_to_eci
 from astrojax.epoch import Epoch
 from astrojax.orbit_dynamics.srp import eclipse_conical
@@ -134,33 +155,60 @@ class ReferenceOrbit:
     def chief_state_eci(self, t_s) -> jnp.ndarray:
         """Chief ECI state at epoch0 + t_s: advance the mean anomaly by n*t
         and convert. Two-body only; perturbed propagation is iss-numerical's
-        job, not this class's."""
+        job, not this class's. Returns a (6,) astrojax-dtype (f32 by default)
+        array."""
         m = self._elements0[5] + self.mean_motion * jnp.asarray(t_s, jnp.float64)
         elements = self._elements0.at[5].set(jnp.mod(m, 2.0 * jnp.pi))
         return state_koe_to_eci(elements)
 
     def world_from_eci(self, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
-        """R such that v_world = R @ v_eci: through RTN at the chief."""
+        """R such that v_world = R @ v_eci: through RTN at the chief. Returns
+        a (3, 3) astrojax-dtype (f32 by default) array."""
         return _world_rotation(chief_state_eci)
 
 
 def _world_rotation(chief_state_eci: jnp.ndarray) -> jnp.ndarray:
-    return jnp.asarray(RTN_FROM_WORLD.T) @ rotation_eci_to_rtn(chief_state_eci)
+    rtn_from_eci = rotation_eci_to_rtn(chief_state_eci)
+    # RTN_FROM_WORLD's entries are exactly 0/+-1, so narrowing it to the
+    # astrojax dtype is lossless and keeps the product from advertising f64
+    # for a value that only ever carried f32 information.
+    return jnp.asarray(RTN_FROM_WORLD.T, rtn_from_eci.dtype) @ rtn_from_eci
 
 
 def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
     """Unit vector from the chief toward the sun, expressed in world
-    coordinates."""
+    coordinates. This one IS translated to the chief -- it feeds a light
+    direction at the chief, and the ~3.5e-5 rad parallax against the
+    geocentric direction is the physically right thing there. Scalar `Epoch`
+    and a single (6,) chief state -- NOT batched; vmap for batches. Returns a
+    (3,) astrojax-dtype (f32 by default) array."""
+    # The chief offset is subtracted at whatever width sun_position hands
+    # back (f64 today) before the result is narrowed: 6.8e6 m against 1.5e11
+    # m is only ~400 f32 ulps, so doing it wide keeps the parallax clean.
     rel = sun_position(epoch) - chief_state_eci[:3]
-    return _world_rotation(chief_state_eci) @ (rel / jnp.linalg.norm(rel))
+    unit = _world_rotation(chief_state_eci) @ (rel / jnp.linalg.norm(rel))
+    return unit.astype(astrojax_config.get_dtype())
 
 
 def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
-    """Full geocentric moon vector rotated into world: direction AND distance,
-    so the true-scale moon renders with its real +/-7% apparent-size swing."""
-    return _world_rotation(chief_state_eci) @ moon_position(epoch)
+    """Geocentric lunar position vector expressed in WORLD AXES (not
+    translated to the chief): direction AND distance, so the true-scale moon
+    renders with its real +/-7% apparent-size swing. The geocentric origin is
+    the contract: the moon is meant to hang off the Earth-center scene node,
+    at earth_center_world + this, which is why the chief offset must NOT be
+    subtracted here -- unlike `sun_direction_world`, whose consumer wants a
+    direction at the chief. (The renderer is not wired to this yet: today
+    `render/iss_scene.py` places the moon from its static
+    `moon_direction_from_earth_world` / `earth_moon_distance_m` config, in
+    exactly that earth_center + offset form.) `chief_state_eci` enters only
+    through the world rotation. Scalar `Epoch` and a single (6,) chief state
+    -- NOT batched; vmap for batches. Returns a (3,) astrojax-dtype (f32 by
+    default) array."""
+    rotated = _world_rotation(chief_state_eci) @ moon_position(epoch)
+    return rotated.astype(astrojax_config.get_dtype())
 
 
 def illumination(chief_r_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
-    """Conical-shadow illumination fraction in [0, 1] at the chief."""
+    """Conical-shadow illumination fraction in [0, 1] at the chief. Returns a
+    scalar astrojax-dtype (f32 by default) array."""
     return eclipse_conical(chief_r_eci, sun_position(epoch))

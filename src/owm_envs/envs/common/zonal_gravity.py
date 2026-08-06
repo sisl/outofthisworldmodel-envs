@@ -8,9 +8,9 @@ alone. `n_max` is a static Python int, branched at trace time.
 
 J2 comes from astrojax.constants; J3..J6 are the EGM2008 values brahe uses
 (J_n = -C_n0 * sqrt(2n + 1), Pavlis et al. 2012), reproduced here because
-astrojax does not define them. astrojax's J2 is the JGM-3/EGM96 zero-tide
-value, which differs from EGM2008's by 9e-6 relative -- 1e-8 of total
-gravity, far below the model error of truncating at degree 6.
+astrojax does not define them. astrojax's J2 is the GGM05s value (see
+astrojax/constants.py), which differs from EGM2008's by 9e-6 relative --
+1e-8 of total gravity, far below the model error of truncating at degree 6.
 
 The point-mass term is written out rather than taken from astrojax's
 accel_point_mass: that function casts its inputs to astrojax's own
@@ -30,7 +30,11 @@ J6_EARTH = 0.5406665762838132e-06
 
 
 def accel_zonal_gravity(r_eci: jnp.ndarray, n_max: int) -> jnp.ndarray:
-    """Total gravitational acceleration (point mass + zonals through n_max)."""
+    """Total gravitational acceleration (point mass + zonals through n_max).
+
+    `r_eci` is a single (3,) position measured from the Earth's center, at
+    orbital radii -- NOT batched; vmap for batches. Near-zero radius is
+    outside the contract and produces inf/NaN by design."""
     r_eci = jnp.asarray(r_eci)
     i, j, k = r_eci[0], r_eci[1], r_eci[2]
     r = jnp.linalg.norm(r_eci)
