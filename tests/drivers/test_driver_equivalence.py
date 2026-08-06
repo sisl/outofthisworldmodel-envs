@@ -53,17 +53,6 @@ ENV_NAMES = ("iss", "iss-hcw")
 DETERMINISTIC = PolicyConfig(type="dock")
 
 
-def start_shell(cfg):
-    """The start-radius range this config's env actually disperses over.
-
-    `iss` draws it from `physics`; `iss-hcw` draws it from its `orbit`
-    dispersions and ignores the physics field entirely, so a test that needs
-    the shell has to ask the config rather than assume the section.
-    """
-    orbit = getattr(cfg, "orbit", None)
-    return cfg.physics.start_radius_range_m if orbit is None else orbit.start_radius_range_m
-
-
 def free_flight_config(env_spec, **overrides):
     """No collision geometry and no dock gate: episodes end at a step limit only."""
     return env_spec.config_cls(
@@ -81,7 +70,7 @@ def collision_config(env_spec):
     number: the two envs do not start from the same shell, and a box that
     covered one would leave starts outside the other.
     """
-    size = 3.0 * start_shell(free_flight_config(env_spec))[1]
+    size = 3.0 * free_flight_config(env_spec).start_shell()[1]
     return env_spec.config_cls(
         physics=PhysicsConfig(
             collision_boxes_path=[{"center": [0.0, 0.0, 0.0], "size": [size, size, size]}]
@@ -276,7 +265,7 @@ def _assert_every_episode_starts_from_a_reset(batch, cfg, layout):
     instead of from a real reset -- that state would essentially never sit
     inside the shell by chance.
     """
-    low, high = start_shell(cfg)
+    low, high = cfg.start_shell()
     for i in range(batch.num_episodes):
         radius = np.linalg.norm(batch.observations[i, 0, layout.pos])
         assert low * (1 - 1e-4) <= radius <= high * (1 + 1e-4)

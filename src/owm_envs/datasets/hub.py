@@ -15,6 +15,14 @@ policy and the code provenance, `env_config.yaml` for the measurement model,
 was invoked, so the card cannot describe a dataset other than the one being
 uploaded.
 
+Which ENVIRONMENT produced it is part of that: `dataset_card.json` records
+the name, and it selects the registry entry whose config class parses the
+as-run config, whose `StateLayout` generates the state and truth-channel
+documentation, and whose `card_summary` names the equations of motion. So
+the two things a card would otherwise get wrong for a non-iss run -- the
+width and meaning of every state element, and what the chaser was flying
+under -- come from the same place the data did.
+
 The whole run directory goes up as a single repo -- every split, plus the
 as-run configs and normalization statistics -- so a dataset is one thing to
 browse, and one split loads back with
@@ -26,8 +34,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..envs import ENV_REGISTRY
+from ..envs import ENV_REGISTRY, EnvSpec
 from ..envs.common.config import BaseTaskConfig
+from ..envs.common.layout import StateLayout
 from ..envs.common.policies import PolicyConfig
 from ..envs.common.sensing import PRESETS
 from .stats import SUMMARY_FILENAME, GenerationConfig
@@ -98,12 +107,26 @@ _COLUMN_DOC = {
     "task_index": "LeRobot bookkeeping: index of the task string",
 }
 
-_STATE_VECTOR_DOC = (
-    "the TRUE dynamics state at that frame, before the sensor model touched it. "
-    "`observation_vector[:13] - state_vector` is exactly the realized noise draw, so "
-    "the measurement model can be measured back off the data rather than trusted "
-    "from the config"
-)
+# One phrase per segment a StateLayout can declare, with its width filled in
+# from the layout's own slice. Which of these appear, and in what order, is
+# the layout's business -- a layout carrying a segment with no entry here
+# fails loudly at card time rather than quietly publishing a state
+# description that omits it.
+_SEGMENT_DOC = {
+    "epoch": "epoch as [Julian day, seconds of day] ({width})",
+    "pos": "position ({width}, m)",
+    "vel": "velocity ({width}, m/s)",
+    "quat": "attitude quaternion ({width}, w-first, body to world)",
+    "omega": "body rate ({width}, rad/s)",
+}
+
+# Storage order is read off the slices, so this only has to name the fields
+# StateLayout can declare, not the order any env puts them in.
+_SEGMENT_FIELDS = ("epoch", "chief", "pos", "vel", "quat", "omega")
+
+# The four that make up the canonical relative view, which is what the task
+# layer reads and what the sensor model draws over.
+_VIEW_FIELDS = ("pos", "vel", "quat", "omega")
 
 _ASSETS_SECTION = """## Assets and attribution
 
@@ -128,10 +151,80 @@ collected. Sketchfab and CGTrader items carry per-item terms, some requiring
 attribution, and NASA imagery has its own usage guidelines. Resolve the terms of every
 asset above before redistributing this data or a model trained on it."""
 
-_STATE_DOC = (
-    "position (3, m), velocity (3, m/s), attitude quaternion (4, w-first, body to "
-    "world) and body rate (3, rad/s), all station-relative"
-)
+
+def _segments(layout: StateLayout) -> list[tuple[str, slice]]:
+    """The layout's declared segments, in the order the state stores them."""
+    declared = [
+        (field, getattr(layout, field))
+        for field in _SEGMENT_FIELDS
+        if getattr(layout, field) is not None
+    ]
+    return sorted(declared, key=lambda item: item[1].start)
+
+
+def _state_doc(layout: StateLayout) -> str:
+    """What the state vector holds, element by element, for THIS env.
+
+    Generated from the layout rather than written per env: the widths and the
+    order are the ones the backend actually integrates, so a card cannot
+    describe a state its dataset does not have. `iss` reproduces the sentence
+    this was before it was generated.
+    """
+    phrases = [
+        _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+        for field, sl in _segments(layout)
+    ]
+    body = ", ".join(phrases[:-1]) + " and " + phrases[-1]
+    # "all station-relative" is only true when the state is the relative view
+    # and nothing else. An epoch prefix is an absolute time, so a layout
+    # carrying one has to say which elements the qualifier covers -- named
+    # rather than positional ("the last four"), since nothing constrains a
+    # layout to put its extra segments before the view.
+    if len(phrases) == len(_VIEW_FIELDS):
+        return body + ", all station-relative"
+    return body + " -- position, velocity, attitude and body rate station-relative"
+
+
+def _state_vector_doc(layout: StateLayout) -> str:
+    """The truth column's meaning, and the obs-minus-truth identity that makes
+    it worth writing, at THIS env's offsets.
+
+    The identity holds over the relative view alone, which is the whole state
+    for `iss` but sits behind an epoch prefix for `iss-hcw` -- quoting the iss
+    offsets for both would give an expression whose operands do not even line
+    up.
+    """
+    start, stop = layout.pos.start, layout.omega.stop
+    if start == 0 and stop == layout.state_dim:
+        identity = f"`observation_vector[:{stop}] - state_vector`"
+        untouched = ""
+    else:
+        identity = (
+            f"`observation_vector[{start}:{stop}] - state_vector[{start}:{stop}]`"
+        )
+        outside = [
+            _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+            for field, sl in _segments(layout)
+            if sl.stop <= start or sl.start >= stop
+        ]
+        untouched = (
+            f". The sensor model only ever draws over that range, so the rest of "
+            f"the row -- {', '.join(outside)} -- is identical in the two channels"
+        )
+    return (
+        "the TRUE dynamics state at that frame, before the sensor model touched it. "
+        f"{identity} is exactly the realized noise draw, so the measurement model "
+        f"can be measured back off the data rather than trusted from the config"
+        f"{untouched}"
+    )
+
+
+def _start_doc(env_cfg: BaseTaskConfig) -> str:
+    """Where episodes begin, read from wherever this env disperses them."""
+    low, high = env_cfg.start_shell()
+    if low == high:
+        return f"starts at {low:g} m"
+    return f"starts between {low:g} m and {high:g} m"
 
 
 def _noise_tag(cfg: BaseTaskConfig) -> str:
@@ -152,15 +245,16 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def _run_env(run_dir: Path) -> tuple[str, BaseTaskConfig]:
+def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig]:
     """The environment a run was generated with, and its as-run config.
 
     The name comes from the run's own `dataset_card.json`, which records it,
-    and it decides two things nothing else can supply: which config class the
-    as-run `env_config.yaml` is parsed through, and which env the repo is
-    named after. Both were hardcoded to iss, so an iss-hcw run could not be
-    published at all -- configs forbid extra keys, so parsing one as an
-    ISSConfig fails on the reference orbit it carries.
+    and it decides everything the publish path cannot otherwise know: which
+    config class the as-run `env_config.yaml` is parsed through, which env the
+    repo is named after, and -- through the spec's layout and card summary --
+    what the card says the data IS. All of it was hardcoded to iss, so an
+    iss-hcw run could not be published at all: configs forbid extra keys, so
+    parsing one as an ISSConfig fails on the reference orbit it carries.
 
     A run directory from before the card recorded an env, or one naming an
     env this build no longer registers, falls back to iss: every such run is
@@ -170,7 +264,8 @@ def _run_env(run_dir: Path) -> tuple[str, BaseTaskConfig]:
     env = _read_json(card_path).get("env", "iss") if card_path.exists() else "iss"
     if env not in ENV_REGISTRY:
         env = "iss"
-    return env, ENV_REGISTRY[env].config_cls.from_yaml(run_dir / "env_config.yaml")
+    spec = ENV_REGISTRY[env]
+    return spec, spec.config_cls.from_yaml(run_dir / "env_config.yaml")
 
 
 def _split_features(run_dir: Path, split: str) -> dict:
@@ -190,8 +285,8 @@ def _shape(feature: dict) -> str:
     return f"({dims[0]},)" if len(dims) == 1 else "(" + ", ".join(map(str, dims)) + ")"
 
 
-def _observation_doc(env_cfg: BaseTaskConfig) -> str:
-    doc = f"the MEASURED state the policy acted on: {_STATE_DOC}"
+def _observation_doc(env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
+    doc = f"the MEASURED state the policy acted on: {_state_doc(layout)}"
     if env_cfg.observation.goal_error:
         doc += (
             ", followed by the goal-error block -- position error (3), velocity error "
@@ -201,13 +296,13 @@ def _observation_doc(env_cfg: BaseTaskConfig) -> str:
     return doc
 
 
-def _schema_table(features: dict, env_cfg: BaseTaskConfig) -> str:
+def _schema_table(features: dict, env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
     rows = []
     for name, feature in features.items():
         if name == "observation_vector":
-            doc = _observation_doc(env_cfg)
+            doc = _observation_doc(env_cfg, layout)
         elif name == "state_vector":
-            doc = _STATE_VECTOR_DOC
+            doc = _state_vector_doc(layout)
         else:
             doc = _COLUMN_DOC.get(name, "")
         rows.append(f"| `{name}` | {feature['dtype']} | {_shape(feature)} | {doc} |")
@@ -278,7 +373,9 @@ def _provenance_line(provenance: dict) -> str:
     return f"Generated with owm-envs {version} at commit `{commit}`{dirty}."
 
 
-def _dataset_card(name: str, run_dir: Path, env_cfg: BaseTaskConfig) -> str:
+def _dataset_card(
+    name: str, run_dir: Path, env_spec: EnvSpec, env_cfg: BaseTaskConfig
+) -> str:
     """The README.md published with the run: frontmatter plus the run's own facts."""
     summary = _read_json(run_dir / SUMMARY_FILENAME)
     card = _read_json(run_dir / "dataset_card.json")
@@ -311,8 +408,8 @@ configs:
 # {name}
 
 Docking approaches to the International Space Station: a 12-tonne Dragon-class chaser
-manoeuvring from starts between 100 m and 500 m out to a station docking port, under rigid-body
-free-flyer dynamics and against the station's 313-box collision hull. Generated with
+manoeuvring from {_start_doc(env_cfg)} out to a station docking port,
+under {env_spec.card_summary} and against the station's 313-box collision hull. Generated with
 [owm-envs](https://github.com/sisl/outofthisworldmodel-envs) for world-model training,
 at {card["fps"]} Hz (dt = {card["dt"]} s).
 
@@ -346,7 +443,7 @@ Every frame of every episode carries:
 
 | column | dtype | shape | meaning |
 |---|---|---|---|
-{_schema_table(info["features"], env_cfg)}
+{_schema_table(info["features"], env_cfg, env_spec.layout)}
 
 ## Sensor noise
 
@@ -403,8 +500,8 @@ def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dic
     """
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
-    env, env_cfg = _run_env(run_dir)
-    return name or dataset_name(env_cfg, env=env), counts
+    env_spec, env_cfg = _run_env(run_dir)
+    return name or dataset_name(env_cfg, env=env_spec.name), counts
 
 
 def hub_namespace(namespace: str | None = None) -> str:
@@ -437,12 +534,14 @@ def push_run(
     run_dir = Path(run_dir)
     repo_name, _ = push_preview(run_dir, name=name)
     repo_id = f"{hub_namespace(namespace)}/{repo_name}"
-    _, env_cfg = _run_env(run_dir)
+    env_spec, env_cfg = _run_env(run_dir)
 
     import huggingface_hub
 
     api = huggingface_hub.HfApi()
-    (run_dir / "README.md").write_text(_dataset_card(repo_name, run_dir, env_cfg))
+    (run_dir / "README.md").write_text(
+        _dataset_card(repo_name, run_dir, env_spec, env_cfg)
+    )
     api.create_repo(repo_id, repo_type="dataset", private=bool(private), exist_ok=True)
     if private is not None:
         # create_repo ignores `private` for a repo that already exists, so

@@ -39,6 +39,12 @@ class EnvSpec:
     make_dynamics: Callable[[BaseTaskConfig], Any]
     make_vector_env: Callable[[int, BaseTaskConfig], Any]
     view: Callable[[jnp.ndarray], jnp.ndarray]
+    # How this env's equations of motion are described in a published
+    # dataset's card, as the object of "under ...". Every env in the suite
+    # flies the same task against the same station, so this phrase and the
+    # state layout are the whole of what a card has to say differently about
+    # one env versus another.
+    card_summary: str = "rigid-body free-flyer dynamics"
 
 
 def _build_env_registry() -> dict[str, EnvSpec]:
@@ -68,6 +74,13 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=HCWDynamics,
             make_vector_env=lambda num_envs, cfg: HCWVectorEnv(num_envs=num_envs, cfg=cfg),
             view=HCW_LAYOUT.slice_view,
+            # No internal comma: the card reads "under {card_summary} and
+            # against the station's collision hull", which a comma clause
+            # turns into a garden path.
+            card_summary=(
+                "Clohessy-Wiltshire relative dynamics about a Keplerian chief "
+                "with gravity-gradient attitude torque"
+            ),
         ),
     }
 

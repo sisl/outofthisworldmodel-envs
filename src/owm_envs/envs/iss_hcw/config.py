@@ -27,6 +27,16 @@ class HCWConfig(BaseTaskConfig):
 
     orbit: OrbitConfig = Field(default_factory=OrbitConfig)
 
+    def start_shell(self) -> tuple[float, float]:
+        """The orbit dispersions, not the physics field.
+
+        `HCWDynamics.reset` draws its standoff distance from
+        `orbit.start_radius_range_m` alongside the epoch offset and the rest
+        of the per-episode dispersions; `physics.start_radius_range_m` is
+        never read on this env.
+        """
+        return self.orbit.start_radius_range_m
+
 
 HCW_LAYOUT = StateLayout(
     state_dim=15,

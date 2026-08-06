@@ -28,7 +28,7 @@ from pydantic import Field, field_validator, model_validator
 from ..core.models import ConfigModel
 from ..drivers.types import TrajectoryBatch
 from ..envs.common.policies import PolicyConfig
-from ..envs.iss.config import ISSConfig
+from ..envs.common.config import BaseTaskConfig
 from .video import VIEW_NAMES, parse_view_names
 
 _STD_FLOOR = 1e-6
@@ -97,7 +97,7 @@ class SplitSpec(ConfigModel):
     # contributes L - 1). See `_validate_mode`.
     num_episodes: int | None = Field(default=None, ge=1)
     min_transitions: int | None = Field(default=None, ge=1)
-    # Matches ISSConfig.max_steps: the drivers roll to whichever of the two
+    # Matches BaseTaskConfig.max_steps: the drivers roll to whichever of the two
     # is smaller, so a lower default here would silently truncate episodes
     # below the horizon the environment was sized for.
     max_steps: int = Field(default=7200, ge=1)
@@ -243,7 +243,7 @@ class RunMetadata:
     stats: dict
     card: dict
     counts: dict
-    cfg: ISSConfig
+    cfg: BaseTaskConfig
     policy_cfg: PolicyConfig
     gen_cfg: GenerationConfig
 
@@ -301,7 +301,7 @@ class RunMetadata:
 
 def build_run_metadata(
     *,
-    cfg: ISSConfig,
+    cfg: BaseTaskConfig,
     policy_cfg: PolicyConfig,
     gen_cfg: GenerationConfig,
     batches: dict[str, TrajectoryBatch],
