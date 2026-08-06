@@ -45,7 +45,7 @@ class RenderConfig(ConfigModel):
     # Filename under resources/international-space-station. A variant with
     # different visiting vehicles must place the station identically; check a
     # new asset with scripts/check_iss_asset.py before pointing this at it.
-    iss_asset: str = "ISS_stationary.glb"
+    iss_asset: str = "ISS_base.glb"
     iss_recentre_offset: tuple[float, float, float] = ISS_RECENTRE_OFFSET
 
     earth_radius_m: float = 6_378_137.0

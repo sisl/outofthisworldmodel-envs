@@ -56,7 +56,7 @@ below reflects what is actually documented rather than an assertion of terms.
 
 | Asset | Source | Licence |
 |---|---|---|
-| `ISS_stationary.glb` | NASA 3D Resources / science.nasa.gov | not recorded |
+| `ISS_base.glb` | NASA 3D Resources / science.nasa.gov | not recorded |
 | `spacex_dragon_2_exterior.glb` | Sketchfab — "SpaceX Dragon 2 Exterior" | not recorded |
 | `nasa_starmap_2020/` | NASA SVS #4851, cubemapped via jaxry/panorama-to-cubemap | not recorded |
 | `moon/moon_small.glb` | Texture from NASA SVS #14959 (CGI Moon Kit), https://svs.gsfc.nasa.gov/14959/. **Mesh geometry source not recorded.** | not recorded |

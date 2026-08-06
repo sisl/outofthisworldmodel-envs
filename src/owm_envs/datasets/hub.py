@@ -108,7 +108,7 @@ _ASSETS_SECTION = """## Assets and attribution
 
 This dataset is a derived work of third-party 3D assets. The station geometry every
 episode flies against -- the collision hull and the docking-port poses -- is derived
-from `ISS_stationary.glb`, and a rendered video additionally shows the chaser, the
+from `ISS_base.glb`, and a rendered video additionally shows the chaser, the
 Moon, the starfield and the Earth:
 
 | Asset | Source |
