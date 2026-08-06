@@ -18,16 +18,18 @@ import pytest
 
 from owm_envs.datasets.hub import (
     _dataset_card,
+    _run_env,
     dataset_name,
     hub_namespace,
     push_preview,
     push_run,
 )
 from owm_envs.datasets.stats import GenerationConfig
-from owm_envs.envs.common.config import ObservationConfig
+from owm_envs.envs.common.config import BaseTaskConfig, ObservationConfig
 from owm_envs.envs.common.policies import PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_hcw.config import HCWConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -75,8 +77,9 @@ COUNTS = {
 
 def _write_run(
     tmp_path: Path,
-    env_cfg: ISSConfig | None = None,
+    env_cfg: BaseTaskConfig | None = None,
     *,
+    env: str = "iss",
     features: dict | None = None,
     video: bool = False,
     finished: bool = True,
@@ -92,7 +95,7 @@ def _write_run(
     PolicyConfig().to_yaml(run / "policy_config.yaml")
     (run / "normalization_stats.json").write_text("{}")
     (run / "dataset_card.json").write_text(json.dumps({
-        "env": "iss",
+        "env": env,
         "fps": round(1.0 / env_cfg.dt),
         "dt": env_cfg.dt,
         "splits": {
@@ -125,8 +128,8 @@ def _write_run(
 
 
 def _card(run: Path) -> str:
-    env_cfg = ISSConfig.from_yaml(run / "env_config.yaml")
-    return _dataset_card(dataset_name(env_cfg), run, env_cfg)
+    env, env_cfg = _run_env(run)
+    return _dataset_card(dataset_name(env_cfg, env=env), run, env_cfg)
 
 
 def test_names_cover_the_matrix():
@@ -162,6 +165,41 @@ def test_the_six_variants_get_six_distinct_names():
     # Two variants collapsing onto one name would publish one over the other.
     names = {dataset_name(ISSConfig.from_toml(CONFIGS / f"{c}.toml")) for c in VARIANT_NAMES}
     assert len(names) == len(VARIANT_NAMES)
+
+
+def test_a_run_is_named_and_parsed_through_the_env_that_generated_it(tmp_path):
+    # Every step of the publish path used to be hardcoded to iss, which an
+    # iss-hcw run cannot survive: configs forbid extra keys, so parsing its
+    # as-run config as an ISSConfig fails outright on the reference orbit it
+    # carries -- and had it parsed, the repo would have been named after the
+    # wrong environment.
+    run = _write_run(
+        tmp_path, HCWConfig(sensor_noise=PRESETS["cooperative"]), env="iss-hcw"
+    )
+
+    env, env_cfg = _run_env(run)
+    assert env == "iss-hcw"
+    assert isinstance(env_cfg, HCWConfig)
+    assert push_preview(run)[0] == "owm-iss-hcw-coop-nogoal-dt50ms"
+    # The card's own load example names the split the writer actually wrote.
+    assert 'LeRobotDataset("iss-hcw/train"' in _card(run)
+
+
+@pytest.mark.parametrize("recorded_env", [None, "iss-numerical"])
+def test_a_run_the_registry_cannot_place_publishes_as_iss(tmp_path, recorded_env):
+    # A run directory written before the card recorded an env, or one naming
+    # an env this build does not register: as far as anything here can tell
+    # both are iss runs, and reading them that way beats refusing to publish
+    # them at all.
+    run = _write_run(tmp_path)
+    card = json.loads((run / "dataset_card.json").read_text())
+    if recorded_env is None:
+        del card["env"]
+    else:
+        card["env"] = recorded_env
+    (run / "dataset_card.json").write_text(json.dumps(card))
+
+    assert push_preview(run)[0] == "owm-iss-noncoop-goal-dt50ms"
 
 
 def test_the_card_gives_the_viewer_one_config_per_split(tmp_path):

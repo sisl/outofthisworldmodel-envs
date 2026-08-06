@@ -26,9 +26,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..envs import ENV_REGISTRY
+from ..envs.common.config import BaseTaskConfig
 from ..envs.common.policies import PolicyConfig
 from ..envs.common.sensing import PRESETS
-from ..envs.iss.config import ISSConfig
 from .stats import SUMMARY_FILENAME, GenerationConfig
 
 _NOISE_TAGS = {"off": "nonoise", "cooperative": "coop", "noncooperative": "noncoop"}
@@ -133,14 +134,14 @@ _STATE_DOC = (
 )
 
 
-def _noise_tag(cfg: ISSConfig) -> str:
+def _noise_tag(cfg: BaseTaskConfig) -> str:
     for preset_name, preset in PRESETS.items():
         if cfg.sensor_noise == preset:
             return _NOISE_TAGS[preset_name]
     return "custom"
 
 
-def dataset_name(env_cfg: ISSConfig, env: str = "iss") -> str:
+def dataset_name(env_cfg: BaseTaskConfig, env: str = "iss") -> str:
     """The published repo name for a run made under `env_cfg`."""
     goal = "goal" if env_cfg.observation.goal_error else "nogoal"
     dt_ms = round(env_cfg.dt * 1000)
@@ -149,6 +150,27 @@ def dataset_name(env_cfg: ISSConfig, env: str = "iss") -> str:
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def _run_env(run_dir: Path) -> tuple[str, BaseTaskConfig]:
+    """The environment a run was generated with, and its as-run config.
+
+    The name comes from the run's own `dataset_card.json`, which records it,
+    and it decides two things nothing else can supply: which config class the
+    as-run `env_config.yaml` is parsed through, and which env the repo is
+    named after. Both were hardcoded to iss, so an iss-hcw run could not be
+    published at all -- configs forbid extra keys, so parsing one as an
+    ISSConfig fails on the reference orbit it carries.
+
+    A run directory from before the card recorded an env, or one naming an
+    env this build no longer registers, falls back to iss: every such run is
+    an iss run, and reading it that way is better than refusing to publish it.
+    """
+    card_path = run_dir / "dataset_card.json"
+    env = _read_json(card_path).get("env", "iss") if card_path.exists() else "iss"
+    if env not in ENV_REGISTRY:
+        env = "iss"
+    return env, ENV_REGISTRY[env].config_cls.from_yaml(run_dir / "env_config.yaml")
 
 
 def _split_features(run_dir: Path, split: str) -> dict:
@@ -168,7 +190,7 @@ def _shape(feature: dict) -> str:
     return f"({dims[0]},)" if len(dims) == 1 else "(" + ", ".join(map(str, dims)) + ")"
 
 
-def _observation_doc(env_cfg: ISSConfig) -> str:
+def _observation_doc(env_cfg: BaseTaskConfig) -> str:
     doc = f"the MEASURED state the policy acted on: {_STATE_DOC}"
     if env_cfg.observation.goal_error:
         doc += (
@@ -179,7 +201,7 @@ def _observation_doc(env_cfg: ISSConfig) -> str:
     return doc
 
 
-def _schema_table(features: dict, env_cfg: ISSConfig) -> str:
+def _schema_table(features: dict, env_cfg: BaseTaskConfig) -> str:
     rows = []
     for name, feature in features.items():
         if name == "observation_vector":
@@ -256,7 +278,7 @@ def _provenance_line(provenance: dict) -> str:
     return f"Generated with owm-envs {version} at commit `{commit}`{dirty}."
 
 
-def _dataset_card(name: str, run_dir: Path, env_cfg: ISSConfig) -> str:
+def _dataset_card(name: str, run_dir: Path, env_cfg: BaseTaskConfig) -> str:
     """The README.md published with the run: frontmatter plus the run's own facts."""
     summary = _read_json(run_dir / SUMMARY_FILENAME)
     card = _read_json(run_dir / "dataset_card.json")
@@ -381,8 +403,8 @@ def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dic
     """
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
-    env_cfg = ISSConfig.from_yaml(run_dir / "env_config.yaml")
-    return name or dataset_name(env_cfg), counts
+    env, env_cfg = _run_env(run_dir)
+    return name or dataset_name(env_cfg, env=env), counts
 
 
 def hub_namespace(namespace: str | None = None) -> str:
@@ -415,7 +437,7 @@ def push_run(
     run_dir = Path(run_dir)
     repo_name, _ = push_preview(run_dir, name=name)
     repo_id = f"{hub_namespace(namespace)}/{repo_name}"
-    env_cfg = ISSConfig.from_yaml(run_dir / "env_config.yaml")
+    _, env_cfg = _run_env(run_dir)
 
     import huggingface_hub
 
