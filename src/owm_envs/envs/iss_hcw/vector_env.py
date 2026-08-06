@@ -22,13 +22,14 @@ import numpy as np
 from gymnasium.vector import AutoresetMode, VectorEnv
 from gymnasium.vector.utils import batch_space
 
+from ..common.adapter import action_space, render_fps
 from ..common.config import dock_target
 from ..common.goal import dock_goal_error
 from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
 from .config import HCW_LAYOUT, HCWConfig
 from .dynamics import HCWDynamics
-from .env import _action_space, _observation_space, _render_fps
+from .env import _observation_space
 
 
 class HCWVectorEnv(VectorEnv):
@@ -43,12 +44,12 @@ class HCWVectorEnv(VectorEnv):
     def __init__(self, num_envs: int = 1, cfg: HCWConfig | None = None):
         self.cfg = cfg or HCWConfig()
         # Per-instance because it depends on cfg.dt, which the class does not know.
-        self.metadata = {**self.metadata, "render_fps": _render_fps(self.cfg)}
+        self.metadata = {**self.metadata, "render_fps": render_fps(self.cfg)}
         self.num_envs = int(num_envs)
         self.dynamics = HCWDynamics(self.cfg)
 
         self.single_observation_space = _observation_space(self.cfg)
-        self.single_action_space = _action_space(self.cfg)
+        self.single_action_space = action_space(self.cfg)
         self.observation_space = batch_space(self.single_observation_space, self.num_envs)
         self.action_space = batch_space(self.single_action_space, self.num_envs)
 

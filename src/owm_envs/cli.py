@@ -277,9 +277,9 @@ def generate(
     if render_workers < 1:
         raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
 
-    # Both checked before the GPU is touched: a usage error must cost a usage
-    # error, not an adapter probe -- which pins a device for the process --
-    # followed by one.
+    # Checked before the GPU is touched, as is everything from here down to
+    # the `if render:` block: a usage error must cost a usage error, not an
+    # adapter probe -- which pins a device for the process -- followed by one.
     if render_views is not None:
         _parse_render_views(render_views)
     if gen_config is not None and any(
@@ -338,54 +338,29 @@ def generate(
     env_spec = ENV_REGISTRY[env_name]
 
     # Resolved from the recipe rather than the flag, so it also catches a
-    # --gen-config naming a non-iss env, and checked here rather than at the
-    # flag checks above because that is the first point either source has
+    # --gen-config naming a non-renderable env, and checked here rather than at
+    # the flag checks above because that is the first point either source has
     # been read. Still before the GPU is touched and before any rollout.
-    if render and env_name != "iss":
+    if render and not env_spec.renderable:
+        renderable = ", ".join(name for name, spec in ENV_REGISTRY.items() if spec.renderable)
         raise typer.BadParameter(
-            f"--render does not support the '{env_name}' environment yet, only iss. "
-            "The video path poses the renderer straight off the recorded true_state "
-            "rows, whose element order it takes to be the iss layout's, so an "
-            f"{env_name} row would be read as position and velocity where it holds "
-            "something else entirely -- silently wrong video rather than an error. "
-            "Rendering for the rest of the suite arrives with the RenderInputs seam; "
+            f"--render does not support the '{env_name}' environment yet, only "
+            f"{renderable}. The video path poses the renderer straight off the "
+            "recorded true_state rows, whose element order it takes to be the iss "
+            f"layout's, so an {env_name} row would be read as position and velocity "
+            "where it holds something else entirely -- silently wrong video rather "
+            "than an error. Rendering for the rest of the suite arrives with the "
+            "RenderInputs seam, which is what flips this env's EnvSpec.renderable; "
             "until then, drop --render to generate the vector dataset."
         )
 
-    if render:
-        from .render.device import check_gpu_index, select_gpu
-
-        try:
-            if render_workers == 1:
-                # pygfx pins one shared wgpu device per process the first time
-                # a scene is built, so the adapter has to be chosen up front.
-                # Only for the single-worker path, which renders in THIS
-                # process.
-                select_gpu(gpu_index)
-            else:
-                # With a pool every renderer lives in a worker, and this
-                # process must not take a device the workers need -- so the
-                # index is only bounds-checked here. That check still belongs
-                # before the rollout: the workers do not start until an hour
-                # of rollout is already spent.
-                check_gpu_index(gpu_index)
-        except ValueError as exc:
-            raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
-
-    if lerobot:
-        # lerobot is declared only in the optional 'datasets' extra, so a
-        # base install hits ModuleNotFoundError deep inside write_lerobot_split.
-        # Check up front, before spending time on a rollout, and say what a
-        # user who asked for a dataset needs to do to actually get one,
-        # rather than quietly writing metadata only.
-        try:
-            import lerobot  # noqa: F401
-        except ModuleNotFoundError as exc:
-            raise typer.BadParameter(
-                "lerobot is not installed; install the 'datasets' extra "
-                "(pip install 'owm-envs[datasets]') or pass --no-lerobot"
-            ) from exc
-
+    # Everything from here to the `if render:` block reads the caller's own
+    # arguments, or checks a dependency the install either has or does not, and
+    # all of it comes before the GPU probe: neither a usage error nor a missing
+    # extra may cost an adapter probe -- which pins a device for the whole
+    # process -- on the way to being reported. Usage errors come first within
+    # that, so a run that was never valid says so rather than blaming an
+    # uninstalled extra.
     try:
         cfg = env_spec.config_cls.load(env_config) if env_config is not None else env_spec.config_cls()
     except (OSError, ValueError, yaml.YAMLError) as exc:
@@ -408,6 +383,40 @@ def generate(
         policy_cfg = _policy_config(policy, observe, dock_ports)
     except Exception as exc:  # pydantic rejects unknown policies and ports
         raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
+
+    if lerobot:
+        # lerobot is declared only in the optional 'datasets' extra, so a
+        # base install hits ModuleNotFoundError deep inside write_lerobot_split.
+        # Check up front, before spending time on a rollout, and say what a
+        # user who asked for a dataset needs to do to actually get one,
+        # rather than quietly writing metadata only.
+        try:
+            import lerobot  # noqa: F401
+        except ModuleNotFoundError as exc:
+            raise typer.BadParameter(
+                "lerobot is not installed; install the 'datasets' extra "
+                "(pip install 'owm-envs[datasets]') or pass --no-lerobot"
+            ) from exc
+
+    if render:
+        from .render.device import check_gpu_index, select_gpu
+
+        try:
+            if render_workers == 1:
+                # pygfx pins one shared wgpu device per process the first time
+                # a scene is built, so the adapter has to be chosen up front.
+                # Only for the single-worker path, which renders in THIS
+                # process.
+                select_gpu(gpu_index)
+            else:
+                # With a pool every renderer lives in a worker, and this
+                # process must not take a device the workers need -- so the
+                # index is only bounds-checked here. That check still belongs
+                # before the rollout: the workers do not start until an hour
+                # of rollout is already spent.
+                check_gpu_index(gpu_index)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
 
     # Drivers bake their policy in at construction, so a split with its own
     # policy needs its own driver instance.

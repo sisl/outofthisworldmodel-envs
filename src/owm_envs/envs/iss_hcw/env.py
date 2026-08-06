@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium import spaces
 
+from ..common.adapter import action_space, render_fps
 from ..common.config import dock_target
 from ..common.goal import GOAL_ERROR_DIM, dock_goal_error
 from ..common.reward import docking_reward
@@ -43,25 +44,6 @@ def _observation_space(cfg: HCWConfig) -> spaces.Box:
     return spaces.Box(low=low, high=high, dtype=np.float32)
 
 
-def _render_fps(cfg: HCWConfig) -> int:
-    """Playback rate for one frame per simulation step, as a positive integer.
-
-    That rate is 1/dt, but Gymnasium's render_fps has to be a usable frame
-    rate: consumers divide by it or hand it to a video encoder. Any dt of 2 s
-    or more rounds to zero -- exactly 2.0 included, since Python rounds a tie
-    to even -- so the result is floored at 1.
-    """
-    return max(1, round(1.0 / cfg.dt))
-
-
-def _action_space(cfg: HCWConfig) -> spaces.Box:
-    high = np.array(
-        [cfg.control.limit_force_n] * 3 + [cfg.control.limit_torque_nm] * 3,
-        dtype=np.float32,
-    )
-    return spaces.Box(low=-high, high=high, dtype=np.float32)
-
-
 class HCWEnv(gym.Env):
     # render_fps is overridden per instance in __init__; the class-level value
     # is the rate implied by HCWConfig's own default dt.
@@ -76,10 +58,10 @@ class HCWEnv(gym.Env):
 
         self.cfg = cfg or HCWConfig()
         # Per-instance because it depends on cfg.dt, which the class does not know.
-        self.metadata = {**self.metadata, "render_fps": _render_fps(self.cfg)}
+        self.metadata = {**self.metadata, "render_fps": render_fps(self.cfg)}
         self.dynamics = HCWDynamics(self.cfg)
         self.observation_space = _observation_space(self.cfg)
-        self.action_space = _action_space(self.cfg)
+        self.action_space = action_space(self.cfg)
         self.render_mode = render_mode
 
         self._state: jnp.ndarray | None = None

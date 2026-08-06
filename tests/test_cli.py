@@ -458,6 +458,28 @@ def test_render_is_refused_for_a_non_iss_environment(tmp_path, monkeypatch, sour
     assert not out.exists(), "the check must precede the rollout"
 
 
+def test_a_usage_error_below_the_render_guard_still_precedes_the_gpu_probe(
+    tmp_path, monkeypatch
+):
+    """Every argument the run reads -- the env config, the noise preset, the
+    goal-error override, the policy -- is checked before an adapter is probed.
+    An unknown --noise is one of those: the run cannot start, and the probe
+    would pin a device for the process on the way to saying so."""
+    probed = []
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: probed.append(index))
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: probed.append(index))
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss", "--steps", "4",
+        "--split", "train:1:0", "--noise", "nope", "--render",
+    ])
+    assert result.exit_code != 0
+    assert "unknown --noise preset 'nope'" in result.output
+    assert probed == [], "probed the GPU for an invocation that was a usage error"
+    assert not out.exists(), "the check must precede the rollout"
+
+
 def test_render_stays_available_for_iss(tmp_path, monkeypatch):
     """The guard must discriminate: one that refused every --render would
     satisfy the test above without being right."""
@@ -1023,10 +1045,18 @@ def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
 
 
 def _pushable_run(tmp_path):
-    """The two artifacts `owm-envs push` reads before it uploads anything."""
+    """The three artifacts `owm-envs push` reads before it uploads anything.
+
+    The card is one of them: it names the environment the run was generated
+    with, which is what decides the config class the env config is parsed
+    through and the env component of the repo name.
+    """
     run = tmp_path / "run"
     run.mkdir()
     ISSConfig(sensor_noise=PRESETS["cooperative"]).to_yaml(run / "env_config.yaml")
+    (run / "dataset_card.json").write_text(
+        json.dumps({"env": "iss", "fps": 20, "dt": 0.05})
+    )
     (run / "summary.json").write_text(json.dumps({"counts": {
         "train": {"episodes": 96, "transitions": 500_012},
         "val": {"episodes": 11, "transitions": 50_004},

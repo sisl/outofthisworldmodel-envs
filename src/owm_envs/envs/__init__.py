@@ -39,6 +39,12 @@ class EnvSpec:
     make_dynamics: Callable[[BaseTaskConfig], Any]
     make_vector_env: Callable[[int, BaseTaskConfig], Any]
     view: Callable[[jnp.ndarray], jnp.ndarray]
+    # Whether the video path can pose the renderer from this env's recorded
+    # true_state rows, which it reads as the iss layout's element order.
+    # Deliberately given no default: an env that gets this wrong renders
+    # silently wrong video rather than failing, so registering one has to be
+    # the moment somebody answers the question.
+    renderable: bool
     # How this env's equations of motion are described in a published
     # dataset's card, as the object of "under ...". Every env in the suite
     # flies the same task against the same station, so this phrase and the
@@ -65,6 +71,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=ISSDynamics,
             make_vector_env=lambda num_envs, cfg: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
             view=ISS_LAYOUT.slice_view,
+            renderable=True,
         ),
         "iss-hcw": EnvSpec(
             name="iss-hcw",
@@ -74,6 +81,9 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=HCWDynamics,
             make_vector_env=lambda num_envs, cfg: HCWVectorEnv(num_envs=num_envs, cfg=cfg),
             view=HCW_LAYOUT.slice_view,
+            # Until the RenderInputs seam lands, the video path would read
+            # this env's epoch prefix as a position.
+            renderable=False,
             # No internal comma: the card reads "under {card_summary} and
             # against the station's collision hull", which a comma clause
             # turns into a garden path.
