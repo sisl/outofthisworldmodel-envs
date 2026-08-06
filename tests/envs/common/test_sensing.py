@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from owm_envs.core.quaternion import quat_conjugate, quat_multiply
+from owm_envs.envs.common.layout import VIEW_LABELS, StateLayout
 from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig, apply_sensor_noise
 from owm_envs.envs.iss.config import ISSConfig
 
@@ -138,3 +139,39 @@ def test_sensor_noise_config_yaml_round_trips_a_vector_valued_field(tmp_path):
     path = tmp_path / "noise.yaml"
     noise.to_yaml(path)
     assert SensorNoiseConfig.from_yaml(path) == noise
+
+
+def test_noise_with_offset_layout_leaves_epoch_untouched():
+    layout = StateLayout(
+        state_dim=15,
+        pos=slice(2, 5), vel=slice(5, 8), quat=slice(8, 12), omega=slice(12, 15),
+        epoch=slice(0, 2),
+        labels=("jd", "sec") + VIEW_LABELS,
+    )
+    noise = SensorNoiseConfig(enabled=True, sigma_pos_m=1.0, sigma_vel_m_s=0.1,
+                              sigma_att_rad=0.01, sigma_rate_rad_s=0.01)
+    state = jnp.concatenate([jnp.array([2461588.0, 43200.0]),
+                             jnp.arange(13.0) / 13.0])
+    key = jax.random.PRNGKey(0)
+    measured = apply_sensor_noise(state, key, noise, layout=layout)
+    np.testing.assert_array_equal(np.asarray(measured[0:2]), np.asarray(state[0:2]))
+    assert not np.allclose(np.asarray(measured[2:]), np.asarray(state[2:]))
+
+
+def test_noise_draws_match_iss_layout_for_same_key():
+    """The offset layout consumes the identical draw sequence: the noised
+    view equals what the iss layout produces on the bare view state."""
+    noise = SensorNoiseConfig(enabled=True, sigma_pos_m=1.0, sigma_vel_m_s=0.1,
+                              sigma_att_rad=0.01, sigma_rate_rad_s=0.01)
+    view = jnp.arange(13.0) / 13.0
+    key = jax.random.PRNGKey(7)
+    direct = apply_sensor_noise(view, key, noise)  # ISS_LAYOUT default
+    layout = StateLayout(
+        state_dim=15,
+        pos=slice(2, 5), vel=slice(5, 8), quat=slice(8, 12), omega=slice(12, 15),
+        epoch=slice(0, 2),
+        labels=("jd", "sec") + VIEW_LABELS,
+    )
+    prefixed = jnp.concatenate([jnp.zeros(2), view])
+    shifted = apply_sensor_noise(prefixed, key, noise, layout=layout)
+    np.testing.assert_array_equal(np.asarray(direct), np.asarray(shifted[2:]))
