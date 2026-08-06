@@ -42,6 +42,10 @@ class StateLayout:
         if not (self.pos.stop == self.vel.start and self.vel.stop == self.quat.start
                 and self.quat.stop == self.omega.start):
             raise ValueError("pos/vel/quat/omega must be contiguous, in that order")
+        for name, sl, width in (("pos", self.pos, 3), ("vel", self.vel, 3),
+                                 ("quat", self.quat, 4), ("omega", self.omega, 3)):
+            if len(range(sl.start, sl.stop, sl.step or 1)) != width:
+                raise ValueError(f"{name} must have width {width}, got {sl}")
 
     def slice_view(self, state: jnp.ndarray) -> jnp.ndarray:
         """The canonical 13D relative view, sliced straight out of `state`.
