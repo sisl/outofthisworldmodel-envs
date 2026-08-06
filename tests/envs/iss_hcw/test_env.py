@@ -139,6 +139,32 @@ def test_goal_block_uses_the_measured_state_when_noisy():
     assert not np.allclose(obs[2:15], info["state"][2:15])
 
 
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        HCWConfig(),
+        HCWConfig(sensor_noise=PRESETS["cooperative"]),
+        HCWConfig(observation={"goal_error": True}),
+    ],
+    ids=["noiseless", "noisy", "goal_error"],
+)
+def test_the_carried_state_stays_float64(cfg):
+    # The adapter narrows to float32 on the copies `_obs` and `_true_state`
+    # hand out, never on the state it carries forward. The iss mirror does the
+    # opposite at envs/iss/env.py:156 -- `jnp.asarray(self._state,
+    # jnp.float32)` -- and copying that line across, or otherwise writing a
+    # narrowed value back, would round the epoch prefix every step and
+    # resurrect the 290 s/orbit drift dynamics.py documents. Nothing else here
+    # would notice: the driver-equivalence test compares recorded epochs with
+    # ~4.3 s of slack, which is twenty times the drift a short rollout shows.
+    env = HCWEnv(cfg)
+    env.reset(seed=0)
+    assert env._state.dtype == jnp.float64
+    for _ in range(5):
+        env.step(np.zeros(6, dtype=np.float32))
+        assert env._state.dtype == jnp.float64
+
+
 def test_render_without_a_render_mode_returns_none():
     env = HCWEnv()
     env.reset(seed=0)

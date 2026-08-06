@@ -113,7 +113,13 @@ _COLUMN_DOC = {
 # fails loudly at card time rather than quietly publishing a state
 # description that omits it.
 _SEGMENT_DOC = {
-    "epoch": "epoch as [Julian day, seconds of day] ({width})",
+    # Everything the epoch entry says beyond the width sits INSIDE the width
+    # parenthesis: these phrases are comma-joined into a list of segments, and
+    # a trailing clause on the first one reads as another list item.
+    "epoch": "epoch as [Julian day, seconds of day] ({width}; UTC, the day "
+             "number exact and the float32 seconds-of-day quantized to between "
+             "0.5 ms and 7.8 ms depending on the time of day, which still "
+             "leaves 6.4 ulps between consecutive frames at a 50 ms step)",
     "pos": "position ({width}, m)",
     "vel": "velocity ({width}, m/s)",
     "quat": "attitude quaternion ({width}, w-first, body to world)",
@@ -192,7 +198,9 @@ def _state_vector_doc(layout: StateLayout) -> str:
     The identity holds over the relative view alone, which is the whole state
     for `iss` but sits behind an epoch prefix for `iss-hcw` -- quoting the iss
     offsets for both would give an expression whose operands do not even line
-    up.
+    up. Within that view it holds over the additive channels only: attitude
+    noise is a composed rotation (`envs/common/sensing.py`), so subtracting
+    the quaternion columns recovers nothing a reader could compare to a sigma.
     """
     start, stop = layout.pos.start, layout.omega.stop
     if start == 0 and stop == layout.state_dim:
@@ -213,8 +221,14 @@ def _state_vector_doc(layout: StateLayout) -> str:
         )
     return (
         "the TRUE dynamics state at that frame, before the sensor model touched it. "
+        "Over the ADDITIVE channels -- position, velocity and body rate -- "
         f"{identity} is exactly the realized noise draw, so the measurement model "
-        f"can be measured back off the data rather than trusted from the config"
+        "can be measured back off the data rather than trusted from the config. "
+        "The four quaternion columns are not additive: attitude error is a small "
+        "rotation composed onto the true attitude and then resolved onto the same "
+        "hemisphere, so that draw is recovered as "
+        "`quat_multiply(quat_conjugate(state_quat), observation_quat)` rather than "
+        "as a difference"
         f"{untouched}"
     )
 
@@ -286,13 +300,23 @@ def _shape(feature: dict) -> str:
 
 
 def _observation_doc(env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
-    doc = f"the MEASURED state the policy acted on: {_state_doc(layout)}"
+    doc = f"the MEASURED state recorded for that frame: {_state_doc(layout)}"
     if env_cfg.observation.goal_error:
         doc += (
             ", followed by the goal-error block -- position error (3), velocity error "
             "(3), attitude error as an axis-angle rotvec (3) and body-rate error (3) "
             "against the episode's goal"
         )
+    # What the scripted policy actually consumed is a narrower thing than this
+    # row, and under observe=state it is not this row at all -- both worth a
+    # clause, since a reader modelling the behaviour policy has to know which
+    # columns could have entered it.
+    doc += (
+        ". The scripted policy read the canonical relative view out of it rather "
+        "than the whole row, so any epoch columns were never policy input; and a "
+        "run generated with `--observe state` flew the policy on the true state "
+        "instead of this one"
+    )
     return doc
 
 

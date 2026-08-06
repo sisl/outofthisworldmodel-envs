@@ -232,12 +232,24 @@ def test_the_card_describes_the_state_the_env_actually_carries(tmp_path):
     # describing the iss 13 would omit them entirely and then call the whole
     # row station-relative, which the epoch is not.
     card = _card(_hcw_run(tmp_path))
-    assert "epoch as [Julian day, seconds of day] (2)" in card
+    assert "epoch as [Julian day, seconds of day] (2;" in card
     assert (
         "body rate (3, rad/s) -- position, velocity, attitude and body rate "
         "station-relative"
     ) in card
     assert "rad/s), all station-relative" not in card
+
+
+def test_the_card_gives_the_epochs_timescale_and_recorded_grain(tmp_path):
+    # The simulator carries the epoch at float64 and the dataset records it at
+    # float32, so what a consumer can resolve off these two columns is not what
+    # the run integrated. Naming the timescale matters for the same reason: the
+    # columns are only useful against an ephemeris.
+    card = _card(_hcw_run(tmp_path))
+    assert "UTC, the day number exact" in card
+    assert "quantized to between 0.5 ms and 7.8 ms depending on the time of day" in card
+    # Coarse, but not so coarse that two frames of a 20 Hz run collide.
+    assert "6.4 ulps between consecutive frames at a 50 ms step" in card
 
 
 def test_the_card_gives_the_noise_identity_at_this_envs_offsets(tmp_path):
@@ -248,8 +260,33 @@ def test_the_card_gives_the_noise_identity_at_this_envs_offsets(tmp_path):
     assert "`observation_vector[2:15] - state_vector[2:15]`" in card
     assert "observation_vector[:13]" not in card
     # And it has to say why the epoch columns are exempt rather than leave a
-    # reader to wonder whether the sensor model touched them.
-    assert "epoch as [Julian day, seconds of day] (2) -- is identical" in card
+    # reader to wonder whether the sensor model touched them -- the epoch
+    # phrase is the one named as untouched, so the tail of that phrase is what
+    # ties the two together.
+    assert "epoch as [Julian day, seconds of day] (2;" in card
+    assert "at a 50 ms step) -- is identical in the two channels" in card
+
+
+@pytest.mark.parametrize("write", [_write_run, _hcw_run], ids=["iss", "iss-hcw"])
+def test_the_card_confines_the_noise_identity_to_the_additive_channels(tmp_path, write):
+    # Subtracting the four quaternion columns recovers no sigma: attitude
+    # error is a rotation COMPOSED onto the true attitude, and then
+    # sign-resolved onto its hemisphere. A card promising a difference there
+    # would send anyone measuring the model back off the data to a number that
+    # means nothing.
+    card = _card(write(tmp_path))
+    assert "Over the ADDITIVE channels -- position, velocity and body rate --" in card
+    assert "`quat_multiply(quat_conjugate(state_quat), observation_quat)`" in card
+
+
+def test_the_card_says_what_the_policy_actually_consumed(tmp_path):
+    # The observation row is what was RECORDED. What the scripted policy read
+    # is the canonical view sliced out of it -- never the epoch columns -- and
+    # under observe=state it is not this row at all.
+    card = _card(_hcw_run(tmp_path))
+    assert "the MEASURED state the policy acted on" not in card
+    assert "epoch columns were never policy input" in card
+    assert "`--observe state` flew the policy on the true state" in card
 
 
 def test_the_card_states_the_starts_and_dynamics_of_its_own_env(tmp_path):

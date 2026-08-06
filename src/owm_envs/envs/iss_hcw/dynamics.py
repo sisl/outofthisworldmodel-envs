@@ -43,9 +43,11 @@ rad/s).
 Per-step structure: the epoch prefix advances OUTSIDE the integrator, since a
 day rollover is not smooth; translation and attitude integrate with the shared
 RK4 over the 13D view. The chief's ECI state is evaluated once per step at the
-step-start epoch and held constant through the RK4 stages -- over one dt the
-chief moves 1e-5 of a radian, and re-deriving it per stage would cost four
-Kepler solves for nothing.
+step-start epoch and held constant through the RK4 stages. The chief does move
+over one dt -- 5.6e-5 rad at n = 1.1272e-3 rad/s and dt = 0.05, a 383 m arc --
+but the only thing the stages read off it is |r_chief|, which at the reference
+eccentricity of 5e-4 changes by under 0.2 m over that same dt, 2.8e-8 of its
+value. Re-deriving it per stage would cost four Kepler solves for nothing.
 
 Modelling approximations, both stated rather than corrected:
 
