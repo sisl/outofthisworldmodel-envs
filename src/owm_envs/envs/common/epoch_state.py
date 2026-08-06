@@ -3,11 +3,16 @@
 prefix[0] = Julian Day number (integer-valued; exact in f32 -- JD ~2.46e6 is
 far below 2**24). prefix[1] = seconds of day in [0, 86400) (~8 ms f32 grain).
 A single float32 MJD element was rejected in the design: ~674 s resolution
-at current dates, coarser than an eighth of an orbit.
+at current dates, coarser than an eighth of an orbit; a bare f32 JD is worse
+still (ulp ~0.25 day) and cannot advance at all at sub-daily dt. The
+precision story lives in this two-element split, not in the advance step.
 
-The advance is done in float64 (package enables jax_enable_x64): pure-f32
-accumulation of dt at sec ~5e4 loses up to ~2 ms/step as bias (~10 s/orbit);
-the f64 add leaves only the unbiased cast-back quantization random walk.
+`advance_epoch_state` upcasts `sec` to f64, adds `dt`, and casts back to the
+prefix dtype: a single f32 add per step is already correctly rounded, so
+this is bit-identical to adding directly in f32 for this add-then-cast-back
+shape -- the per-step f32 quantization of seconds-of-day is a benign ~8 ms
+random walk either way. The f64 upcast is kept because it is free and
+future-proofs any multi-op epoch arithmetic added later.
 """
 
 from __future__ import annotations

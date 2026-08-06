@@ -29,9 +29,9 @@ def test_advance_rolls_over_day_boundary():
 
 
 def test_advance_drift_bounded_over_one_orbit():
-    """5540 steps of 1.0 s from mid-day: pure-f32 accumulation would bias
-    ~10 s; the f64 add keeps total error within the +/-4 ms quantization
-    random walk (~0.3 s at 3 sigma)."""
+    """5540 steps of 1.0 s from mid-day, jitted: no runaway drift and
+    correct rollover across an orbit's worth of steps -- total error stays
+    within the +/-4 ms quantization random walk (~0.3 s at 3 sigma)."""
     e = Epoch("2026-08-01T12:00:00Z")
     p = epoch_prefix(e)
     step = jax.jit(lambda q: advance_epoch_state(q, 1.0))
