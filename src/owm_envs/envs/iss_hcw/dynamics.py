@@ -70,6 +70,7 @@ from ...core.quaternion import (
     quat_conjugate,
     quat_derivative_from_omega_body,
     quat_from_body_z_to,
+    quat_multiply,
     quat_normalize,
     rotate_body_to_world,
 )
@@ -77,6 +78,7 @@ from ..common.config import dock_target
 from ..common.epoch_state import advance_epoch_state, epoch_prefix, seconds_between
 from ..common.events import EventChecker, Events
 from ..common.orbit import RTN_FROM_WORLD, ReferenceOrbit
+from ..common.sampling import sample_small_rotation, sample_vector_in_ball
 from .config import HCW_LAYOUT, HCWConfig
 
 STATE_LABELS: tuple[str, ...] = HCW_LAYOUT.labels
@@ -107,6 +109,20 @@ class HCWDynamics:
 
         # Default target when `step` is not given one, as in `ISSDynamics`.
         self._dock_target = jnp.asarray(dock_target(cfg), jnp.float64)
+
+        # Reset dispersion bounds, each in the dtype its draw uses (see
+        # `reset`). Ranges are validated at config load, so lo <= hi holds.
+        self._start_radius_low, self._start_radius_high = (
+            jnp.asarray(v, jnp.float64) for v in cfg.orbit.start_radius_range_m
+        )
+        self._epoch_offset_low, self._epoch_offset_high = (
+            jnp.asarray(v, jnp.float64) for v in cfg.orbit.epoch_offset_range_s
+        )
+        self._start_speed_max = jnp.asarray(cfg.orbit.start_speed_max_m_s, jnp.float32)
+        self._start_rate_max = jnp.asarray(cfg.orbit.start_rate_max_rad_s, jnp.float32)
+        self._start_attitude_error_max_rad = jnp.asarray(
+            jnp.deg2rad(cfg.orbit.start_attitude_error_max_deg), jnp.float32
+        )
 
     def _eom(self, x: jnp.ndarray, args: tuple) -> jnp.ndarray:
         """13D view derivative. `args = (u, r_chief_mag)` is held across the
@@ -180,15 +196,66 @@ class HCWDynamics:
         return jnp.concatenate([prefix_next, view_next], axis=0), events
 
     def reset(self, key: jax.Array) -> jnp.ndarray:
-        """Uniform direction at the low end of the start radius range, at
-        rest, nose at the ISS, at the configured epoch. Task 3 replaces this
-        with the per-episode dispersion sampling; this stub is the zero-width
-        default those ranges collapse to."""
-        raw = jax.random.normal(key, (3,), dtype=jnp.float64)
+        """Sample an episode start state. Scalar `key`; vmap for batches.
+
+        One `OrbitConfig` knob per channel: `start_radius_range_m` is the
+        standoff distance (uniform direction, uniform radius),
+        `epoch_offset_range_s` how far along the chief's orbit the episode
+        starts, `start_speed_max_m_s` and `start_rate_max_rad_s` the initial
+        linear and angular motion, and `start_attitude_error_max_deg` how far
+        the nose misses the ISS. Cube-root radial and uniform-angle semantics
+        for the last three live in `envs/common/sampling.py`. Every default is
+        zero-width, and that case collapses exactly: the configured radius, at
+        rest, nose on the ISS, at epoch0.
+
+        Dtypes follow the module docstring. The radius and the epoch offset
+        are drawn f64 -- not because a standoff distance or a start time needs
+        1e-16 of resolution, but because both come straight from config into
+        f64 state elements, and an f32 draw would land the zero-width case a
+        quantum off the configured value. The offset is the one that matters
+        beyond that: it seeds the prefix whose subsequent CARRIAGE is the
+        whole reason this state is f64. The dispersion draws stay f32 and
+        widen on the way in -- a start velocity or body rate is re-derived
+        against f32-grain dynamics every step, so an f32 initial value adds
+        nothing the step does not already carry. The attitude is the same
+        story `step` tells: the quaternion helpers are astrojax-f32-pinned, so
+        those 4 elements enter the f64 state at f32 grain.
+        """
+        key_pos, key_epoch, key_vel, key_att, key_rate = jax.random.split(key, 5)
+        key_direction, key_radius = jax.random.split(key_pos)
+
+        raw = jax.random.normal(key_direction, (3,), dtype=jnp.float64)
         direction = raw / jnp.maximum(jnp.linalg.norm(raw), 1e-8)
-        pos = direction * jnp.asarray(self.cfg.orbit.start_radius_range_m[0], jnp.float64)
-        q_bw = quat_from_body_z_to(-direction).astype(jnp.float64)
+        radius = jax.random.uniform(
+            key_radius,
+            (),
+            dtype=jnp.float64,
+            minval=self._start_radius_low,
+            maxval=self._start_radius_high,
+        )
+
+        offset = jax.random.uniform(
+            key_epoch,
+            (),
+            dtype=jnp.float64,
+            minval=self._epoch_offset_low,
+            maxval=self._epoch_offset_high,
+        )
+        prefix = advance_epoch_state(self._epoch0, offset)
+
+        q_bw = quat_normalize(
+            quat_multiply(
+                quat_from_body_z_to(-direction),
+                sample_small_rotation(key_att, self._start_attitude_error_max_rad),
+            )
+        )
         return jnp.concatenate(
-            [self._epoch0, pos, jnp.zeros(3, jnp.float64), q_bw, jnp.zeros(3, jnp.float64)],
+            [
+                prefix,
+                direction * radius,
+                sample_vector_in_ball(key_vel, self._start_speed_max).astype(jnp.float64),
+                q_bw.astype(jnp.float64),
+                sample_vector_in_ball(key_rate, self._start_rate_max).astype(jnp.float64),
+            ],
             axis=0,
         )

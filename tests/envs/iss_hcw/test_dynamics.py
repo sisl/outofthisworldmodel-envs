@@ -5,13 +5,47 @@ import pytest
 from astrojax.constants import GM_EARTH
 from astrojax.relative_motion.hcw_dynamics import hcw_stm
 
+from owm_envs.core.quaternion import rotate_body_to_world
 from owm_envs.envs.common.config import dock_target
-from owm_envs.envs.common.epoch_state import seconds_between
+from owm_envs.envs.common.epoch_state import epoch_prefix, seconds_between
 from owm_envs.envs.common.orbit import RTN_FROM_WORLD
 from owm_envs.envs.iss_hcw.config import HCWConfig
 from owm_envs.envs.iss_hcw.dynamics import STATE_LABELS, HCWDynamics
 
 ZERO_ACTION = jnp.zeros(6, jnp.float64)
+BODY_Z = jnp.array([0.0, 0.0, 1.0], jnp.float64)
+
+
+def _wide_cfg() -> HCWConfig:
+    return HCWConfig(
+        orbit={
+            "epoch_offset_range_s": (0.0, 5400.0),
+            "start_radius_range_m": (80.0, 120.0),
+            "start_speed_max_m_s": 0.1,
+            "start_attitude_error_max_deg": 10.0,
+            "start_rate_max_rad_s": 0.01,
+        }
+    )
+
+
+def _unit(v: np.ndarray) -> np.ndarray:
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+def _nose_errors_deg(states: jnp.ndarray) -> np.ndarray:
+    """Angle between each state's body +z in world and the direction to the ISS.
+
+    Measured as a chord, 2 asin(|a - b| / 2), not as arccos of the dot
+    product: the quaternion comes back from the f32-pinned helpers with |q|
+    off unity by ~4e-9, and arccos near 1 turns that norm deficiency into a
+    spurious 1e-4 rad "misalignment" that swamps the real error. The chord is
+    well conditioned at zero and exact out to 10 deg.
+    """
+    body_z = jnp.broadcast_to(BODY_Z, (states.shape[0], 3))
+    nose = _unit(np.asarray(jax.vmap(rotate_body_to_world)(states[:, 8:12], body_z)))
+    to_iss = _unit(np.asarray(-states[:, 2:5]))
+    half_chord = np.clip(np.linalg.norm(nose - to_iss, axis=1) / 2.0, 0.0, 1.0)
+    return np.rad2deg(2.0 * np.arcsin(half_chord))
 
 
 def _free_flight_cfg() -> HCWConfig:
@@ -162,6 +196,57 @@ def test_epoch_prefix_stays_exact_over_a_long_rollout():
     end = _rollout(dyn, s, steps)
     elapsed = float(seconds_between(end[0:2], s[0:2]))
     assert elapsed == pytest.approx(steps * cfg.dt, abs=1e-6)
+
+
+def test_reset_zero_width_config_is_the_undispersed_start():
+    """Every sampling range in `OrbitConfig` defaults to zero width, and that
+    case has to collapse exactly: epoch0, the configured radius, at rest,
+    nose at the ISS."""
+    cfg = HCWConfig()
+    dyn = HCWDynamics(cfg)
+    s = dyn.reset(jax.random.PRNGKey(3))
+
+    np.testing.assert_array_equal(np.asarray(s[0:2]), np.asarray(epoch_prefix(dyn.ref.epoch0)))
+    assert float(jnp.linalg.norm(s[2:5])) == pytest.approx(100.0, abs=1e-9)
+    np.testing.assert_array_equal(np.asarray(s[5:8]), 0.0)
+    np.testing.assert_array_equal(np.asarray(s[12:15]), 0.0)
+    # The nose direction runs through the f32-pinned quaternion helpers, so
+    # 1e-6 is the grain here, not f64.
+    assert float(jnp.linalg.norm(s[8:12])) == pytest.approx(1.0, abs=1e-6)
+    np.testing.assert_allclose(_nose_errors_deg(s[None, :]), 0.0, atol=1e-4)
+
+
+def test_reset_disperses_across_the_configured_ranges():
+    """Wide ranges, 500 vmapped keys: every channel inside its bound and
+    actually spread, not pinned to one value."""
+    dyn = HCWDynamics(_wide_cfg())
+    states = jax.vmap(dyn.reset)(jax.random.split(jax.random.PRNGKey(0), 500))
+    assert states.dtype == jnp.float64
+
+    radii = np.asarray(jnp.linalg.norm(states[:, 2:5], axis=1))
+    assert radii.min() >= 80.0 - 1e-6 and radii.max() <= 120.0 + 1e-6
+    assert radii.std() > 5.0
+
+    # The ball samplers draw at f32, so a vector right at the boundary can
+    # land a few f32 ulps outside it -- hence a relative slack on the caps.
+    speeds = np.asarray(jnp.linalg.norm(states[:, 5:8], axis=1))
+    assert speeds.max() <= 0.1 * (1 + 1e-6)
+    assert speeds.max() > 0.05
+
+    rates = np.asarray(jnp.linalg.norm(states[:, 12:15], axis=1))
+    assert rates.max() <= 0.01 * (1 + 1e-6)
+    assert rates.max() > 0.005
+
+    offsets = np.asarray(seconds_between(states[:, 0:2], epoch_prefix(dyn.ref.epoch0)))
+    assert offsets.min() >= 0.0 and offsets.max() <= 5400.0
+    assert offsets.std() > 1000.0
+
+    nose_deg = _nose_errors_deg(states)
+    # The error rotation is applied about a uniformly random axis, so the
+    # nose swings by at most the sampled angle and by less when the axis
+    # leans toward body +z -- hence a bound at 10 deg but a mean well below.
+    assert nose_deg.max() <= 10.0 + 1e-4
+    assert nose_deg.std() > 1.0
 
 
 def test_interface_dimensions():
