@@ -22,6 +22,32 @@ def test_list_shows_the_iss_environment():
     assert "iss" in result.stdout.lower()
 
 
+def test_env_flag_rejects_unknown(tmp_path):
+    result = runner.invoke(
+        app, ["generate", "--out", str(tmp_path / "x"), "--env", "nope"]
+    )
+    assert result.exit_code != 0
+    assert "unknown environment" in result.output
+
+
+def test_config_flag_is_gone(tmp_path):
+    result = runner.invoke(
+        app, ["generate", "--out", str(tmp_path / "x"), "--config", "z.toml"]
+    )
+    assert result.exit_code != 0  # typer: no such option
+
+
+def test_env_exclusive_with_gen_config(tmp_path):
+    gen = tmp_path / "gen.yaml"
+    gen.write_text("splits:\n  train:\n    num_episodes: 1\n    seed: 0\n")
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "o"),
+        "--env", "iss", "--gen-config", str(gen),
+    ])
+    assert result.exit_code != 0
+    assert "--env" in result.output
+
+
 def test_generate_writes_a_run_directory(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
@@ -69,9 +95,12 @@ def test_resolve_driver_vector_path_does_not_double_augment():
     # the policy source would append a second block on top -- 37-dim, not 25.
     from owm_envs.cli import _resolve_driver
     from owm_envs.drivers.types import RolloutSpec
+    from owm_envs.envs import ENV_REGISTRY
 
     cfg = ISSConfig(max_steps=10, observation={"goal_error": True})
-    chosen = _resolve_driver("vector", cfg, PolicyConfig(type="dock"), num_envs=2)
+    chosen = _resolve_driver(
+        "vector", cfg, PolicyConfig(type="dock"), num_envs=2, spec=ENV_REGISTRY["iss"]
+    )
     batch = chosen.driver.generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
     assert batch.observations.shape[-1] == 25
 
@@ -98,7 +127,7 @@ def test_config_file_is_loaded_and_recorded(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
+        ["generate", "--out", str(out), "--env-config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -118,7 +147,7 @@ def test_a_toml_config_file_is_loaded_too(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
+        ["generate", "--out", str(out), "--env-config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -141,11 +170,11 @@ def test_an_unreadable_config_is_a_usage_error_not_a_traceback(
         path.write_text(text)
     result = runner.invoke(app, [
         "generate", "--out", str(tmp_path / "run"), "--steps", "4",
-        "--split", "train:1:0", "--config", str(path), "--no-lerobot",
+        "--split", "train:1:0", "--env-config", str(path), "--no-lerobot",
     ])
     assert result.exit_code != 0
     assert not isinstance(result.exception, (OSError, ValueError))
-    assert "--config" in result.output and expected in result.output
+    assert "--env-config" in result.output and expected in result.output
 
 
 def test_summary_reports_the_episode_count_requested(tmp_path):
@@ -182,7 +211,7 @@ def test_fps_default_tracks_a_non_default_dt(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
+        ["generate", "--out", str(out), "--env-config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -229,7 +258,7 @@ def test_explicit_fps_warns_when_the_rate_is_not_whole(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:2:0",
+        ["generate", "--out", str(out), "--env-config", str(cfg_path), "--split", "train:2:0",
          "--steps", "8", "--policy", "dock", "--num-envs", "2", "--driver", "vector",
          "--no-lerobot", "--fps", "33"],
     )
@@ -249,7 +278,7 @@ def test_fps_default_is_refused_when_the_rate_is_not_whole(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path), "--split", "train:1:0",
+        ["generate", "--out", str(out), "--env-config", str(cfg_path), "--split", "train:1:0",
          "--steps", "4", "--policy", "dock", "--num-envs", "1", "--driver", "vector",
          "--no-lerobot"],
     )
@@ -1270,7 +1299,7 @@ def test_env_dock_ports_the_policy_does_not_share_is_a_usage_error(tmp_path):
     cfg_path = _env_config_with_ports(tmp_path, "zvezda_aft", "poisk_zenith")
     result = runner.invoke(
         app,
-        ["generate", "--out", str(tmp_path / "run"), "--config", str(cfg_path),
+        ["generate", "--out", str(tmp_path / "run"), "--env-config", str(cfg_path),
          "--split", "train:1:0", "--steps", "4", "--policy", "dock", "--num-envs", "1",
          "--driver", "scan", "--no-lerobot"],
     )
@@ -1286,7 +1315,7 @@ def test_matching_dock_ports_on_both_sides_generate_normally(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path),
+        ["generate", "--out", str(out), "--env-config", str(cfg_path),
          "--split", "train:2:0", "--steps", "8", "--policy", "dock", "--num-envs", "2",
          "--driver", "scan", "--no-lerobot", "--dock-ports", "zvezda_aft,poisk_zenith"],
     )
@@ -1304,7 +1333,7 @@ def test_an_env_config_naming_no_ports_is_left_alone(tmp_path):
     out = tmp_path / "run"
     result = runner.invoke(
         app,
-        ["generate", "--out", str(out), "--config", str(cfg_path),
+        ["generate", "--out", str(out), "--env-config", str(cfg_path),
          "--split", "train:2:0", "--steps", "8", "--policy", "dock", "--num-envs", "2",
          "--driver", "scan", "--no-lerobot", "--dock-ports", "all"],
     )
@@ -1335,7 +1364,7 @@ def test_a_later_splits_port_mismatch_stops_before_any_split_generates(
     cfg_path = _env_config_with_ports(tmp_path, "zvezda_aft")
     result = runner.invoke(
         app,
-        ["generate", "--out", str(tmp_path / "run"), "--config", str(cfg_path),
+        ["generate", "--out", str(tmp_path / "run"), "--env-config", str(cfg_path),
          "--split", "train:2:0:dock:zvezda_aft", "--split", "val:2:1:dock:poisk_zenith",
          "--steps", "8", "--num-envs", "2", "--driver", "scan", "--no-lerobot"],
     )

@@ -16,11 +16,11 @@ on) rather than guessing an episode count first and checking how many
 transitions it happened to produce. Episode counts (`train:512:0`) remain
 supported for when the episode count itself is what matters.
 
-`--noise off|cooperative|noncooperative` overrides the `--config` file's
+`--noise off|cooperative|noncooperative` overrides the `--env-config` file's
 `sensor_noise` with a named preset; omit it to leave the config's own setting
 in place.
 
-`--goal-error/--no-goal-error` overrides the `--config` file's
+`--goal-error/--no-goal-error` overrides the `--env-config` file's
 `observation.goal_error`, appending the dock-goal error block to
 observations; omit it to leave the config's own setting in place.
 
