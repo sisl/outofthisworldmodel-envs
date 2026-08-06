@@ -621,7 +621,7 @@ def _resolve_driver(
 ) -> _Chosen:
     from .drivers.scan_driver import ScanDriver, supports_fused_rollout
     from .drivers.vector_env_driver import VectorEnvDriver
-    from .envs.common.policy_source import ISSPolicySource
+    from .envs.common.policy_source import TaskPolicySource
 
     def build_vector() -> _Chosen:
         # The vector env reads its dock pose straight off cfg and has no
@@ -641,7 +641,7 @@ def _resolve_driver(
                 f"scored at the wrong pose for every episode whose assigned port is not "
                 f"DockConfig's; --driver scan does not have this limitation"
             )
-        # ISSPolicySource applies its own policy-aware goal-error block (see
+        # TaskPolicySource applies its own policy-aware goal-error block (see
         # augment_observation) from the ORIGINAL cfg; the env it drives must
         # therefore stay at the raw 13-dim observation, or the block would be
         # appended twice -- once by the env, once by the policy source.
@@ -650,7 +650,7 @@ def _resolve_driver(
             "vector",
             VectorEnvDriver(
                 env_factory=lambda: spec.make_vector_env(num_envs, env_cfg),
-                policy_source=ISSPolicySource(cfg, policy_cfg, view=spec.view),
+                policy_source=TaskPolicySource(cfg, policy_cfg, view=spec.view),
             ),
         )
 

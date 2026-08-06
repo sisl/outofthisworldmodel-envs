@@ -162,7 +162,7 @@ class DockConfig(ConfigModel):
 class RewardWeights(ConfigModel):
     """Penalty weights for the five reward terms.
 
-    Negative so that `iss_reward` is a plain weighted sum of these against
+    Negative so that `docking_reward` is a plain weighted sum of these against
     non-negative error terms -- no separate negation needed at the call site.
 
     NOTE: `collision` at -1e6 was tuned for MPPI planning, where rewards are
@@ -233,7 +233,7 @@ class BaseTaskConfig(ConfigModel):
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
     # Overrides the reward's position-error target. When None (default),
-    # iss_reward measures distance to `dock.position`, as it should for a
+    # docking_reward measures distance to `dock.position`, as it should for a
     # docking task. The ISS origin [0, 0, 0] is INSIDE the station's
     # collision hull (dock.position, ~24.63 m away, is not), so setting this
     # field to the origin would pull a controller toward a position it can

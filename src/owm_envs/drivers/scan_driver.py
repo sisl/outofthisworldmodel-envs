@@ -21,7 +21,7 @@ from ..envs import ENV_REGISTRY, EnvSpec
 from ..envs.common.config import BaseTaskConfig
 from ..envs.common.goal import make_augment
 from ..envs.common.policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
-from ..envs.common.reward import iss_reward
+from ..envs.common.reward import docking_reward
 from ..envs.common.sensing import NOISE_STREAM, apply_sensor_noise
 from .types import TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
 
@@ -257,7 +257,7 @@ class ScanDriver:
             action = jnp.clip(policy_fn(view(policy_input), act_key, extras), ctrl_low, ctrl_high)
             dock_pose = select_dock_target(extras)
             next_state, events = dynamics.step(state, action, dock_pose)
-            reward = iss_reward(view(next_state), action, events, cfg, dock_pose[0:3])
+            reward = docking_reward(view(next_state), action, events, cfg, dock_pose[0:3])
 
             # `measured_next` is its own draw (`next_meas_key`) because the
             # terminal observation on the `done` iteration is `next_state`,

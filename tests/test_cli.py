@@ -89,7 +89,7 @@ def test_both_drivers_are_selectable(tmp_path):
 
 
 def test_resolve_driver_vector_path_does_not_double_augment():
-    # ISSPolicySource applies the goal-error block itself on the vector path
+    # TaskPolicySource applies the goal-error block itself on the vector path
     # (see policy_source.py); if _resolve_driver handed the ORIGINAL cfg to
     # ISSVectorEnv too, the env would already emit 25-dim observations and
     # the policy source would append a second block on top -- 37-dim, not 25.

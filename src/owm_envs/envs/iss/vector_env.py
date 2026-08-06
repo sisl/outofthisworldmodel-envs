@@ -22,7 +22,7 @@ from gymnasium.vector.utils import batch_space
 
 from ..common.config import dock_target
 from ..common.goal import dock_goal_error
-from ..common.reward import iss_reward
+from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
 from .config import ISSConfig
 from .dynamics import ISSDynamics
@@ -74,7 +74,7 @@ class ISSVectorEnv(VectorEnv):
         self._batched_step = jax.jit(jax.vmap(self.dynamics.step))
         self._batched_reset = jax.jit(jax.vmap(self.dynamics.reset))
         self._batched_reward = jax.jit(
-            jax.vmap(lambda s, a, e: iss_reward(s, a, e, self.cfg))
+            jax.vmap(lambda s, a, e: docking_reward(s, a, e, self.cfg))
         )
         self._batched_noise = (
             jax.jit(

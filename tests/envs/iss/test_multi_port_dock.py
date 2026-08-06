@@ -17,7 +17,7 @@ from owm_envs.envs.common.policies import (
     dock_target_selector,
     make_policy,
 )
-from owm_envs.envs.common.reward import iss_reward
+from owm_envs.envs.common.reward import docking_reward
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
 
@@ -89,12 +89,12 @@ def test_reward_peaks_at_the_assigned_port_not_the_config_pose():
         target = select(jnp.asarray([float(index)]))
         at_port = jnp.concatenate([target[0:3], jnp.zeros(3), target[3:7], jnp.zeros(3)])
         at_port_reward = float(
-            iss_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG, target[0:3])
+            docking_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG, target[0:3])
         )
         # Reward is a sum of negative-weighted quadratics, so "peak" is the
         # maximum: at the assigned port the position term is zero, and the
         # same state scored against DockConfig's pose is strictly worse.
-        against_config = float(iss_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG))
+        against_config = float(docking_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG))
         assert at_port_reward == pytest.approx(0.0, abs=1e-3), name
         assert against_config < at_port_reward - 0.1, name
 
@@ -111,8 +111,8 @@ def test_reward_without_a_port_set_is_unchanged():
     )
     action = jnp.asarray([5.0, -3.0, 1.0, 0.4, 0.2, -0.1], dtype=jnp.float32)
     target = select(jnp.zeros((EXTRAS_DIM["dock"],)))
-    assert float(iss_reward(state, action, NO_EVENTS, CFG, target[0:3])) == float(
-        iss_reward(state, action, NO_EVENTS, CFG)
+    assert float(docking_reward(state, action, NO_EVENTS, CFG, target[0:3])) == float(
+        docking_reward(state, action, NO_EVENTS, CFG)
     )
 
 

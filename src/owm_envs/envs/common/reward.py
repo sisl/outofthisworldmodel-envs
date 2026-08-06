@@ -1,4 +1,4 @@
-"""ISS reward.
+"""Docking reward.
 
 This is a per-step reward, not a trajectory-level cost: each term is computed
 pointwise from a single (state, action) pair and the five terms are summed
@@ -38,7 +38,7 @@ from .config import BaseTaskConfig
 from .events import Events
 
 
-def iss_reward(
+def docking_reward(
     state: jnp.ndarray,
     action: jnp.ndarray,
     events: Events,

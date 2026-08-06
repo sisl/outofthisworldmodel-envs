@@ -156,7 +156,7 @@ class VectorEnvDriver:
         #
         # Every observation stored here goes through
         # `policy_source.augment_observation()` first (identity unless the
-        # source appends something, e.g. ISSPolicySource's goal-error block)
+        # source appends something, e.g. TaskPolicySource's goal-error block)
         # -- `obs_dim` is measured from that augmented width, not the env's
         # raw observation space, since the two can legitimately differ.
         lane_obs: list[list[np.ndarray]] = [
@@ -165,12 +165,16 @@ class VectorEnvDriver:
         obs_dim = lane_obs[0][0].shape[0]
         # Truth accumulates in lockstep with `lane_obs` -- same seeding, same
         # appends, same clears -- so `lane_true[lane][i]` is the un-noised
-        # state behind `lane_obs[lane][i]`, terminal observation included. It
-        # stays 13-dim: the goal-error augmentation widens the observation
-        # only. Left empty (never indexed) when the backend supplies no truth.
+        # state behind `lane_obs[lane][i]`, terminal observation included. Its
+        # width is fixed for the run (the goal-error augmentation widens the
+        # observation only) and captured once here, since `lane_true[lane]` is
+        # cleared to `[]` between a lane finishing and its NEXT_STEP autoreset
+        # repopulating it -- unsafe to re-measure at pack time. Left empty
+        # (never indexed) when the backend supplies no truth.
         lane_true: list[list[np.ndarray]] = (
             [[_lane_state(info, lane)] for lane in range(num_envs)] if records_truth else []
         )
+        state_dim = lane_true[0][0].shape[0] if records_truth else 13
         lane_act: list[list[np.ndarray]] = [[] for _ in range(num_envs)]
         lane_rew: list[list[float]] = [[] for _ in range(num_envs)]
         lane_step = [0] * num_envs
@@ -377,4 +381,5 @@ class VectorEnvDriver:
             records_policy_ids,
             records_dock_targets,
             records_true_state=records_truth,
+            state_dim=state_dim,
         )
