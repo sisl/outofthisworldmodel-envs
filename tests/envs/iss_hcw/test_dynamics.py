@@ -226,6 +226,13 @@ def test_reset_disperses_across_the_configured_ranges():
     radii = np.asarray(jnp.linalg.norm(states[:, 2:5], axis=1))
     assert radii.min() >= 80.0 - 1e-6 and radii.max() <= 120.0 + 1e-6
     assert radii.std() > 5.0
+    # The radius is uniform in RADIUS, not uniform in volume -- the standoff
+    # range is a mission constraint, not a ball to fill, so the shell weighting
+    # `sample_vector_in_ball` applies to velocity and rates would be wrong
+    # here. The spread above cannot tell the two apart: volume weighting over
+    # [80, 120] has std 11.31 against uniform's 11.55. Only the mean separates
+    # them, 102.63 against 100.0, which is 5.1 standard errors at n = 500.
+    assert abs(radii.mean() - 100.0) < 1.5
 
     # The ball samplers draw at f32, so a vector right at the boundary can
     # land a few f32 ulps outside it -- hence a relative slack on the caps.
