@@ -124,8 +124,20 @@ _SEGMENT_DOC = {
     "chief": "chief ECI position and velocity ({width}, m, m/s)",
     "pos": "position ({width}, m)",
     "vel": "velocity ({width}, m/s)",
-    "quat": "attitude quaternion ({width}, w-first, body to world)",
     "omega": "body rate ({width}, rad/s)",
+}
+
+# The quaternion is the one segment whose CONVENTION, not just its width,
+# differs across layouts, so it has no single entry in _SEGMENT_DOC: iss and
+# iss-hcw's raw slice already is the body-to-world q_bw the task layer
+# consumes, while iss-numerical's is q_bi, body to ECI/inertial, which only
+# becomes q_bw through `relative_view`. Keyed by the segment's own first
+# label (`layout.labels[layout.quat.start]`), which names which convention a
+# layout uses -- a layout with a label this doesn't recognise fails loudly at
+# card time rather than publishing a guessed-at attitude convention.
+_QUAT_DOC_BY_LABEL = {
+    "q_w": "attitude quaternion ({width}, w-first, body to world)",
+    "q_bi_w": "attitude quaternion ({width}, w-first, body to ECI/inertial)",
 }
 
 # Storage order is read off the slices, so this only has to name the fields
@@ -170,6 +182,23 @@ def _segments(layout: StateLayout) -> list[tuple[str, slice]]:
     return sorted(declared, key=lambda item: item[1].start)
 
 
+def _segment_phrase(field: str, sl: slice, layout: StateLayout) -> str:
+    """The `_SEGMENT_DOC`/`_QUAT_DOC_BY_LABEL` phrase for one of `layout`'s
+    segments, `quat` picked by convention rather than a fixed phrase -- see
+    `_QUAT_DOC_BY_LABEL`."""
+    if field != "quat":
+        return _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+    label = layout.labels[sl.start]
+    try:
+        return _QUAT_DOC_BY_LABEL[label].format(width=sl.stop - sl.start)
+    except KeyError:
+        raise KeyError(
+            f"no card phrasing registered for quaternion label {label!r}; add one to "
+            "_QUAT_DOC_BY_LABEL rather than describing this layout's attitude "
+            "convention with another one's phrase"
+        ) from None
+
+
 def _state_doc(layout: StateLayout) -> str:
     """What the state vector holds, element by element, for THIS env.
 
@@ -178,10 +207,7 @@ def _state_doc(layout: StateLayout) -> str:
     describe a state its dataset does not have. `iss` reproduces the sentence
     this was before it was generated.
     """
-    phrases = [
-        _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
-        for field, sl in _segments(layout)
-    ]
+    phrases = [_segment_phrase(field, sl, layout) for field, sl in _segments(layout)]
     body = ", ".join(phrases[:-1]) + " and " + phrases[-1]
     # "all station-relative" is only true when the state is the relative view
     # and nothing else. An epoch prefix is an absolute time, so a layout
@@ -208,19 +234,42 @@ def _state_doc(layout: StateLayout) -> str:
     return body + " -- position, velocity, attitude and body rate station-relative"
 
 
-def _state_vector_doc(layout: StateLayout) -> str:
+def _state_vector_doc(layout: StateLayout, observe_mode: str | None = None) -> str:
     """The truth column's meaning, and the obs-minus-truth identity that makes
     it worth writing, at THIS env's offsets.
 
-    The identity holds over the additive channels of the relative view, and
-    the expression names their slices rather than the view as a whole. Both
-    halves of that matter. The view is the whole state for `iss` but sits
-    behind an epoch prefix for `iss-hcw`, so one set of offsets cannot serve
-    both; and the four quaternion columns sit in the middle of the view while
-    carrying a COMPOSED rotation (`envs/common/sensing.py`), so an expression
-    spanning them would tell a reader to subtract four numbers whose
-    difference is not a noise draw at all.
+    `observe_mode` is the env's `observation.mode` when its `EnvSpec` declares
+    a non-identity `make_observe` (iss-numerical), None for every other env.
+    The identity below assumes the recorded `observation_vector` IS this
+    layout, column for column -- true only when `observe_mode` is None. A
+    non-identity observe hook can narrow, reorder, or otherwise reshape the
+    observation (`envs/iss_numerical/observe.py`'s four modes), so there is in
+    general no fixed slice of `observation_vector` that lines up with this
+    column's own offsets; `drivers/types.py`'s `TrajectoryBatch.true_state`
+    docstring makes the same qualification, and this is that qualification
+    carried into the card.
+
+    Where `observe_mode` is None, the identity holds over the additive
+    channels of the relative view, and the expression names their slices
+    rather than the view as a whole. Both halves of that matter. The view is
+    the whole state for `iss` but sits behind an epoch prefix for `iss-hcw`,
+    so one set of offsets cannot serve both; and the four quaternion columns
+    sit in the middle of the view while carrying a COMPOSED rotation
+    (`envs/common/sensing.py`), so an expression spanning them would tell a
+    reader to subtract four numbers whose difference is not a noise draw at
+    all.
     """
+    if observe_mode is not None:
+        return (
+            f"the TRUE {layout.state_dim}-element dynamics state at that frame, in "
+            "this layout's own columns (see the state description above) -- not, in "
+            "general, the same width or column order as `observation_vector`, which "
+            f"reports this state reshaped into the `{observe_mode}` frame "
+            "`observation.mode` selects. There is therefore no fixed slice of "
+            "`observation_vector` that lines up with this column's own additive "
+            "channels for every mode, so the obs-minus-truth noise-draw recovery an "
+            "identity-observe env's card describes here does not apply."
+        )
     start, stop = layout.pos.start, layout.omega.stop
     # pos and vel are contiguous (StateLayout enforces it); omega sits on the
     # far side of the quaternion, so the additive part of the view is two
@@ -232,7 +281,7 @@ def _state_vector_doc(layout: StateLayout) -> str:
         f"`observation_vector[{rate}] - state_vector[{rate}]`"
     )
     outside = [
-        _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+        _segment_phrase(field, sl, layout)
         for field, sl in _segments(layout)
         if sl.stop <= start or sl.start >= stop
     ]
@@ -387,13 +436,20 @@ def _observation_doc(env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
     return doc
 
 
-def _schema_table(features: dict, env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
+def _schema_table(features: dict, env_cfg: BaseTaskConfig, env_spec: EnvSpec) -> str:
+    layout = env_spec.layout
+    # None for an identity-observe env (iss, iss-hcw): the recorded
+    # observation_vector IS this layout, column for column. iss-numerical's
+    # EnvSpec declares a make_observe, and its mode -- read straight off the
+    # as-run config, not guessed -- is what the truth column's doc names as
+    # the frame observation_vector was reshaped into.
+    observe_mode = getattr(env_cfg.observation, "mode", None) if env_spec.make_observe else None
     rows = []
     for name, feature in features.items():
         if name == "observation_vector":
             doc = _observation_doc(env_cfg, layout)
         elif name == "state_vector":
-            doc = _state_vector_doc(layout)
+            doc = _state_vector_doc(layout, observe_mode)
         else:
             doc = _COLUMN_DOC.get(name, "")
         rows.append(f"| `{name}` | {feature['dtype']} | {_shape(feature)} | {doc} |")
@@ -534,7 +590,7 @@ Every frame of every episode carries:
 
 | column | dtype | shape | meaning |
 |---|---|---|---|
-{_schema_table(info["features"], env_cfg, env_spec.layout)}
+{_schema_table(info["features"], env_cfg, env_spec)}
 
 ## Sensor noise
 

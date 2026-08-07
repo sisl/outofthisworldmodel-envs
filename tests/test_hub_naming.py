@@ -33,6 +33,7 @@ from owm_envs.envs.common.policies import PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss_hcw.config import HCWConfig
+from owm_envs.envs.iss_numerical.config import NumericalConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -279,6 +280,38 @@ def test_the_card_describes_the_state_the_env_actually_carries(tmp_path):
         "station-relative"
     ) in card
     assert "rad/s), all station-relative" not in card
+
+
+# An iss-numerical run's own schema under the shipped default config
+# (observation.mode="relative", no goal-error block): a 15-wide mode-shaped
+# observation behind a 21-wide raw state.
+NUMERICAL_FEATURES = {
+    **FEATURES,
+    "observation_vector": {"dtype": "float32", "shape": [15], "names": None},
+    "state_vector": {"dtype": "float32", "shape": [21], "names": None},
+}
+
+
+def _numerical_run(tmp_path: Path) -> Path:
+    """A synthetic run under the committed iss-numerical config, which is
+    what an iss-numerical dataset would actually be generated from."""
+    return _write_run(
+        tmp_path,
+        NumericalConfig.from_toml(CONFIGS / "iss_numerical_default.toml"),
+        env="iss-numerical",
+        features=NUMERICAL_FEATURES,
+    )
+
+
+def test_the_card_names_iss_numericals_observation_mode_instead_of_a_false_identity(tmp_path):
+    # iss-numerical's observation is reshaped by observation.mode (here
+    # "relative") rather than being the raw 21D state column for column, so
+    # the card must not claim the fixed-slice obs-minus-truth identity every
+    # other env's card does, and must instead say which mode reshaped it.
+    card = _card(_numerical_run(tmp_path))
+    assert "chief ECI position and velocity (6, m, m/s)" in card
+    assert "`relative` frame `observation.mode` selects" in card
+    assert "- state_vector[" not in card
 
 
 def test_the_card_gives_the_epochs_timescale_and_recorded_grain(tmp_path):

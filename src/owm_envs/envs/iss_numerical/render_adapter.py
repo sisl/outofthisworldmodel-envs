@@ -22,8 +22,9 @@ scalars, measured there at 72 ms a frame against 0.11 ms compiled -- the same
 astrojax calls, so the same cost either way here.
 
 Both the live `render()` path and the recorded-dataset video path hand this
-adapter an already float32 state (`env.py`'s `_true_state`/`_measured_state`
-narrow before recording, and `TrajectoryBatch.true_state` is stored float32),
+adapter an already float32 state (`env.py`'s `_true_state`/
+`_observation_and_measured` narrow before recording, and `TrajectoryBatch
+.true_state` is stored float32),
 so the chief and chaser ECI columns the kernel differences inside
 `relative_view` are already at the ~0.5 m grain that narrowing an ~6.8e6 m
 position to float32 costs -- accepted for rendering, the same trade
