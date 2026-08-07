@@ -380,10 +380,16 @@ def generate(
 
     # Drivers bake their policy in at construction, so a split with its own
     # policy needs its own driver instance.
+    # Every split's ports are checked before any split generates. Checking a
+    # split just before it runs is not enough: the splits are generated in
+    # order, so a disagreement in the last one would be found only after every
+    # earlier split had already paid for its full rollout.
+    for name, spec in gen.splits.items():
+        _check_dock_ports_agree(cfg, spec.policy or policy_cfg, name)
+
     batches = {}
     for name, spec in gen.splits.items():
         split_policy = spec.policy or policy_cfg
-        _check_dock_ports_agree(cfg, split_policy, name)
         chosen = _resolve_driver(gen.driver, cfg, split_policy, gen.num_envs)
         batch = chosen.driver.generate(
             RolloutSpec(

@@ -1306,3 +1306,39 @@ def test_an_env_config_naming_no_ports_is_left_alone(tmp_path):
          "--driver", "scan", "--no-lerobot", "--dock-ports", "all"],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_a_later_splits_port_mismatch_stops_before_any_split_generates(
+    tmp_path, monkeypatch
+):
+    """The check is pre-flight, not just-in-time.
+
+    Splits generate in order, so checking each one as it comes up would find a
+    disagreement in the last split only after every earlier split had already
+    paid for its full rollout. `train` agrees here and `val` does not; nothing
+    may generate.
+    """
+    import owm_envs.cli as cli_module
+
+    resolved = []
+    real_resolve = cli_module._resolve_driver
+
+    def recording_resolve(*args, **kwargs):
+        resolved.append(args)
+        return real_resolve(*args, **kwargs)
+
+    monkeypatch.setattr(cli_module, "_resolve_driver", recording_resolve)
+
+    cfg_path = _env_config_with_ports(tmp_path, "zvezda_aft")
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(tmp_path / "run"), "--config", str(cfg_path),
+         "--split", "train:2:0:dock:zvezda_aft", "--split", "val:2:1:dock:poisk_zenith",
+         "--steps", "8", "--num-envs", "2", "--driver", "scan", "--no-lerobot"],
+    )
+    assert result.exit_code != 0
+    # Names the split that disagrees, not the one that was fine.
+    assert "'val'" in result.output and "dock ports disagree" in result.output
+    # The load-bearing assertion: no driver was ever built, so no rollout ran.
+    assert resolved == []
+    assert not (tmp_path / "run").exists()
