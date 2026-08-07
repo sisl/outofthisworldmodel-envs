@@ -18,7 +18,14 @@ the orbital motion too.
                         vehicle the origin sits on.
   chief_absolute (21)   the chief in ECI with the chaser as the world-frame
                         offset the task is actually flown in: [epoch |
-                        chief r,v | rel_pos | rel_vel | q_bi | omega_b].
+                        chief r,v | rel_pos | rel_vel | q_bi | omega_b]. The
+                        relative block is `relative_view`'s, so `rel_vel` is
+                        the ROTATING-frame derivative -- the world frame's own
+                        motion at the offset already removed -- and not the
+                        inertial v_chaser - v_chief the ECI pair beside it
+                        would suggest. The two differ by omega x delta_r,
+                        0.11 m/s at a 100 m standoff, a fifth of the 0.5 m/s
+                        dock velocity gate.
   relative (15)         [epoch | relative_view], q_bw and world-relative rates
                         included -- element for element the layout `iss_hcw`
                         carries in-state (`HCW_LAYOUT`), so the same consumer
