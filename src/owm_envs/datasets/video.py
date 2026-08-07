@@ -405,12 +405,18 @@ def iter_batch_frames(
 
     The truth-vs-observation source choice matches `render_episode_frames` --
     see its docstring for why a batch without a truth channel is rendered
-    from measured state.
+    from measured state. The fallback slice widens to the named env's own
+    state width rather than iss's fixed 13, since the adapter it feeds needs
+    a raw state row and a goal-augmented observation carries extra dims past
+    that.
     """
+    from ..envs import ENV_REGISTRY
+
+    state_dim = ENV_REGISTRY[env_name].layout.state_dim
     source = (
         batch.true_state
         if batch.true_state is not None
-        else batch.observations[..., :13]
+        else batch.observations[..., :state_dim]
     )
 
     def payload(episode: int) -> tuple[np.ndarray, np.ndarray, int]:

@@ -20,12 +20,12 @@ def test_registry_has_iss_hcw():
     assert spec.make_dynamics(spec.config_cls()).state_dim == 15
 
 
-def test_only_the_envs_the_renderer_can_pose_are_renderable():
-    # The video path reads recorded true_state rows as iss-layout poses, so
-    # this flag is what the CLI's --render guard reads instead of comparing
-    # names. iss-hcw flips to True with the RenderInputs seam, not before.
+def test_every_registered_env_is_renderable():
+    # The CLI's --render guard reads this flag instead of comparing names.
+    # iss-hcw flipped to True once its own render adapter landed, alongside
+    # iss's.
     assert ENV_REGISTRY["iss"].renderable is True
-    assert ENV_REGISTRY["iss-hcw"].renderable is False
+    assert ENV_REGISTRY["iss-hcw"].renderable is True
 
 
 def test_iss_render_adapter_poses_a_frame_from_a_view_row():
@@ -38,10 +38,15 @@ def test_iss_render_adapter_poses_a_frame_from_a_view_row():
     assert inputs.lighting is None
 
 
-def test_iss_hcw_has_no_render_adapter_yet():
-    # The RenderInputs seam lands for iss-hcw in a later task, together with
-    # flipping renderable to True -- see the comment on that registry entry.
-    assert ENV_REGISTRY["iss-hcw"].make_render_adapter is None
+def test_iss_hcw_render_adapter_poses_a_frame_from_the_view_slice():
+    spec = ENV_REGISTRY["iss-hcw"]
+    adapter = spec.make_render_adapter(spec.config_cls())
+    state = np.zeros(15, dtype=np.float64)
+    state[2:15] = np.arange(13.0)
+    inputs = adapter(state, None)
+    np.testing.assert_array_equal(inputs.position_world, [0.0, 1.0, 2.0])
+    np.testing.assert_array_equal(inputs.quaternion_bw, [6.0, 7.0, 8.0, 9.0])
+    assert inputs.lighting is not None
 
 
 def test_iss_render_adapter_factory_and_adapter_are_picklable():

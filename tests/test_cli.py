@@ -427,35 +427,21 @@ def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
         assert not (out / name).exists(), f"{name} survived a failed render"
 
 
-@pytest.mark.parametrize("source", ["flag", "recipe"])
-def test_render_is_refused_for_a_non_iss_environment(tmp_path, monkeypatch, source):
-    """Rendering reads the recorded true_state rows as iss-layout poses, so an
-    iss-hcw row -- whose first two elements are an epoch, not a position --
-    would come out as silently wrong video rather than an error. Refused for
-    both ways the env can be named, and before the GPU is probed: selecting an
-    adapter pins one for the whole process, which is real cost to spend on an
-    invocation that was never going to run."""
-    probed = []
-    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: probed.append(index))
-    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: probed.append(index))
+def test_render_stays_available_for_iss_hcw(tmp_path, monkeypatch):
+    """iss-hcw's EnvSpec.renderable flips to True once it has its own render
+    adapter, so --render must reach the GPU probe for it exactly as it does
+    for iss, rather than being refused at the guard."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
 
-    if source == "flag":
-        args = ["--env", "iss-hcw", "--steps", "4", "--split", "train:1:0"]
-    else:
-        recipe = tmp_path / "gen.yaml"
-        GenerationConfig(
-            env="iss-hcw",
-            splits={"train": SplitSpec(num_episodes=1, max_steps=4, seed=0)},
-            num_envs=1,
-        ).to_yaml(recipe)
-        args = ["--gen-config", str(recipe)]
+    def stop(index):
+        raise RuntimeError("stop-after-select")
 
-    out = tmp_path / "run"
-    result = runner.invoke(app, ["generate", "--out", str(out), *args, "--render"])
-    assert result.exit_code != 0
-    assert "--render" in result.output and "iss-hcw" in result.output
-    assert probed == [], "probed the GPU for an invocation that was a usage error"
-    assert not out.exists(), "the check must precede the rollout"
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", stop)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--env", "iss-hcw", "--steps", "4",
+        "--split", "train:1:0", "--render",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
 
 
 def test_a_usage_error_below_the_render_guard_still_precedes_the_gpu_probe(

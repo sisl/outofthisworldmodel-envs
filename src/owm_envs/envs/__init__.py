@@ -73,6 +73,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
     from .iss.vector_env import ISSVectorEnv
     from .iss_hcw.config import HCW_LAYOUT, HCWConfig
     from .iss_hcw.dynamics import HCWDynamics
+    from .iss_hcw.render_adapter import make_render_adapter as hcw_make_render_adapter
     from .iss_hcw.vector_env import HCWVectorEnv
 
     return {
@@ -95,9 +96,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=HCWDynamics,
             make_vector_env=lambda num_envs, cfg: HCWVectorEnv(num_envs=num_envs, cfg=cfg),
             view=HCW_LAYOUT.slice_view,
-            # Until the RenderInputs seam lands, the video path would read
-            # this env's epoch prefix as a position.
-            renderable=False,
+            renderable=True,
             # No internal comma: the card reads "under {card_summary} and
             # against the station's collision hull", which a comma clause
             # turns into a garden path.
@@ -105,6 +104,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
                 "Clohessy-Wiltshire relative dynamics about a Keplerian chief "
                 "with gravity-gradient attitude torque"
             ),
+            make_render_adapter=hcw_make_render_adapter,
         ),
     }
 

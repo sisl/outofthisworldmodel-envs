@@ -21,7 +21,6 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium import spaces
 
-from ...render.inputs import RenderInputs
 from ..common.adapter import action_space, render_fps
 from ..common.goal import GOAL_ERROR_DIM
 from ..common.port_goals import PortGoalMixin
@@ -29,6 +28,7 @@ from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
 from .config import HCW_LAYOUT, HCWConfig
 from .dynamics import HCWDynamics
+from .render_adapter import make_render_adapter
 
 
 def _observation_space(cfg: HCWConfig) -> spaces.Box:
@@ -68,6 +68,11 @@ class HCWEnv(PortGoalMixin, gym.Env):
         self._state: jnp.ndarray | None = None
         self._step_index = 0
         self._renderer: Any | None = None
+        # The same adapter the dataset render path uses, so a frame from
+        # `render()` is posed by the code that poses a dataset's video.
+        # Built here rather than at first render: it costs nothing and needs
+        # none of the render extra.
+        self._render_adapter = make_render_adapter(self.cfg)
         # Side stream for sensor-noise draws, derived by fold_in from the
         # dynamics key at reset -- never consumed from np_random, which also
         # seeds reset(), so later unseeded resets don't depend on how many
@@ -193,14 +198,8 @@ class HCWEnv(PortGoalMixin, gym.Env):
 
         if self._renderer is None:
             self._renderer = self._make_renderer()
-        # Posed from the view row alone, so the frame carries no `Lighting`
-        # and the scene keeps the static sun, altitude and moon its config was
-        # built with. The epoch and chief geometry this env's state does carry
-        # reach the renderer once this env has an adapter of its own.
         return self._renderer.render(
-            RenderInputs.from_view(
-                np.asarray(HCW_LAYOUT.slice_view(self._state), dtype=np.float32)
-            ),
+            self._render_adapter(np.asarray(self._state, dtype=np.float32)),
             view=self.cfg.render_view,
         )
 
