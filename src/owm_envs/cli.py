@@ -497,6 +497,10 @@ def generate(
             frames = iter_batch_frames(
                 batch, render_cfg, keys=view_keys,
                 workers=render_workers, gpu_index=gpu_index,
+                # The environment that produced the batch, not a built
+                # adapter: a render worker is a spawned process and rebuilds
+                # its own from these two.
+                env_name=env_name, env_cfg=cfg,
             )
             # Tapped on the way past rather than rendered again: every view's
             # clips are also written per episode under media/<view>/<split>/,

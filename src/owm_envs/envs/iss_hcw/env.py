@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium import spaces
 
+from ...render.inputs import RenderInputs
 from ..common.adapter import action_space, render_fps
 from ..common.goal import GOAL_ERROR_DIM
 from ..common.port_goals import PortGoalMixin
@@ -192,11 +193,14 @@ class HCWEnv(PortGoalMixin, gym.Env):
 
         if self._renderer is None:
             self._renderer = self._make_renderer()
-        # The renderer's lighting is posed from its own static config, not
-        # from the epoch and chief geometry carried in this env's state --
-        # that seam (RenderInputs) lands in PR 5.
+        # Posed from the view row alone, so the frame carries no `Lighting`
+        # and the scene keeps the static sun, altitude and moon its config was
+        # built with. The epoch and chief geometry this env's state does carry
+        # reach the renderer once this env has an adapter of its own.
         return self._renderer.render(
-            np.asarray(HCW_LAYOUT.slice_view(self._state), dtype=np.float32),
+            RenderInputs.from_view(
+                np.asarray(HCW_LAYOUT.slice_view(self._state), dtype=np.float32)
+            ),
             view=self.cfg.render_view,
         )
 

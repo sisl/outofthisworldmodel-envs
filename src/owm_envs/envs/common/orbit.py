@@ -197,13 +197,12 @@ def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray
     the contract: the moon is meant to hang off the Earth-center scene node,
     at earth_center_world + this, which is why the chief offset must NOT be
     subtracted here -- unlike `sun_direction_world`, whose consumer wants a
-    direction at the chief. (The renderer is not wired to this yet: today
-    `render/iss_scene.py` places the moon from its static
-    `moon_direction_from_earth_world` / `earth_moon_distance_m` config, in
-    exactly that earth_center + offset form.) `chief_state_eci` enters only
-    through the world rotation. Scalar `Epoch` and a single (6,) chief state
-    -- NOT batched; vmap for batches. Returns a (3,) astrojax-dtype (f32 by
-    default) array."""
+    direction at the chief. `ISSScene.update` places the moon in exactly that
+    earth_center + offset form when the frame carries `Lighting`, and from its
+    static `moon_direction_from_earth_world` / `earth_moon_distance_m` config
+    when it does not. `chief_state_eci` enters only through the world rotation.
+    Scalar `Epoch` and a single (6,) chief state -- NOT batched; vmap for
+    batches. Returns a (3,) astrojax-dtype (f32 by default) array."""
     rotated = _world_rotation(chief_state_eci) @ moon_position(epoch)
     return rotated.astype(astrojax_config.get_dtype())
 

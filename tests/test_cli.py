@@ -864,9 +864,11 @@ def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkey
 
     seen = {}
 
-    def fake_iter(batch, cfg, keys=(), workers=1, gpu_index=None):
+    def fake_iter(batch, cfg, keys=(), workers=1, gpu_index=None, *, env_name, env_cfg):
         seen["workers"] = workers
         seen["gpu_index"] = gpu_index
+        seen["env_name"] = env_name
+        seen["env_cfg"] = type(env_cfg).__name__
         raise RuntimeError("stop-after-fan-out")
 
     monkeypatch.setattr(video, "iter_batch_frames", fake_iter)
@@ -882,7 +884,11 @@ def test_render_workers_fan_out_and_keep_the_parent_off_the_gpu(tmp_path, monkey
         "--num-envs", "1", "--render", "--render-workers", "4", "--gpu-index", "1",
     ])
     assert isinstance(result.exception, RuntimeError), result.output
-    assert seen == {"workers": 4, "gpu_index": 1}
+    # The pair the workers rebuild their render adapter from: a pool that
+    # never received it would pose nothing, and one that received the wrong
+    # environment's would pose the rows as some other layout.
+    assert seen == {"workers": 4, "gpu_index": 1, "env_name": "iss",
+                    "env_cfg": "ISSConfig"}
 
 
 def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
@@ -902,7 +908,7 @@ def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
         order.append((kind, allow_download))
         return tmp_path / f"earth_{kind}"
 
-    def fake_iter(batch, cfg, keys=(), workers=1, gpu_index=None):
+    def fake_iter(batch, cfg, keys=(), workers=1, gpu_index=None, *, env_name, env_cfg):
         order.append(("iter_batch_frames", workers))
         raise RuntimeError("stop-after-fan-out")
 
@@ -946,7 +952,7 @@ def test_render_frames_reach_the_writer_unmaterialized(tmp_path, monkeypatch):
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, keys=(), workers=1, gpu_index=None: iter(
+        lambda batch, cfg, keys=(), workers=1, gpu_index=None, **env: iter(
             [_fpv_clips() for _ in range(batch.num_episodes)]
         ),
     )
@@ -991,7 +997,7 @@ def test_render_line_names_frames_and_workers_without_a_time_estimate(
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, keys=(), workers=1, gpu_index=None: iter(
+        lambda batch, cfg, keys=(), workers=1, gpu_index=None, **env: iter(
             [_fpv_clips() for _ in range(batch.num_episodes)]
         ),
     )
@@ -1209,7 +1215,7 @@ def _record_render_keys(monkeypatch, seen):
     monkeypatch.setattr(writer, "write_lerobot_split", fake_write)
     monkeypatch.setattr(
         "owm_envs.datasets.video.iter_batch_frames",
-        lambda batch, cfg, keys=(), workers=1, gpu_index=None: (
+        lambda batch, cfg, keys=(), workers=1, gpu_index=None, **env: (
             seen.update(keys=tuple(keys)),
             iter([_clips_for(keys) for _ in range(batch.num_episodes)]),
         )[1],

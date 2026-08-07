@@ -20,10 +20,17 @@ pytest.importorskip("pygfx", reason="rendering is an optional extra")
 from owm_envs.datasets.video import (  # noqa: E402
     FPV_KEY,
     iter_batch_frames,
+    render_adapter_for,
     render_batch_frames,
 )
+from owm_envs.envs.iss.config import ISSConfig  # noqa: E402
 
 FPV = FPV_KEY
+
+# The environment these batches came from: the render pipeline builds its
+# adapter from the pair rather than being handed one, because a spawned
+# worker can only be sent something it can rebuild an adapter from.
+ISS = {"env_name": "iss", "env_cfg": ISSConfig()}
 
 
 class _FakeRenderer:
@@ -38,9 +45,9 @@ class _FakeRenderer:
         _FakeRenderer.instances += 1
         self.cfg = cfg
 
-    def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+    def render_views(self, inputs, views=("DRAGON_FPV",)):
         frame = np.zeros((self.cfg.image_height, self.cfg.image_width, 3), dtype=np.uint8)
-        frame[0, 0, 0] = int(state[0])
+        frame[0, 0, 0] = int(inputs.position_world[0])
         return {view: frame.copy() for view in views}
 
     def close(self):
@@ -80,13 +87,13 @@ def fake_renderer(monkeypatch):
 
 def test_single_worker_yields_clips_in_episode_order(fake_renderer):
     batch = _fake_batch()
-    clips = [episode[FPV] for episode in iter_batch_frames(batch, _Cfg())]
+    clips = [episode[FPV] for episode in iter_batch_frames(batch, _Cfg(), **ISS)]
     assert [clip.shape[0] for clip in clips] == [3, 2, 4]
     assert [int(clip[0, 0, 0, 0]) for clip in clips] == [1, 2, 3]
 
 
 def test_single_worker_reuses_one_renderer_and_closes_it(fake_renderer):
-    list(iter_batch_frames(_fake_batch(), _Cfg()))
+    list(iter_batch_frames(_fake_batch(), _Cfg(), **ISS))
     assert fake_renderer.instances == 1
     assert fake_renderer.closes == 1
 
@@ -95,7 +102,7 @@ def test_abandoning_the_iterator_still_closes_the_renderer(fake_renderer):
     # The writer may raise part-way through consuming the clips, and a
     # renderer holds ~200 MB of GPU buffers, so it has to be released even
     # when the iterator is never exhausted.
-    clips = iter_batch_frames(_fake_batch(), _Cfg())
+    clips = iter_batch_frames(_fake_batch(), _Cfg(), **ISS)
     next(clips)
     clips.close()
     assert fake_renderer.closes == 1
@@ -119,8 +126,31 @@ def test_a_worker_never_downloads_its_own_earth_textures(monkeypatch):
     monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
     from owm_envs.render.iss_scene import RenderConfig
 
-    video._worker_init(RenderConfig().model_dump_json(), (FPV,), None)
+    video._worker_init(
+        RenderConfig().model_dump_json(), (FPV,), None, "iss", ISSConfig().model_dump_json()
+    )
     assert seen["download_textures"] is False
+
+
+def test_a_worker_builds_its_own_render_adapter(monkeypatch):
+    """An adapter reaches a worker as the (env_name, config) it is built from,
+    never as a callable: the pool is a spawn one, the child re-imports this
+    module from scratch, and what the parent holds is bound to a config the
+    child does not have. The config crosses as JSON for the same reason the
+    RenderConfig does, so this rebuilds through that round trip.
+    """
+    import owm_envs.datasets.video as video
+
+    monkeypatch.setattr("owm_envs.render.renderer.ISSRenderer", lambda cfg, **kw: None)
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
+    from owm_envs.render.iss_scene import RenderConfig
+
+    video._worker_init(
+        RenderConfig().model_dump_json(), (FPV,), None, "iss", ISSConfig().model_dump_json()
+    )
+    posed = video._WORKER_ADAPTER(np.arange(13.0), np.zeros(6))
+    np.testing.assert_array_equal(posed.position_world, [0.0, 1.0, 2.0])
+    np.testing.assert_array_equal(posed.quaternion_bw, [6.0, 7.0, 8.0, 9.0])
 
 
 def test_parallel_matches_sequential():
@@ -130,8 +160,8 @@ def test_parallel_matches_sequential():
     from owm_envs.render.iss_scene import RenderConfig
 
     cfg = RenderConfig(image_width=64, image_height=64)
-    sequential = render_batch_frames(batch, cfg)
-    parallel = list(iter_batch_frames(batch, cfg, workers=2))
+    sequential = render_batch_frames(batch, cfg, adapter=render_adapter_for(**ISS))
+    parallel = list(iter_batch_frames(batch, cfg, workers=2, **ISS))
     assert len(parallel) == len(sequential)
     for seq, par in zip(sequential, parallel):
         assert set(seq) == set(par)
@@ -146,7 +176,9 @@ def test_abandoning_a_pool_iterator_returns_promptly():
     batch = _scan_batch("off", goal_error=False)
     from owm_envs.render.iss_scene import RenderConfig
 
-    clips = iter_batch_frames(batch, RenderConfig(image_width=64, image_height=64), workers=2)
+    clips = iter_batch_frames(
+        batch, RenderConfig(image_width=64, image_height=64), workers=2, **ISS
+    )
     next(clips)
     start = time.perf_counter()
     clips.close()
@@ -166,6 +198,7 @@ def test_a_worker_that_cannot_start_fails_instead_of_hanging():
         """
         import numpy as np
         from owm_envs.datasets.video import iter_batch_frames
+        from owm_envs.envs.iss.config import ISSConfig
         from owm_envs.drivers.types import TrajectoryBatch
         from owm_envs.render.iss_scene import RenderConfig
 
@@ -179,7 +212,8 @@ def test_a_worker_that_cannot_start_fails_instead_of_hanging():
             policy_ids=None,
         )
         cfg = RenderConfig(image_width=64, image_height=64)
-        list(iter_batch_frames(batch, cfg, workers=2, gpu_index=9999))
+        list(iter_batch_frames(batch, cfg, workers=2, gpu_index=9999,
+                               env_name="iss", env_cfg=ISSConfig()))
         """
     )
     done = subprocess.run(

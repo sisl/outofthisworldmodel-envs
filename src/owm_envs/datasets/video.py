@@ -3,7 +3,9 @@
 Kept separate from `lerobot_writer.py` so that module stays the sole lerobot
 call site: rendering needs `owm_envs.render`, an optional extra of its own,
 so the import here is lazy -- nothing in this package may pull in pygfx at
-module level outside the render package itself.
+module level outside the render package itself. `render.inputs` is the
+exception that proves it: it is numpy and nothing else, which is what lets a
+render worker pose a frame without a GPU stack.
 
 This module also owns which dataset feature a clip is written as: the renderer
 knows nothing about datasets, and the writer takes whatever keys it is handed.
@@ -29,11 +31,17 @@ import os
 import warnings
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
 
 from ..drivers.types import TrajectoryBatch
+from ..render.inputs import RenderInputs
+
+# What an env's render adapter is, from this module's side: the thing that
+# turns one of that env's stored rows into a posable frame. `render/inputs.py`
+# is numpy-only, so naming the type here costs no pygfx and no jax.
+RenderAdapter = Callable[[np.ndarray, np.ndarray | None], RenderInputs]
 
 FPV_VIEW = "DRAGON_FPV"
 FPV_KEY = "observation.images.fpv"
@@ -192,8 +200,16 @@ def render_episode_frames(
     cfg: Any,
     keys: Sequence[str] = (FPV_KEY,),
     renderer: Any | None = None,
+    *,
+    adapter: RenderAdapter,
 ) -> dict[str, np.ndarray]:
     """Render one episode to `(L, H, W, 3)` uint8 clips, keyed by feature name.
+
+    `adapter` is the source environment's render adapter -- see
+    `EnvSpec.make_render_adapter` -- which is what turns each stored row into
+    something the renderer can pose. It has no default because getting it
+    wrong is silently wrong video rather than an error: every caller says
+    which environment produced the batch it is handing over.
 
     `keys` names the features to produce, out of `OUTPUT_KEYS`. Only the
     cameras they need are drawn, so the per-frame cost tracks the number of
@@ -231,7 +247,7 @@ def render_episode_frames(
             state = _episode_state(batch, episode_index, t)
             action = batch.actions[episode_index, t]
             # One pose serves every view of this frame.
-            rendered = renderer.render_views(state, action=action, views=views)
+            rendered = renderer.render_views(adapter(state, action), views=views)
             _fill_frame(clips, rendered, t, keys, cfg.image_height, cfg.image_width)
     finally:
         if owns_renderer:
@@ -243,6 +259,8 @@ def render_batch_frames(
     batch: TrajectoryBatch,
     cfg: Any,
     keys: Sequence[str] = (FPV_KEY,),
+    *,
+    adapter: RenderAdapter,
 ) -> list[dict[str, np.ndarray]]:
     """Render every episode in `batch` to its clips, keyed by feature name.
 
@@ -255,42 +273,76 @@ def render_batch_frames(
     renderer = ISSRenderer(cfg)
     try:
         return [
-            render_episode_frames(batch, i, cfg, keys=keys, renderer=renderer)
+            render_episode_frames(batch, i, cfg, keys=keys, renderer=renderer, adapter=adapter)
             for i in range(batch.num_episodes)
         ]
     finally:
         renderer.close()
 
 
+def render_adapter_for(env_name: str, env_cfg: Any) -> RenderAdapter:
+    """The named environment's render adapter, built for `env_cfg`.
+
+    The one way this module obtains an adapter, in the parent and in a worker
+    alike: an adapter is a property of the environment that produced a batch,
+    and the registry is where that lives.
+    """
+    from ..envs import ENV_REGISTRY
+
+    spec = ENV_REGISTRY[env_name]
+    if spec.make_render_adapter is None:
+        raise ValueError(
+            f"environment {env_name!r} has no render adapter, so its rows cannot "
+            "be posed; see EnvSpec.make_render_adapter"
+        )
+    return spec.make_render_adapter(env_cfg)
+
+
 _WORKER_RENDERER: Any = None
 _WORKER_CFG: Any = None
 _WORKER_KEYS: tuple[str, ...] = (FPV_KEY,)
+_WORKER_ADAPTER: RenderAdapter | None = None
 
 
-def _worker_init(cfg_json: str, keys: Sequence[str], gpu_index: int | None) -> None:
-    """Build this worker's own renderer, once, at pool start-up.
+def _worker_init(
+    cfg_json: str,
+    keys: Sequence[str],
+    gpu_index: int | None,
+    env_name: str,
+    env_cfg_json: str,
+) -> None:
+    """Build this worker's own renderer and render adapter, once, at pool
+    start-up.
 
     The GPU is chosen first and exactly once: pygfx pins one shared wgpu
     device per process the moment a scene is built, and selecting an adapter
     after that raises. JAX is pushed to the CPU because a worker only replays
     states that are already stored -- it steps no dynamics, so a JAX GPU
-    context here would take VRAM from the renderer for nothing.
+    context here would take VRAM from the renderer for nothing. The render
+    adapter is built after that, since reaching the registry imports the
+    environments and so imports JAX.
 
-    `cfg` crosses as JSON rather than as an object because the pool is a
-    spawn one: the child re-imports this module from scratch, and a
-    RenderConfig round-tripped through its own validator is reconstructed by
-    the same code that would have built it in the parent.
+    Both configs cross as JSON rather than as objects because the pool is a
+    spawn one: the child re-imports this module from scratch, and a config
+    round-tripped through its own validator is reconstructed by the same code
+    that would have built it in the parent. The adapter is rebuilt here rather
+    than sent, because what the parent holds is a callable bound to a config
+    the child does not have.
     """
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
     from ..render.device import select_gpu
 
     select_gpu(gpu_index)
+    from ..envs import ENV_REGISTRY
     from ..render.iss_scene import RenderConfig
     from ..render.renderer import ISSRenderer
 
-    global _WORKER_RENDERER, _WORKER_CFG, _WORKER_KEYS
+    global _WORKER_RENDERER, _WORKER_CFG, _WORKER_KEYS, _WORKER_ADAPTER
     _WORKER_CFG = RenderConfig.model_validate_json(cfg_json)
     _WORKER_KEYS = tuple(keys)
+    _WORKER_ADAPTER = render_adapter_for(
+        env_name, ENV_REGISTRY[env_name].config_cls.model_validate_json(env_cfg_json)
+    )
     # Downloads off: the parent resolved all three Earth textures before the
     # pool started. A worker allowed to fetch its own would put them back the
     # moment the parent's fetch failed -- every worker retrying the same
@@ -312,7 +364,9 @@ def _worker_render(payload: tuple[np.ndarray, np.ndarray, int]) -> dict[str, np.
     height, width = _WORKER_CFG.image_height, _WORKER_CFG.image_width
     clips = {key: np.empty((length, height, width, 3), dtype=np.uint8) for key in keys}
     for t in range(length):
-        rendered = _WORKER_RENDERER.render_views(states[t], action=actions[t], views=views)
+        rendered = _WORKER_RENDERER.render_views(
+            _WORKER_ADAPTER(states[t], actions[t]), views=views
+        )
         _fill_frame(clips, rendered, t, keys, height, width)
     return clips
 
@@ -323,8 +377,16 @@ def iter_batch_frames(
     keys: Sequence[str] = (FPV_KEY,),
     workers: int = 1,
     gpu_index: int | None = None,
+    *,
+    env_name: str,
+    env_cfg: Any,
 ) -> Iterator[dict[str, np.ndarray]]:
     """Yield each episode's clips, keyed by feature name, in episode order.
+
+    `(env_name, env_cfg)` rather than a built adapter, and neither with a
+    default: an adapter is a callable bound to a config, and a spawned worker
+    can be handed neither. The pair is what a worker can rebuild its own
+    adapter from, so it is what this takes on both paths.
 
     Streams: a consumer that writes each episode's clips and drops them holds
     one episode at a time, not the whole split. At 500k frames of 256x256x3 a
@@ -364,11 +426,12 @@ def iter_batch_frames(
         from ..render.renderer import ISSRenderer
 
         select_gpu(gpu_index)
+        adapter = render_adapter_for(env_name, env_cfg)
         renderer = ISSRenderer(cfg)
         try:
             for episode in range(batch.num_episodes):
                 yield render_episode_frames(
-                    batch, episode, cfg, keys=keys, renderer=renderer
+                    batch, episode, cfg, keys=keys, renderer=renderer, adapter=adapter
                 )
         finally:
             renderer.close()
@@ -384,7 +447,13 @@ def iter_batch_frames(
         max_workers=workers,
         mp_context=mp.get_context("spawn"),
         initializer=_worker_init,
-        initargs=(cfg.model_dump_json(), tuple(keys), gpu_index),
+        initargs=(
+            cfg.model_dump_json(),
+            tuple(keys),
+            gpu_index,
+            env_name,
+            env_cfg.model_dump_json(),
+        ),
     )
     try:
         episodes = iter(range(batch.num_episodes))

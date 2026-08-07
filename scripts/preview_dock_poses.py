@@ -39,6 +39,7 @@ from owm_envs.envs.common.docking_ports import (
     resolve_port_names,
 )
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.render.inputs import RenderInputs
 from owm_envs.render.iss_scene import RenderConfig
 from owm_envs.render.renderer import ISSRenderer
 from owm_envs.render.view import CameraView
@@ -225,16 +226,16 @@ def main(
         views = corridor_views(position, normal, size)
         scale = 0.022 * views[0].ortho_half_extent
 
-        state = goal_state(position, quat)
+        posed = RenderInputs.from_view(goal_state(position, quat))
         # The goal marker sits on the chaser itself, so the onboard view is
         # rendered before the overlay goes in.
-        panels = [("chaser view", renderer.render(state, None, view="DRAGON_FPV"))]
+        panels = [("chaser view", renderer.render(posed, view="DRAGON_FPV"))]
 
         overlay = build_overlay(port, position, scale)
         scene.add(overlay)
         with station_only(scene):
-            panels += [(v.name, renderer.render_view(state, v)) for v in views]
-        panels.append(("context", renderer.render(state, None, view="ISS_ISO")))
+            panels += [(v.name, renderer.render_view(posed, v)) for v in views]
+        panels.append(("context", renderer.render(posed, view="ISS_ISO")))
         scene.remove(overlay)
 
         gap = clearance(position, centers, half_extents)

@@ -16,6 +16,11 @@ from owm_envs.datasets.video import (  # noqa: E402
     render_episode_frames,
 )
 from owm_envs.drivers.types import TrajectoryBatch  # noqa: E402
+from owm_envs.render.inputs import RenderInputs  # noqa: E402
+
+# What iss's own render adapter is: these batches carry iss rows, so this is
+# the adapter the pipeline would build for them.
+ADAPTER = RenderInputs.from_view
 
 
 class _FakeRenderer:
@@ -29,7 +34,7 @@ class _FakeRenderer:
         _FakeRenderer.instances += 1
         self.cfg = cfg
 
-    def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+    def render_views(self, inputs, views=("DRAGON_FPV",)):
         frame = np.zeros((self.cfg.image_height, self.cfg.image_width, 3), dtype=np.uint8)
         return {view: frame.copy() for view in views}
 
@@ -69,7 +74,7 @@ def test_render_batch_frames_builds_one_renderer_for_the_whole_batch():
     # ~3.6 s. A fresh renderer per episode would repeat that N times for an
     # N-episode batch.
     batch = small_batch()
-    frames = render_batch_frames(batch, _Cfg())
+    frames = render_batch_frames(batch, _Cfg(), adapter=ADAPTER)
     assert len(frames) == batch.num_episodes
     assert _FakeRenderer.instances == 1
     assert _FakeRenderer.closes == 1
@@ -78,8 +83,8 @@ def test_render_batch_frames_builds_one_renderer_for_the_whole_batch():
 def test_render_episode_frames_reuses_a_passed_in_renderer():
     batch = small_batch()
     renderer = _FakeRenderer(_Cfg())
-    render_episode_frames(batch, 0, _Cfg(), renderer=renderer)
-    render_episode_frames(batch, 1, _Cfg(), renderer=renderer)
+    render_episode_frames(batch, 0, _Cfg(), renderer=renderer, adapter=ADAPTER)
+    render_episode_frames(batch, 1, _Cfg(), renderer=renderer, adapter=ADAPTER)
     assert _FakeRenderer.instances == 1  # only the one built above
     assert _FakeRenderer.closes == 0  # the caller owns closing a passed-in renderer
 
@@ -88,7 +93,7 @@ def test_render_episode_frames_without_a_renderer_builds_and_closes_its_own():
     # Standalone use: no renderer given, so one is built and closed just for
     # this call.
     batch = small_batch()
-    render_episode_frames(batch, 0, _Cfg())
+    render_episode_frames(batch, 0, _Cfg(), adapter=ADAPTER)
     assert _FakeRenderer.instances == 1
     assert _FakeRenderer.closes == 1
 
@@ -96,7 +101,7 @@ def test_render_episode_frames_without_a_renderer_builds_and_closes_its_own():
 def test_the_default_renders_only_the_egocentric_training_view():
     # Every extra feature costs a full render per frame and a full video
     # stream, so the default must stay what training consumes.
-    clips = render_episode_frames(small_batch(), 0, _Cfg())
+    clips = render_episode_frames(small_batch(), 0, _Cfg(), adapter=ADAPTER)
     assert list(clips) == [FPV_KEY]
 
 
@@ -104,7 +109,7 @@ def test_the_composite_adds_one_feature_the_size_of_a_single_view():
     # Six views in one frame, not six frames: the mosaic is the same shape as
     # the training view, which is what keeps it affordable to store.
     clips = render_episode_frames(
-        small_batch(), 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY)
+        small_batch(), 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY), adapter=ADAPTER
     )
     assert set(clips) == {FPV_KEY, COMPOSITE_KEY}
     assert clips[COMPOSITE_KEY].shape == clips[FPV_KEY].shape
@@ -114,7 +119,7 @@ def test_every_named_view_can_be_written_as_its_own_feature():
     # The full set: six cameras under their own keys plus the mosaic. Each is
     # a video stream of its own, which is what the flag exists to let a run
     # trade away.
-    clips = render_episode_frames(small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS)
+    clips = render_episode_frames(small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS, adapter=ADAPTER)
     assert tuple(clips) == OUTPUT_KEYS
     assert {clip.shape for clip in clips.values()} == {(3, 8, 8, 3)}
 
@@ -123,14 +128,19 @@ def test_each_per_view_feature_carries_its_own_camera():
     # Six keys of the right shape would look identical to six copies of the
     # training view, so check the pixels reach the key named after them.
     class _PerViewRenderer(_FakeRenderer):
-        def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+        def render_views(self, inputs, views=("DRAGON_FPV",)):
             return {
                 view: np.full((8, 8, 3), COMPOSITE_VIEWS.index(view) + 1, dtype=np.uint8)
                 for view in views
             }
 
     clips = render_episode_frames(
-        small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS, renderer=_PerViewRenderer(_Cfg())
+        small_batch(),
+        0,
+        _Cfg(),
+        keys=OUTPUT_KEYS,
+        renderer=_PerViewRenderer(_Cfg()),
+        adapter=ADAPTER,
     )
     for index, view in enumerate(COMPOSITE_VIEWS):
         assert set(np.unique(clips[VIEW_KEYS[view]]).tolist()) == {index + 1}
@@ -143,9 +153,9 @@ def test_only_the_cameras_a_run_asked_for_are_drawn():
     calls = []
 
     class _CountingRenderer(_FakeRenderer):
-        def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+        def render_views(self, inputs, views=("DRAGON_FPV",)):
             calls.append(tuple(views))
-            return super().render_views(state, action, views)
+            return super().render_views(inputs, views)
 
     batch = small_batch()
     render_episode_frames(
@@ -154,6 +164,7 @@ def test_only_the_cameras_a_run_asked_for_are_drawn():
         _Cfg(),
         keys=("observation.images.iss_top",),
         renderer=_CountingRenderer(_Cfg()),
+        adapter=ADAPTER,
     )
     assert calls == [("ISS_TOP",)] * int(batch.lengths[0])
 
@@ -164,16 +175,59 @@ def test_the_composite_asks_for_every_view_once_per_frame():
     calls = []
 
     class _CountingRenderer(_FakeRenderer):
-        def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+        def render_views(self, inputs, views=("DRAGON_FPV",)):
             calls.append(tuple(views))
-            return super().render_views(state, action, views)
+            return super().render_views(inputs, views)
 
     batch = small_batch()
     renderer = _CountingRenderer(_Cfg())
     render_episode_frames(
-        batch, 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY), renderer=renderer
+        batch, 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY), renderer=renderer, adapter=ADAPTER
     )
     assert calls == [COMPOSITE_VIEWS] * int(batch.lengths[0])
+
+
+def test_every_frame_is_posed_through_the_environments_adapter():
+    """The renderer is handed what the adapter made of a row, never the row.
+
+    That is the whole of the seam: an environment whose rows the renderer
+    could not read is rendered correctly if its adapter is called for every
+    frame, and silently wrongly if any frame slips past it. Both episodes are
+    checked, since the renderer is reused across them and only the adapter
+    call is per frame.
+    """
+    posed = []
+
+    def counting_adapter(state, action=None):
+        inputs = RenderInputs.from_view(state, action)
+        posed.append((np.asarray(state).copy(), np.asarray(action).copy(), inputs))
+        return inputs
+
+    drawn = []
+
+    class _CapturingRenderer(_FakeRenderer):
+        def render_views(self, inputs, views=("DRAGON_FPV",)):
+            drawn.append(inputs)
+            return super().render_views(inputs, views)
+
+    lengths = (3, 2)
+    batch = small_batch(lengths)
+    # A marker per frame, so a row that reached the adapter out of order or
+    # twice is visible rather than lost among identical zeros.
+    for episode, length in enumerate(lengths):
+        batch.observations[episode, :length, 0] = np.arange(length) + 10 * episode
+        batch.actions[episode, :length, 0] = np.arange(length) + 100 * episode
+
+    renderer = _CapturingRenderer(_Cfg())
+    for episode in range(batch.num_episodes):
+        render_episode_frames(
+            batch, episode, _Cfg(), renderer=renderer, adapter=counting_adapter
+        )
+
+    assert len(posed) == sum(lengths), "the adapter is called once per frame"
+    assert [float(row[0]) for row, _, _ in posed] == [0.0, 1.0, 2.0, 10.0, 11.0]
+    assert [float(action[0]) for _, action, _ in posed] == [0.0, 1.0, 2.0, 100.0, 101.0]
+    assert drawn == [inputs for _, _, inputs in posed]
 
 
 def test_the_composite_tiles_every_view_into_distinct_regions():
