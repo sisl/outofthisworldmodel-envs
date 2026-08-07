@@ -8,6 +8,7 @@ from owm_envs.core.quaternion import (
     quat_conjugate,
     quat_derivative_from_omega_body,
     quat_from_body_z_to,
+    quat_from_rotmat,
     quat_multiply,
     quat_normalize,
     quat_to_rotmat,
@@ -119,6 +120,50 @@ def test_single_axis_rotation_matches_analytic_solution(axis_index, omega_body):
     expected[0] = np.cos(Omega * t / 2)
     expected[axis_index] = np.sin(Omega * t / 2)
     np.testing.assert_allclose(np.asarray(q), expected, atol=1e-5)
+
+
+def _chord_distance(q: np.ndarray, p: np.ndarray) -> float:
+    """Distance between the rotations q and p represent, not the vectors:
+    q and -q are the same rotation, so the shorter of the two arms is the
+    one that matters. Never use arccos(dot) here -- at f32 grain that curve
+    is nearly flat near dot=1, so it dulls exactly the small errors this
+    test exists to catch (see the PR4 measurement trap)."""
+    return min(float(np.linalg.norm(q - p)), float(np.linalg.norm(q + p)))
+
+
+def test_quat_from_rotmat_round_trips_random_quaternions_f64():
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        q = quat_normalize(jnp.asarray(rng.normal(size=4), dtype=jnp.float64))
+        got = quat_from_rotmat(quat_to_rotmat(q))
+        assert _chord_distance(np.asarray(got), np.asarray(q)) < 1e-6
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        (1e-9, 0.6, 0.8, 0.0),  # w ~= 0
+        (0.05, 0.99, 0.05, 0.05),  # x-dominant
+        (0.05, 0.05, 0.99, 0.05),  # y-dominant
+        (0.05, 0.05, 0.05, 0.99),  # z-dominant
+    ],
+    ids=["w_near_zero", "x_dominant", "y_dominant", "z_dominant"],
+)
+def test_quat_from_rotmat_round_trips_near_edge_cases_f64(raw):
+    q = quat_normalize(jnp.asarray(raw, dtype=jnp.float64))
+    got = quat_from_rotmat(quat_to_rotmat(q))
+    assert _chord_distance(np.asarray(got), np.asarray(q)) < 1e-6
+
+
+def test_quat_from_rotmat_returns_w_non_negative():
+    q = quat_normalize(jnp.asarray([-0.5, 0.5, 0.5, 0.5], dtype=jnp.float64))
+    got = quat_from_rotmat(quat_to_rotmat(q))
+    assert float(got[0]) >= 0.0
+
+
+def test_quat_from_rotmat_of_identity_is_identity():
+    got = quat_from_rotmat(quat_to_rotmat(IDENTITY.astype(jnp.float64)))
+    np.testing.assert_allclose(np.asarray(got), np.asarray(IDENTITY, dtype=np.float64), atol=1e-10)
 
 
 def test_quat_from_body_z_to_handles_exact_antiparallel_target():
