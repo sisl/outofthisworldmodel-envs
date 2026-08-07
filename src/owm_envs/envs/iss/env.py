@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium import spaces
 
-from .config import ISSConfig, dock_target
+from .config import ISSConfig, dock_port_targets, dock_target
 from .dynamics import ISSDynamics
 from .goal import GOAL_ERROR_DIM, dock_goal_error
 from .reward import iss_reward
@@ -84,14 +84,39 @@ class ISSEnv(gym.Env):
         # noisy observations the previous episode drew.
         self._noise_key: jax.Array | None = None
 
-        # jit once at construction; both are pure functions of (state, action).
+        # Ports an episode may be assigned. Empty when the config names none,
+        # and then nothing below is ever drawn or passed: `_dock_pose` stays
+        # None, so the dynamics and the reward fall back to `cfg.dock` exactly
+        # as they did before this field existed.
+        self._port_names: tuple[str, ...] = tuple(p.name for p in self.cfg.dock.ports)
+        self._port_targets = jnp.asarray(dock_port_targets(self.cfg), dtype=jnp.float32)
+        self._port_index: int | None = None
+        self._dock_pose: jnp.ndarray | None = None
+        self._cfg_dock_target = jnp.asarray(dock_target(self.cfg), dtype=jnp.float32)
+
+        # jit once at construction; all are pure functions of their arguments.
+        # A drawn port reaches `step` as an argument, so a new draw each
+        # episode costs no recompilation.
         self._jit_step = jax.jit(self.dynamics.step)
         self._jit_reset = jax.jit(self.dynamics.reset)
-        self._jit_dock_goal_error = (
-            jax.jit(lambda measured: dock_goal_error(measured, jnp.asarray(dock_target(self.cfg))))
-            if self.cfg.observation.goal_error
-            else None
-        )
+        self._jit_dock_goal_error = self._build_jit_dock_goal_error()
+
+    def _build_jit_dock_goal_error(self) -> Any | None:
+        """measured -> the goal-error block, or None when it isn't emitted.
+
+        With no ports the target never changes, and it is compiled in as a
+        constant -- the arrangement a config without ports had before ports
+        existed, and float32 constant folding is not bit-identical to the same
+        arithmetic on a runtime argument. A port set makes it a per-episode
+        argument read off `_dock_pose` at call time instead.
+        """
+        if not self.cfg.observation.goal_error:
+            return None
+        if not self._port_names:
+            pose = self._cfg_dock_target
+            return jax.jit(lambda measured: dock_goal_error(measured, pose))
+        jitted = jax.jit(dock_goal_error)
+        return lambda measured: jitted(measured, self._dock_pose)
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
@@ -104,12 +129,17 @@ class ISSEnv(gym.Env):
         if self.cfg.sensor_noise.enabled:
             self._noise_key = jax.random.fold_in(dynamics_key, NOISE_STREAM)
         self._state = self._jit_reset(dynamics_key)
+        # Drawn after the dynamics seed, never before: the port is an extra
+        # draw on the end of np_random's stream, so a given seed reproduces
+        # the same initial state whether or not ports are configured.
+        self._draw_port()
         self._step_index = 0
         return self._obs(), {
             "success": False,
             "collision": False,
             "escaped": False,
             "state": self._true_state(),
+            **self._port_info(),
         }
 
     def step(
@@ -125,8 +155,13 @@ class ISSEnv(gym.Env):
         )
         action_j = jnp.asarray(clipped)
 
-        next_state, events = self._jit_step(self._state, action_j)
-        reward = float(iss_reward(next_state, action_j, events, self.cfg))
+        next_state, events = self._jit_step(self._state, action_j, self._dock_pose)
+        reward = float(
+            iss_reward(
+                next_state, action_j, events, self.cfg,
+                None if self._dock_pose is None else self._dock_pose[0:3],
+            )
+        )
 
         self._state = next_state
         self._step_index += 1
@@ -147,8 +182,30 @@ class ISSEnv(gym.Env):
                 "collision": collision,
                 "escaped": escaped,
                 "state": self._true_state(),
+                **self._port_info(),
             },
         )
+
+    def _draw_port(self) -> None:
+        """Assign this episode a port, uniformly over the configured set."""
+        if not self._port_names:
+            return
+        self._port_index = int(self.np_random.integers(len(self._port_names)))
+        self._dock_pose = self._port_targets[self._port_index]
+
+    def _port_info(self) -> dict[str, Any]:
+        """The episode's port, for attributing a trajectory to its goal.
+
+        Absent, not None or -1, when no ports are configured: a run on the
+        single `cfg.dock` pose was never assigned a port, and a sentinel would
+        claim otherwise.
+        """
+        if self._port_index is None:
+            return {}
+        return {
+            "dock_port": self._port_names[self._port_index],
+            "dock_port_index": self._port_index,
+        }
 
     def _obs(self) -> np.ndarray:
         if not self.cfg.sensor_noise.enabled:
@@ -164,7 +221,9 @@ class ISSEnv(gym.Env):
         if self._jit_dock_goal_error is not None:
             # Computed from `measured`, not `self._state`: the goal block
             # must reflect the same (possibly noisy) observation the caller
-            # receives, never a second noise draw or privileged truth.
+            # receives, never a second noise draw or privileged truth. It
+            # measures against the episode's own port -- the same row the
+            # dynamics score `docked` against and the reward is shaped toward.
             measured = jnp.concatenate([measured, self._jit_dock_goal_error(measured)])
         return np.asarray(measured, dtype=np.float32)
 
