@@ -30,7 +30,7 @@ from .datasets.video import (
 )
 from .drivers.types import RolloutSpec
 from .envs import ENV_REGISTRY, EnvSpec
-from .envs.common.config import BaseTaskConfig, ObservationConfig
+from .envs.common.config import BaseTaskConfig
 from .envs.common.docking_ports import PORT_NAMES
 from .envs.common.policies import DockParams, PolicyConfig
 from .envs.common.sensing import PRESETS
@@ -377,7 +377,13 @@ def generate(
             )
         cfg = cfg.model_copy(update={"sensor_noise": PRESETS[noise]})
     if goal_error is not None:
-        cfg = cfg.model_copy(update={"observation": ObservationConfig(goal_error=goal_error)})
+        # Copies the existing observation model rather than replacing it with
+        # a bare `ObservationConfig` -- iss-numerical's is a subtype carrying
+        # `mode`, which `_observation_space()` and `make_observe()` both read,
+        # and a plain `ObservationConfig` has no such field.
+        cfg = cfg.model_copy(
+            update={"observation": cfg.observation.model_copy(update={"goal_error": goal_error})}
+        )
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
         policy_cfg = _policy_config(policy, observe, dock_ports)

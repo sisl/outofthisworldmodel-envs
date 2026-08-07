@@ -14,6 +14,7 @@ from owm_envs.envs.common.policies import DockParams, PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss_hcw.config import HCWConfig
+from owm_envs.envs.iss_numerical.config import NumericalConfig
 
 runner = CliRunner()
 
@@ -782,6 +783,22 @@ def test_goal_error_flag_overrides_the_env_config(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is True
+
+
+def test_goal_error_flag_preserves_a_configs_observation_subtype(tmp_path):
+    # `--goal-error` used to rebuild `observation` as a bare `ObservationConfig`,
+    # dropping iss-numerical's `mode` field -- which `_observation_space()` and
+    # `make_observe()` both read, so this would fail deep inside env
+    # construction rather than at the CLI boundary.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-numerical",
+        "--steps", "8", "--split", "train:2:0", "--goal-error", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    written = NumericalConfig.from_yaml(out / "env_config.yaml")
+    assert written.observation.goal_error is True
+    assert written.observation.mode == "relative"
 
 
 def test_transition_targeted_split_hits_the_target_and_is_recorded(tmp_path):
