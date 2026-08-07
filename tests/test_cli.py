@@ -73,6 +73,56 @@ def test_env_flag_accepts_iss_hcw(tmp_path):
     assert json.loads((out / "dataset_card.json").read_text())["env"] == "iss-hcw"
 
 
+def test_env_flag_accepts_iss_numerical(tmp_path):
+    # The whole pipeline under the third environment. What is new here versus
+    # iss-hcw is that the recorded observation is not the state: a 21-wide
+    # float64 state behind a 15-wide "relative" observation, so this is the
+    # first run where the packer's state width and observation width are
+    # different numbers and a stage that conflated them would fail. `--steps
+    # 20` keeps the f64 scan cheap -- what is under test is the wiring.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-numerical",
+        "--split", "train:2:0", "--steps", "20", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert GenerationConfig.from_yaml(out / "generation_config.yaml").env == "iss-numerical"
+    # The as-run config has to be the NUMERICAL one. An HCWConfig would
+    # round-trip this file quite happily -- it carries an `orbit` block too --
+    # while silently dropping `perturbations`, which is the whole force model
+    # the trajectories were flown under.
+    written = yaml.safe_load((out / "env_config.yaml").read_text())
+    assert "orbit" in written and "perturbations" in written
+    recorded = NumericalConfig.from_yaml(out / "env_config.yaml")
+    assert recorded.orbit.epoch == NumericalConfig().orbit.epoch
+    assert recorded.observation.mode == "relative"
+    assert json.loads((out / "dataset_card.json").read_text())["env"] == "iss-numerical"
+
+
+def test_iss_numerical_records_the_force_model_it_actually_flew(tmp_path):
+    # The check above reads back a DEFAULT perturbation block, which is every
+    # switch off -- a writer that dropped the section entirely would produce
+    # the same numbers on the way back in. So run one with the switches on:
+    # only a record that really carries them can return them.
+    env_config = tmp_path / "perturbed.yaml"
+    NumericalConfig(
+        perturbations={"zonal_max_degree": 6, "drag": True, "third_body_moon": True}
+    ).to_yaml(env_config)
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-numerical",
+        "--split", "train:2:0", "--steps", "8", "--no-lerobot",
+        "--env-config", str(env_config),
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = NumericalConfig.from_yaml(out / "env_config.yaml").perturbations
+    assert recorded.zonal_max_degree == 6
+    assert recorded.drag is True
+    assert recorded.third_body_moon is True
+    assert recorded.third_body_sun is False
+
+
 def test_config_flag_is_gone(tmp_path):
     result = runner.invoke(
         app, ["generate", "--out", str(tmp_path / "x"), "--config", "z.toml"]
