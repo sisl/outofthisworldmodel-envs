@@ -60,8 +60,18 @@ Per-step structure, following `iss_hcw`:
   approximation. astrojax's ephemerides evaluate at f32, where one dt of
   0.05 s (or 0.5 s) does not advance their Julian-century argument by a
   representable amount: the sun and moon positions before and after a step
-  are bit-identical, and only somewhere past a minute do they separate at
-  all. Re-deriving them per stage would return the same numbers four times.
+  are bit-identical, so re-deriving them per stage would return the same
+  numbers four times.
+
+  That exactness has a bound, and dt is a config field, so the bound is
+  worth stating rather than leaving to be rediscovered: measured against the
+  shipped ephemerides, the positions either side of one step stay
+  bit-identical up to dt = 30 s and have separated by dt = 45 s. Past that
+  the hold stops being free -- the stages ask for the epoch-dependent terms
+  at three intermediate times and get the step-start value instead, so those
+  terms integrate to first order while everything else stays 4th, and
+  nothing anywhere reports it. Nothing enforces the bound either; the
+  shipped configs run at 0.05 s and 0.5 s, well inside it.
 * Drag reads the ECI position where Harris-Priester asks for a true-of-date
   one, and rotates ECI->ECEF with the identity. Neither is the sidereal
   rotation error it looks like. The Earth's rotation ABOUT the polar axis is
@@ -73,7 +83,10 @@ Per-step structure, following `iss_hcw`:
   satellite's, and both are passed in the SAME frame, so the angle between
   them is exact. The tilt reaches the answer only through geodetic altitude,
   which over a lat/lon sweep at ISS altitude moves the density by at most
-  0.38% -- against Harris-Priester's own 10-20%.
+  0.449% -- the tilt taken in its worst direction, a bound rather than a
+  typical value, since a tilt about the polar axis alone changes only
+  longitude and moves the density by 0.002%. Against Harris-Priester's own
+  10-20%, either way.
 
 Attitude is INERTIAL here, not chief-relative: `q_bi` maps body to ECI and
 the stored rates are rates with respect to ECI, so the kinematics are the
@@ -437,6 +450,11 @@ class NumericalDynamics:
         dyn = dyn.at[12:16].set(q_prev)
 
         epoch = epoch_from_prefix(prefix)
+        # One epoch rides through all four stages: the sun, moon and diurnal
+        # bulge are held at the step-start value. Exact only while one dt does
+        # not move astrojax's f32 ephemerides at all -- bit-identical up to
+        # dt = 30 s, separated by 45 s, past which those terms silently drop
+        # to first order. See the module docstring.
         dyn_next = self._integrator.rk4(self._eom, dyn, (u, epoch))
 
         q_next = quat_normalize(dyn_next[12:16])

@@ -1,3 +1,21 @@
+"""Quaternion helpers shared by every env, at astrojax's width.
+
+Each helper below routes through astrojax's `Quaternion`, which casts to
+astrojax's module-wide dtype -- float32 by default, and independent of this
+package's own x64 flag. So a caller handing these an f64 quaternion gets an
+f32 product back: bounded quantization at the 1e-7 level per call, which is
+the right trade inside an integrator, where the quaternion is re-derived from
+the kinematics every step and never summed into.
+
+It is the wrong trade for a pair of conversions required to be exact
+inverses of each other, where an f32 product floors the round trip at
+~1.4e-7 rad against the ~3e-16 an f64 state carries. A caller in that
+position composes at its own width locally rather than reaching here --
+`envs/iss_numerical/dynamics._quat_compose` is the precedent, and its
+docstring says why widening these instead would be a decision about all three
+envs rather than about one view.
+"""
+
 from __future__ import annotations
 
 import jax.numpy as jnp

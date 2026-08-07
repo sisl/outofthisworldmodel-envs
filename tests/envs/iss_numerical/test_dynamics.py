@@ -53,6 +53,32 @@ def _angular_momentum(rv: np.ndarray) -> np.ndarray:
     return np.cross(rv[0:3], rv[3:6])
 
 
+def _chord(a: np.ndarray, b: np.ndarray) -> float:
+    """Angle between two rotations, 2 asin(|a - b| / 2), resolving the q/-q
+    double cover. Never arccos of a dot product, which loses all precision as
+    the angle goes to zero -- exactly where this is measured."""
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    gap = min(float(np.linalg.norm(a - b)), float(np.linalg.norm(a + b)))
+    return 2.0 * float(np.arcsin(min(gap / 2.0, 1.0)))
+
+
+def _quat_product(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """Hamilton product of [w,x,y,z] pairs, in numpy f64.
+
+    Written out rather than taken from `core.quaternion`, whose helpers
+    evaluate at astrojax's f32: a reference this test measures the integrator
+    against has to be wider than what it is measuring.
+    """
+    w1, x1, y1, z1 = np.asarray(q1, np.float64)
+    w2, x2, y2, z2 = np.asarray(q2, np.float64)
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
 def _raan(rv: np.ndarray) -> float:
     """Right ascension of the ascending node from an ECI state.
 
@@ -77,13 +103,23 @@ def test_linear_damping_is_rejected():
 
 def test_two_body_conserves_energy_and_momentum_over_one_orbit():
     """Perturbations off, no control: specific orbital energy and |h| of both
-    vehicles drift < 1e-9 relative over a full period at dt = 0.5 in f64.
+    vehicles drift < 1e-13 relative over a full period at dt = 0.5 in f64.
 
-    RK4 is not symplectic, so this is a bound on its secular energy error, not
-    a conservation law the integrator enforces. At n*dt = 5.6e-4 the per-step
-    error goes as (n*dt)^5 ~ 5e-17 relative, which over ~11k steps leaves
-    three orders of margin under the bound. In f32 the state's own 6e-8 grain
-    would blow through it on the first step.
+    The two quantities are not evidence of the same thing. |h| is conserved
+    by ANY central force however badly it is integrated, so it catches
+    contamination -- a non-central term reaching the force model through a
+    gate that is supposed to be off -- and says nothing about integration
+    quality. Energy is the integrator's own error signal: RK4 is not
+    symplectic, so the bound below is on its secular drift, not on a
+    conservation law it enforces.
+
+    The bound is set just above what the integrator measurably does rather
+    than at a round number it cannot fail: the worst of the four drifts over
+    the ~11k steps of one period is 6e-15 relative, so 1e-13 leaves 16x of
+    margin. That floor is f64 roundoff accumulating, not truncation -- RK4's
+    own energy law puts the truncation error three orders further down at
+    this step size. In f32 the state's own 6e-8 grain would blow through the
+    bound on the first step.
     """
     cfg = _free_flight_cfg(dt=0.5)
     dyn = NumericalDynamics(cfg)
@@ -95,8 +131,8 @@ def test_two_body_conserves_energy_and_momentum_over_one_orbit():
         energy0, energy1 = _specific_energy(rv0), _specific_energy(rv1)
         h0 = float(np.linalg.norm(_angular_momentum(rv0)))
         h1 = float(np.linalg.norm(_angular_momentum(rv1)))
-        assert abs(energy1 / energy0 - 1.0) < 1e-9, f"{name} energy"
-        assert abs(h1 / h0 - 1.0) < 1e-9, f"{name} |h|"
+        assert abs(energy1 / energy0 - 1.0) < 1e-13, f"{name} energy"
+        assert abs(h1 / h0 - 1.0) < 1e-13, f"{name} |h|"
 
 
 def test_zonal_gate_changes_chief_trajectory():
@@ -135,10 +171,16 @@ def test_zonal_gate_changes_chief_trajectory():
 
 
 def test_third_body_and_drag_gates_are_inert_when_off():
-    """Each perturbation gate is a static Python branch, so switching one off
-    removes the term rather than adding a zero: 100 steps against a
-    default-constructed config must agree bitwise. The converse is what makes
-    that mean anything -- switching each on has to move the state.
+    """Each gate spelled False routes to the same force model as the default
+    config's: 100 steps must agree bitwise, and switching each one on has to
+    move the state, which is what keeps the first half from passing
+    vacuously.
+
+    This pins gate ROUTING, not the static-branch implementation it happens
+    to have. Adding an exact 0.0 is bitwise identity too, so no output check
+    can tell a skipped term from a term that contributed nothing; what would
+    fail here is a gate that reads the wrong flag, or one whose "off" path is
+    a different model rather than no model.
     """
     default = NumericalDynamics(_free_flight_cfg())
     explicit_off = NumericalDynamics(
@@ -398,6 +440,51 @@ def test_gravity_gradient_torque_closed_form():
     np.testing.assert_allclose(rate_change[1:], 0.0, atol=1e-9)
 
 
+def test_torque_free_spin_integrates_to_the_closed_form_rotation():
+    """200 steps of a spinning chaser with no torque on it: `q_bi` must be the
+    start attitude composed with a rotation of |omega| t about the body spin
+    axis, and the rate must not have moved.
+
+    Isotropic inertia is what makes that closed form exact rather than
+    approximate. It zeroes the Euler term (omega x I omega) and the
+    gravity-gradient torque (r_b x I r_b) identically -- for every attitude
+    and every position, not just at the start -- so what remains is the
+    quaternion kinematics and the integrator alone. The spin axis is
+    deliberately not a body axis: all three components of omega are non-zero,
+    so a transposed or axis-swapped kinematics matrix cannot pass.
+
+    This is the multi-step attitude case. Every other attitude test here
+    reads a single step or a rate change, which cannot see an error that only
+    accumulates -- a half-step phase lag, or the per-step f32 quaternion
+    quantization the module docstring bounds, walking into a visible drift.
+    """
+    omega = np.array([0.02, -0.03, 0.04])
+    steps = 200
+    cfg = _free_flight_cfg(dt=0.5, physics={"inertia_diag": (8000.0, 8000.0, 8000.0)})
+    dyn = NumericalDynamics(cfg)
+
+    start = dyn.reset(jax.random.PRNGKey(0)).at[18:21].set(jnp.asarray(omega, jnp.float64))
+    end = _rollout(dyn, start, steps)
+
+    angle = float(np.linalg.norm(omega)) * steps * cfg.dt
+    axis = omega / np.linalg.norm(omega)
+    spin = np.concatenate([[np.cos(angle / 2.0)], np.sin(angle / 2.0) * axis])
+    expected = _quat_product(np.asarray(start[14:18], np.float64), spin)
+
+    # 5.4 rad of accumulated rotation -- most of a full turn, through both
+    # hemispheres, so this is nowhere near an identity check.
+    assert angle == pytest.approx(5.4, abs=0.1)
+    # 3e-6 rad, against 3.1e-7 measured here. The floor is the f32-pinned
+    # `core.quaternion` helpers inside the integrator, and it does NOT grow
+    # with the step count -- measured across 25..800 steps and dt 0.05..1.0 it
+    # wanders between 7e-8 and 1.3e-6 without a trend, which is the module
+    # docstring's claim that the quaternion is re-derived each step rather
+    # than summed into. RK4's own truncation at |omega| dt = 0.027 is orders
+    # below either number.
+    assert _chord(np.asarray(end[14:18]), expected) < 3e-6
+    np.testing.assert_allclose(np.asarray(end[18:21]), omega, atol=1e-12)
+
+
 def test_state_is_float64_through_step():
     """f32 would put 0.5 m of grain on a 6.8e6 m ECI position -- five times the
     dock gate -- so the state is f64 and an f32 input is widened, not carried."""
@@ -465,6 +552,11 @@ def test_reset_zero_width_config_is_the_undispersed_start():
 
     # At rest in the world frame is not at rest in ECI: the stored velocity
     # carries the chief's plus the world frame's own motion at the offset.
+    # This looks like it repeats the view round trip above and does not: the
+    # round trip runs the omega x r term through `chaser_state_from_view` and
+    # then back out through `relative_view`, where dropping it entirely still
+    # returns zero relative velocity. Written out against the chief's own
+    # state here, it is the one assertion that fails if the term goes missing.
     chief_r, chief_v = np.asarray(start[2:5]), np.asarray(start[5:8])
     omega_frame = np.cross(chief_r, chief_v) / np.dot(chief_r, chief_r)
     offset_eci = np.asarray(start[8:11]) - chief_r

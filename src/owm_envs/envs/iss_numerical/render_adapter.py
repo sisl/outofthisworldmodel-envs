@@ -27,9 +27,20 @@ adapter an already float32 state (`env.py`'s `_true_state`/
 .true_state` is stored float32),
 so the chief and chaser ECI columns the kernel differences inside
 `relative_view` are already at the ~0.5 m grain that narrowing an ~6.8e6 m
-position to float32 costs -- accepted for rendering, the same trade
-`dynamics.py`'s module docstring documents for the state's own f32 narrowing
-points, and far below what a viewer can see.
+position to float32 costs -- the same trade `dynamics.py`'s module docstring
+documents for the state's own f32 narrowing points, but a larger one here,
+because this is the only place the difference is taken AFTER the narrowing
+rather than before it.
+
+What it costs, measured against the f64 view of the same states: 0.22 m of
+relative position on average and 0.37 m at worst, moving by ~0.25 m between
+consecutive frames as the mantissa bits flip. That is 0.13 deg of bearing at
+a 100 m standoff and ~0.5 deg at the 24 m dock range, and because it changes
+frame to frame it reads as jitter rather than as a fixed offset. The pose the
+video shows is therefore not the pose the physics integrated to, at the range
+where the approach is most visible. Closing it needs the truth channel
+recorded wider, or the derived view stored beside it; this design does
+neither, and the numbers above are what it costs.
 """
 
 from __future__ import annotations
