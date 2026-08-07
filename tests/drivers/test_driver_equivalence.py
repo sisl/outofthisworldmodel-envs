@@ -98,19 +98,31 @@ OBSERVED_POSITION = {
 # the ~1 m budget `TaskPolicySource.augment_observation` documents.
 #
 #   0.5 m per axis on the policy's position input
-#   x DockParams.kp_position, 16 N/m        -> <= 16 N of commanded force
-#   / PhysicsConfig.mass, 12000 kg          -> <= 1.33e-3 m/s^2
+#     -> <= 0.5 * sqrt(3) = 0.87 m in NORM. The norm is what matters, not the
+#        per-axis figure: the dock law forms its correction in world axes and
+#        rotates it into the body frame, so a single commanded body component
+#        can carry the whole vector error.
+#   x DockParams.kp_position, 16 N/m         -> <= 13.9 N per component
+#   + DockParams.kd_velocity, 880 N*s/m, on the velocity input's own float32
+#     grain (4.9e-4 m/s per axis at 7.7e3 m/s, 8.5e-4 in norm)
+#                                            -> +0.7 N, so <= 14.6 N in total
+#   / PhysicsConfig.mass, 12000 kg           -> <= 1.22e-3 m/s^2
 #   freely integrated over T = 25 * 0.05 = 1.25 s:
-#       velocity <= 1.33e-3 * T         = 1.7e-3 m/s
-#       position <= 0.5 * 1.33e-3 * T^2 = 1.0e-3 m
+#       velocity <= 1.22e-3 * T         = 1.5e-3 m/s
+#       position <= 0.5 * 1.22e-3 * T^2 = 9.5e-4 m
 #
 # Measured across 12 seeds: 7.6 N of action difference (the realized
 # quantization runs about half the worst case), 5.0e-5 m of relative position,
 # 1.0e-4 m/s of relative velocity, 9.9e-8 per quaternion component and 1.9e-9
-# rad/s of body rate. The bounds are ~3x those maxima, which still leaves them
-# ~7x inside the open-loop budget above: a divergence newly admitted here is
-# one the float32 input already explains, and anything past it is a bug to
-# find rather than a tolerance to widen.
+# rad/s of body rate.
+#
+# Position and velocity are bounded at 3x their measured maxima, which leaves
+# them 6.3x and 5.0x inside the budget above. The ACTION bound is set at 1.9x
+# measured instead, because 3x would be 22.8 N against a 14.6 N budget -- and
+# a bound past its own budget would admit a divergence the float32 input does
+# not explain, which is exactly the thing this test exists to catch. Every
+# bound here therefore sits inside what the narrowing allows, and anything
+# past one is a bug to find rather than a tolerance to widen.
 #
 # The epoch prefix is exempt and asserted EXACT: it advances outside the
 # integrator through `advance_epoch_state` and never sees an action.
@@ -119,7 +131,9 @@ NUMERICAL_DIVERGENCE = {
     "velocity": 3.0e-4,  # m/s,    measured 1.0e-4
     "attitude": 3.0e-7,  # per quaternion component, measured 9.9e-8
     "rate": 6.0e-9,  # rad/s,  measured 1.9e-9
-    "action": 25.0,  # N,      measured 7.6, against a 1600 N limit
+    # N. 1.9x measured 7.6 and inside the 14.6 N the budget above allows; a
+    # 1600 N limit, so this is 0.9% of an action.
+    "action": 14.5,
     # Relative, because `docking_reward`'s control-effort term is
     # -0.05 * sum(action**2) against ~1600 N actions, so the reward runs at
     # ~1e5-1e6 here and 16 N of action difference is worth ~2.6e3 of it.
@@ -318,7 +332,12 @@ def test_scan_and_vector_agree_on_goal_blocks_for_dock(env_name):
     recorded = RECORDED_WIDTH[env_name]
     assert scan.observations.shape[-1] == recorded + GOAL_ERROR_DIM
     np.testing.assert_array_equal(scan.lengths, vector.lengths)
-    _assert_trajectories_agree(scan, vector, env_name, observed_width=recorded)
+    # 1e-7/1e-5 on the observed columns, not the free-flight default: this
+    # test has always compared them tightly, and the goal block riding on the
+    # end does not make the part in front of it any less exact.
+    _assert_trajectories_agree(
+        scan, vector, env_name, observed_width=recorded, rtol=1e-7, atol=1e-5
+    )
     _assert_goal_blocks_agree(scan, vector, env_name, observed_width=recorded)
     # Truth is the un-augmented dynamics state on both sides: the goal block
     # widens `observations` only, so the two channels must still agree.
@@ -397,7 +416,7 @@ def _assert_within(actual, expected, tolerance, what):
     )
 
 
-def _assert_trajectories_agree(a, b, env_name, observed_width=None):
+def _assert_trajectories_agree(a, b, env_name, observed_width=None, rtol=1e-4, atol=1e-4):
     """The two drivers' observations, actions and rewards, per env.
 
     iss and iss-hcw fly ONE trajectory between them -- both drivers hand the
@@ -408,6 +427,16 @@ def _assert_trajectories_agree(a, b, env_name, observed_width=None):
     omega(3)]`, whose channels span 100 m and 1e-3 rad/s and so cannot share
     one number. `observed_width` trims a goal-error block off the end when
     the caller has one; the block is compared separately, on its own budget.
+
+    `rtol`/`atol` govern the OBSERVATIONS for the non-numerical envs only --
+    actions and rewards keep their own fixed tolerances, and iss-numerical
+    reads `NUMERICAL_DIVERGENCE` regardless. They are a parameter because the
+    two call sites are not equally demanding: the goal-block test passes
+    1e-7/1e-5, the tight pair it has always used, where free flight has always
+    run at the 1e-4 default. Collapsing the two onto the looser default would
+    slacken the goal-block comparison ~800x at its largest-magnitude columns,
+    and iss's measured 3.05e-5 there already sits at about half the tight
+    bound -- so that bound is doing real work and must not be widened.
     """
     observations_a, observations_b = a.observations, b.observations
     if observed_width is not None:
@@ -415,7 +444,7 @@ def _assert_trajectories_agree(a, b, env_name, observed_width=None):
         observations_b = observations_b[..., :observed_width]
 
     if env_name != "iss-numerical":
-        np.testing.assert_allclose(observations_a, observations_b, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(observations_a, observations_b, rtol=rtol, atol=atol)
         np.testing.assert_allclose(a.actions, b.actions, rtol=1e-4, atol=1e-4)
         np.testing.assert_allclose(a.rewards, b.rewards, rtol=1e-3, atol=1e-2)
         return
@@ -459,10 +488,13 @@ def _assert_truth_channels_agree(a, b, env_name, rtol, atol):
     which cannot be written as a fraction of an element: at the reference
     epoch the chaser's ECI vx is exactly zero while its velocity is 7.7 km/s,
     so a purely relative bound would demand bit equality of a channel that has
-    none. The floors are ~10x the measured worst case (4.9e-4 m and 4.9e-4 m/s
-    on the ECI columns, 1.2e-7 per quaternion component, 1.9e-9 rad/s), and
-    the sharp instrument for this env remains the OBSERVATION, whose relative
-    view is differenced at float64 at a ~100 m scale.
+    none. Measured worst cases are 4.9e-4 m and 4.9e-4 m/s on the ECI columns,
+    1.2e-7 per quaternion component and 1.9e-9 rad/s, so the floors below sit
+    at 20x, 6x, 2.5x and 3x of them -- the position floor is the loosest
+    because it is the channel a real trajectory divergence would show up in
+    first, and the sharp instrument for that is not this channel anyway but
+    the OBSERVATION, whose relative view is differenced at float64 at a ~100 m
+    scale.
     """
     if env_name != "iss-numerical":
         np.testing.assert_allclose(a.true_state, b.true_state, rtol=rtol, atol=atol)
@@ -639,7 +671,7 @@ def test_both_drivers_start_every_episode_from_an_independent_reset():
     for batch in (vec.generate(spec), scan.generate(spec)):
         batch.validate()
         assert np.all(batch.truncated)
-        _assert_every_episode_starts_from_a_reset(batch, cfg, "iss")
+        _assert_every_episode_starts_from_a_reset(batch, cfg, env_spec.name)
         for i in range(1, batch.num_episodes):
             previous_terminal = batch.observations[i - 1, batch.lengths[i - 1] - 1]
             this_initial = batch.observations[i, 0]
