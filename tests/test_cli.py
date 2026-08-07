@@ -198,6 +198,36 @@ def test_resolve_driver_vector_path_does_not_double_augment():
     assert batch.observations.shape[-1] == 25
 
 
+def test_the_vector_path_warns_where_its_view_is_differenced_at_float32(capsys):
+    # iss-numerical's state is absolute ECI and its relative view is the
+    # difference of two ~6.8e6 m columns. This driver's numpy boundary hands
+    # the policy source a float32 state, so that difference costs ~1 m on the
+    # channel the dock gate reads at 0.1 m -- invisible in the output data,
+    # which is why it is worth saying out loud when somebody asks for this
+    # driver explicitly. An env whose state already IS the relative view has
+    # nothing to warn about.
+    from owm_envs.cli import _resolve_driver
+    from owm_envs.envs import ENV_REGISTRY
+
+    _resolve_driver(
+        "vector",
+        NumericalConfig(max_steps=10),
+        PolicyConfig(type="dock"),
+        num_envs=2,
+        env_spec=ENV_REGISTRY["iss-numerical"],
+    )
+    assert "float32 ECI columns" in capsys.readouterr().out
+
+    _resolve_driver(
+        "vector",
+        ISSConfig(max_steps=10),
+        PolicyConfig(type="dock"),
+        num_envs=2,
+        env_spec=ENV_REGISTRY["iss"],
+    )
+    assert "float32 ECI columns" not in capsys.readouterr().out
+
+
 def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
     out = tmp_path / "auto"
     result = runner.invoke(

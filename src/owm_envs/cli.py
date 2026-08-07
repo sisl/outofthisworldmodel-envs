@@ -679,6 +679,23 @@ def _resolve_driver(
                 f"scored at the wrong pose for every episode whose assigned port is not "
                 f"DockConfig's; --driver scan does not have this limitation"
             )
+        # An env whose layout carries a chief block (iss-numerical) holds
+        # ABSOLUTE ECI columns, and its relative view is the difference of two
+        # of them. This driver crosses a numpy boundary between the env and
+        # the policy source, where the state has already been narrowed to
+        # float32, so that difference is taken at f32's ~0.5 m grain on a
+        # ~6.8e6 m radius rather than at the state's own width -- see
+        # `envs/common/policy_source.py`. The scan driver derives the same
+        # view inside the f64 rollout and carries none of it.
+        if env_spec.layout.chief is not None:
+            typer.echo(
+                f"[warn] --driver vector hands {env_spec.name}'s policy inputs -- and "
+                "the goal-error block it appends to every recorded observation -- a "
+                "relative view differenced from float32 ECI columns, leaving up to "
+                "~1 m of quantization on the station-relative position they read; the "
+                "observation columns themselves still come from the env's own f64 "
+                "derivation, and --driver scan derives the view at f64 throughout"
+            )
         # TaskPolicySource applies its own policy-aware goal-error block (see
         # augment_observation) from the ORIGINAL cfg; the env it drives must
         # therefore stay at the raw 13-dim observation, or the block would be
