@@ -100,6 +100,11 @@ def lit_scene(scene):
         node.local.position = position
         if intensity is not None:
             node.intensity = intensity
+    scene._sun.visible = True
+    # Also the flag that decides whether an unlit frame restores anything: a
+    # scene left marked as lit would make the next test's `lighting=None` do
+    # work the as-built graph does not expect.
+    scene._lit = False
 
 
 def _lighting(**overrides):
@@ -112,23 +117,55 @@ def _lighting(**overrides):
     return Lighting(**(kwargs | overrides))
 
 
+def _lighting_snapshot(scene):
+    """Everything `_apply_lighting` touches, in one comparable value."""
+    return {
+        "sun": tuple(scene._sun.local.position),
+        "sun_visible": scene._sun.visible,
+        "light": tuple(scene._directional_light.local.position),
+        "intensity": scene._directional_light.intensity,
+        "fill": tuple(scene._fill_light.local.position),
+        "fill_intensity": scene._fill_light.intensity,
+        "earth": tuple(scene._earth_group.local.position),
+        "moon": tuple(scene._moon_group.local.position),
+    }
+
+
 def test_update_without_lighting_moves_nothing(scene):
     # Every frame rendered before per-frame lighting existed goes through this
     # path, so it has to stay a no-op for everything but the capsule.
-    def snapshot():
-        return {
-            "sun": tuple(scene._sun.local.position),
-            "light": tuple(scene._directional_light.local.position),
-            "intensity": scene._directional_light.intensity,
-            "fill": tuple(scene._fill_light.local.position),
-            "fill_intensity": scene._fill_light.intensity,
-            "earth": tuple(scene._earth_group.local.position),
-            "moon": tuple(scene._moon_group.local.position),
-        }
-
-    before = snapshot()
+    before = _lighting_snapshot(scene)
     scene.update(np.zeros(13, dtype=np.float32))
-    assert snapshot() == before
+    assert _lighting_snapshot(scene) == before
+
+
+def test_update_without_lighting_restores_the_static_configuration(lit_scene):
+    # The other direction of the no-op above, and the one a per-frame pixel
+    # comparison never reaches: once a frame HAS been lit, an unlit frame must
+    # put the scene back rather than inherit that ephemeris. A renderer is
+    # shared across a whole split and can be handed frames from more than one
+    # env, so the alternative is an env with no ephemeris of its own lit by
+    # whatever iss-hcw last asked for. Eclipsed lighting, so the sun's
+    # visibility has to come back too.
+    before = _lighting_snapshot(lit_scene)
+    lit_scene.update(np.zeros(13, dtype=np.float32), lighting=_lighting(illumination=0.0))
+    assert _lighting_snapshot(lit_scene) != before
+
+    lit_scene.update(np.zeros(13, dtype=np.float32))
+    assert _lighting_snapshot(lit_scene) == before
+
+
+def test_the_sun_disc_is_hidden_in_umbra(lit_scene):
+    # Dimming the lights is not enough: the proxy sun sits at
+    # sun_visual_distance_m (1e6 m), nearer than the Earth's surface along an
+    # oblique ray, so nothing occludes it and an eclipsed frame would draw the
+    # sun in front of the night side -- measured, 55 of 1115 samples over one
+    # ISS orbit. Penumbra keeps it, since the station can still see the disc.
+    lit_scene.update(np.zeros(13, dtype=np.float32), lighting=_lighting(illumination=0.0))
+    assert lit_scene._sun.visible is False
+
+    lit_scene.update(np.zeros(13, dtype=np.float32), lighting=_lighting(illumination=0.25))
+    assert lit_scene._sun.visible is True
 
 
 def test_the_scene_graph_holds_the_nodes_update_moves(scene):

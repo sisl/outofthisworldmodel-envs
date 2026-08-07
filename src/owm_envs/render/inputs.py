@@ -18,7 +18,11 @@ import numpy as np
 @dataclass(frozen=True)
 class Lighting:
     sun_direction_world: np.ndarray  # unit (3,)
-    illumination: float  # [0, 1] conical-eclipse factor
+    # [0, 1] conical-eclipse factor, only as sharp as the ephemeris behind it:
+    # `envs/common/orbit.py` documents ~0.1 deg on the sun direction, which at
+    # LEO orbital rate puts an eclipse edge in rendered output a second or two
+    # early or late. Model-limited, not a rounding artefact of this seam.
+    illumination: float
     chief_distance_m: float  # Earth center sits at -z * this
     moon_vector_world: np.ndarray  # geocentric, meters, (3,)
 

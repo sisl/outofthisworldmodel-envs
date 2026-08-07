@@ -86,9 +86,24 @@ def test_eclipse_sweep_visits_both_extremes_and_stays_geometrically_consistent()
     assert all(d < 0.0 for d in eclipse_dots)
 
 
+def test_the_per_frame_ephemeris_is_compiled():
+    """Called op by op, the sun/moon/eclipse math below is uncompiled JAX
+    dispatch over a handful of scalars: 72 ms a frame, four times what drawing
+    the frame costs, and ten hours of a 500k-frame split. Nothing here times
+    anything -- a timing assertion is flaky on a shared machine -- only that
+    the kernel every frame goes through is a jitted one."""
+    adapter = make_render_adapter(CFG)
+    assert isinstance(adapter._kernel, jax.stages.Wrapped)
+
+
 def test_adapter_pickle_round_trip():
     adapter = make_render_adapter(CFG)
     restored = pickle.loads(pickle.dumps(adapter))
+
+    # The jitted callable itself never crosses the boundary: the worker jits
+    # its own from what was pickled, which is what keeps the adapter sendable.
+    assert isinstance(restored._kernel, jax.stages.Wrapped)
+    assert restored._kernel is not adapter._kernel
 
     ref = ReferenceOrbit(CFG.orbit)
     state = _state_at(epoch_prefix(ref.epoch0))
