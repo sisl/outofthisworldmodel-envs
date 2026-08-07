@@ -158,6 +158,15 @@ def _state_source(batch: TrajectoryBatch, state_dim: int) -> np.ndarray:
     fails loudly instead: an env whose observation can do this must be
     rendered from its truth channel, not this one.
 
+    That guard is a WIDTH check and promises no more: a reshaped row as wide
+    as the state -- iss-numerical's three absolute modes are all 21 -- passes
+    it and would be posed from columns in the wrong order. Nothing in the
+    tree can reach that, because every env whose observation can be reshaped
+    also publishes its true state to the drivers, so its batches always
+    arrive with a truth channel and never reach this fallback at all. Width
+    is what this function can see of a row it is otherwise handed
+    uninterpreted, and layout is what it cannot.
+
     One rule for both the in-process and the pooled path, so a split rendered
     across workers is the same video as one rendered here.
     """

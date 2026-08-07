@@ -337,18 +337,34 @@ def test_view_is_f64_throughout():
     assert chaser_state_from_view(dyn.reset(jax.random.PRNGKey(0))[2:8], view).dtype == jnp.float64
 
 
-def test_view_rotation_agrees_with_the_world_frame_it_names():
+@pytest.mark.parametrize("seed", range(20))
+def test_view_rotation_agrees_with_the_world_frame_it_names(seed):
     """`q_bw` composes with the chief's world<->ECI rotation the way its name
-    says: R(q_bw) is the stored body -> ECI rotation carried into world axes.
-    Checked against the matrices directly, independently of the quaternion
-    algebra the view uses to get there."""
+    says: R(q_bw) is the stored body -> ECI rotation carried into world axes,
+    checked against the matrices directly rather than through the quaternion
+    algebra the view uses to get there.
+
+    Being a check on ROTATIONS, it is blind to one thing by construction:
+    R(q) == R(-q), so no matrix comparison can catch a sign flip, and the
+    hemisphere is pinned separately above. What the sweep buys instead is
+    which path through `quat_from_rotmat` gets exercised in context.
+    Shepperd's method divides by whichever of the four squared components is
+    largest, and that is decided by the chief's own rotation -- so one key
+    reaches exactly one of the four. Over these twenty (measured) all four
+    are reached; a single key would leave three untested here and covered
+    only against hand-built matrices in `tests/core`.
+    """
     dyn = NumericalDynamics(_cfg(orbit=WIDE_DISPERSION))
-    state = dyn.reset(jax.random.PRNGKey(11))
+    state = dyn.reset(jax.random.PRNGKey(seed))
     view = relative_view(state)
 
     expected = np.asarray(world_from_eci(state[2:8]), np.float64) @ np.asarray(
         quat_to_rotmat(state[14:18]), np.float64
     )
+    # Absolute only (rtol=0.0): the entries of a rotation matrix run down to
+    # zero, and a relative tolerance on those would demand a precision no
+    # channel here has. The bound is the astrojax f32 rotation's own ~1e-7
+    # non-orthonormality, measured at 3.0e-7 worst over these keys.
     np.testing.assert_allclose(
-        np.asarray(quat_to_rotmat(view[6:10]), np.float64), expected, atol=1e-6
+        np.asarray(quat_to_rotmat(view[6:10]), np.float64), expected, atol=1e-6, rtol=0.0
     )

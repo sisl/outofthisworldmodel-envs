@@ -53,7 +53,12 @@ class TaskPolicySource:
         self._select_dock_target = dock_target_selector(cfg, policy_cfg)
         self._policy_fn, self._extras_fn = make_policy(cfg, policy_cfg)
         self._extras_width = EXTRAS_DIM[policy_cfg.type]
-        self._observe = policy_cfg.observe
+        # Which CHANNEL the policy flies on -- the string "state" or
+        # "measurement". Named for what it selects rather than `_observe`,
+        # which in this package's vocabulary is a state -> observation
+        # CALLABLE (`EnvSpec.make_observe`, `iss_numerical/observe.py`), one
+        # of which is at work on the very rows this source is handed.
+        self._policy_observes = policy_cfg.observe
         # No `observe` hook threaded through here (unlike `ScanDriver`): this
         # source never re-derives the recorded row from `measured` -- see
         # `augment_observation`, which always hands `make_augment`'s `observed`
@@ -83,7 +88,7 @@ class TaskPolicySource:
         # -- built for the raw layout -- can read at all) and the recorded
         # observation otherwise (iss/iss-hcw, whose observation IS that raw
         # layout, unchanged from before this key existed).
-        if self._observe == "state":
+        if self._policy_observes == "state":
             policy_input = info.get("state", observation)
         else:
             policy_input = info.get("measured_state", observation)

@@ -13,7 +13,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss_numerical.config import OBS_MODE_DIM, NumericalConfig
+from owm_envs.envs.iss_numerical.config import NUM_LAYOUT, OBS_MODE_DIM, NumericalConfig
 from owm_envs.envs.iss_numerical.dynamics import NumericalDynamics, relative_view
 from owm_envs.envs.iss_numerical.observe import make_observe
 
@@ -50,6 +50,27 @@ def _state(seed=0) -> jnp.ndarray:
 
 def _f32(x) -> np.ndarray:
     return np.asarray(x, np.float32)
+
+
+def test_the_modes_index_literals_are_the_layouts_own_slices():
+    """`observe.py` slices the state with bare literals (`state[2:8]`,
+    `state[8:14]`, ...) and every test below checks a mode against those same
+    literals. That pair agrees with itself no matter where `NUM_LAYOUT` puts
+    a segment, so this is the assertion that ties both to the declaration the
+    rest of the env reads -- a layout change that leaves the literals behind
+    fails here instead of silently emitting mislabelled observations.
+    """
+    assert NUM_LAYOUT.state_dim == 21
+    assert NUM_LAYOUT.epoch == slice(0, 2)
+    assert NUM_LAYOUT.chief == slice(2, 8)
+    # The chaser's own ECI block, which `_chaser_absolute` moves to the front
+    # as `state[8:14]` -- contiguous by StateLayout's own invariant.
+    assert NUM_LAYOUT.pos == slice(8, 11)
+    assert NUM_LAYOUT.vel == slice(11, 14)
+    # `state[14:21]`, the attitude and rate tail every absolute mode copies
+    # through unchanged.
+    assert NUM_LAYOUT.quat == slice(14, 18)
+    assert NUM_LAYOUT.omega == slice(18, 21)
 
 
 def test_every_declared_mode_emits_its_advertised_width():

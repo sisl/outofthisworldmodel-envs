@@ -455,11 +455,17 @@ class _AutoresetFakeVectorEnv:
     for the lane is a fresh reset observation instead. Observations encode
     (lane, episode index, step-within-episode) as a single float so a test
     can decode, from the observation alone and with no lane argument on
-    `act()`, exactly which lane/episode/step a policy call was for. No JAX,
-    no ISS type, anywhere in it -- this must stay importable by
+    `act()`, exactly which lane/episode/step a policy call was for.
+
+    `info["state"]` carries the SAME code plus `state_offset`, which is what
+    lets a test check the other half of the driver's contract: that the info
+    dict handed to a hook alongside an observation is that observation's own
+    lane, from the same reset()/step() call, and not a stale one. No JAX, no
+    ISS type, anywhere in it -- this must stay importable by
     test_module_does_not_import_jax."""
 
     num_envs = 2
+    state_offset = 0.5
 
     class _Space:
         shape = (1,)
@@ -490,11 +496,15 @@ class _AutoresetFakeVectorEnv:
             dtype=np.float32,
         )
 
+    def _obs_and_info(self):
+        obs = self._obs()
+        return obs, {"state": obs + self.state_offset}
+
     def reset(self, seed=None):
         del seed
         self._step_in_episode = [0] * self.num_envs
         self._pending_reset = [False] * self.num_envs
-        return self._obs(), {}
+        return self._obs_and_info()
 
     def step(self, actions):
         del actions
@@ -515,7 +525,8 @@ class _AutoresetFakeVectorEnv:
                 terminations[lane] = True
                 self._pending_reset[lane] = True
         rewards = np.zeros((self.num_envs,), dtype=np.float32)
-        return self._obs(), rewards, terminations, truncations, {}
+        obs, info = self._obs_and_info()
+        return obs, rewards, terminations, truncations, info
 
     def close(self):
         pass
@@ -525,7 +536,12 @@ class _CountingPolicySource:
     """Records every `act()` call as (iteration, lane, episode_id,
     step_in_episode), decoded from the observation encoding above -- no
     lane argument exists on `act()`, so this is the only way to see which
-    lane a call was really for."""
+    lane a call was really for.
+
+    `augment_observation` records the (observation code, info code) pair it
+    was called with, for the same reason: the hook is handed no lane either,
+    so the codes are the only evidence that the two arguments describe the
+    same lane at the same step."""
 
     records_policy_ids = False
     records_dock_targets = False
@@ -533,6 +549,7 @@ class _CountingPolicySource:
     def __init__(self, env: _AutoresetFakeVectorEnv):
         self._env = env
         self.calls: list[tuple[int, int, int, int]] = []
+        self.augment_pairs: list[tuple[int, int]] = []
 
     def new_episode(self, seed):
         del seed
@@ -550,7 +567,10 @@ class _CountingPolicySource:
         return np.zeros((1,), dtype=np.float32)
 
     def augment_observation(self, observation, episode_state, info):
-        del episode_state, info
+        del episode_state
+        self.augment_pairs.append(
+            (int(observation[0]), int(info["state"][0] - self._env.state_offset))
+        )
         return observation
 
     def policy_id(self, episode_state):
@@ -588,6 +608,43 @@ def test_policy_is_never_invoked_for_a_lane_during_its_autoreset_step():
             f"that lane's autoreset step -- the action is discarded and "
             f"the call used the wrong episode's state"
         )
+
+
+def test_augment_is_handed_the_info_belonging_to_the_observation_it_augments():
+    # `augment_observation` gets an observation and an info dict and no lane
+    # index, so nothing in its signature says the two go together -- and a
+    # policy-aware augmentation (TaskPolicySource's goal-error block, which
+    # reads info["measured_state"]) computes the recorded row from BOTH. Pair
+    # them wrongly and the recorded observation carries another lane's, or
+    # another step's, goal error: a silent data corruption no shape check and
+    # no output assertion can see.
+    #
+    # The autoreset boundary is where the driver is most exposed, because it
+    # is the one place the observation being augmented comes from a different
+    # call than the one that finalized the previous episode. It is covered
+    # here rather than assumed: the seeding calls are counted below.
+    env = _AutoresetFakeVectorEnv(terminate_every=[2, 3])
+    policy_source = _CountingPolicySource(env)
+    driver = VectorEnvDriver(env_factory=lambda: env, policy_source=policy_source)
+
+    batch = driver.generate(RolloutSpec(num_episodes=6, max_steps=100, seed=0))
+    batch.validate()
+
+    assert policy_source.augment_pairs, "sanity check: augment_observation was never called"
+    for observed, stated in policy_source.augment_pairs:
+        assert observed == stated, (
+            f"augment_observation was handed observation {observed} alongside the info "
+            f"of {stated} -- a different lane, episode or step"
+        )
+
+    # Non-vacuous only if the autoreset path ran: a mid-run episode (id > 0)
+    # seeded at step 0 is exactly a lane restarted by NEXT_STEP autoreset,
+    # not by the initial reset.
+    autoreset_seeds = [
+        code for code, _ in policy_source.augment_pairs
+        if code % 100 == 0 and (code % 100_000) // 100 > 0
+    ]
+    assert autoreset_seeds, "the autoreset seeding path was never exercised"
 
 
 class _CodedStateVectorEnv:
