@@ -18,6 +18,7 @@ the dock gate a statement about which target is in force and nothing else.
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from gymnasium.utils.env_checker import check_env
 
 from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_target
 from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
@@ -54,6 +55,15 @@ def test_no_ports_is_the_default_and_keeps_the_single_dock_pose():
         obs[13:],
         np.asarray(dock_goal_error(jnp.asarray(obs[:13]), jnp.asarray(dock_target(env.cfg)))),
         atol=1e-6,
+    )
+
+
+def test_env_checker_accepts_a_port_set():
+    # Including the extra info keys and the reset-to-reset variation in the
+    # goal block, which the checker exercises by resetting twice.
+    check_env(
+        ISSEnv(ISSConfig(observation={"goal_error": True}, dock=DockConfig(ports=("all",)))),
+        skip_render_check=True,
     )
 
 
