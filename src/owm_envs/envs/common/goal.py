@@ -98,36 +98,62 @@ def make_augment(
     cfg: BaseTaskConfig,
     policy_cfg: PolicyConfig,
     view: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    observe: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
 ) -> Callable | None:
     """Observation-augment fn for a policy type, or None when disabled.
 
     `view` extracts the canonical 13D relative view from an env's own
     measured state; None means the state already is that view, which is the
-    case for the iss env. The goal-error block is computed from the view, but
-    appended to the FULL measured state -- the dataset records everything the
-    env observes, not just the part the task layer reads.
+    case for the iss env. `observe` is what the env RECORDS of that state --
+    iss-numerical's observation modes, say -- and None means it records the
+    state itself, which is what every env did before the hook existed.
+
+    The two are independent and the augment applies both: the goal-error block
+    is computed from `view(measured)`, the full state's canonical view, and
+    appended to `observe(measured)`. So narrowing what a dataset stores never
+    narrows what the goal error is measured against.
+
+    The block is emitted at the OBSERVATION's dtype, whatever width the view
+    computed it at. That keeps an env that narrows its observation from having
+    the concatenation promote the whole row back (iss-numerical observes f32
+    off an f64 state), and it is what makes the `union` mixture traceable at
+    all: `lax.switch` requires every branch to return the same dtype, and its
+    zero branch is a literal while the other two inherit the view's width.
+    Neither is a change for iss or iss-hcw, whose observation and view already
+    share a dtype -- for them the cast is the identity.
     """
     if not cfg.observation.goal_error:
         return None
     look = view if view is not None else (lambda m: m)
-    zeros12 = jnp.zeros((GOAL_ERROR_DIM,), jnp.float32)
+    look_obs = observe if observe is not None else (lambda m: m)
     if policy_cfg.type == "random":
-        return lambda measured, extras: jnp.concatenate([measured, zeros12])
+        def augment(measured, extras):
+            observed = look_obs(measured)
+            return jnp.concatenate([observed, jnp.zeros((GOAL_ERROR_DIM,), observed.dtype)])
+        return augment
     select_target = dock_target_selector(cfg, policy_cfg)
     if policy_cfg.type == "dock":
-        return lambda measured, extras: jnp.concatenate(
-            [measured, dock_goal_error(look(measured), select_target(extras))]
-        )
+        def augment(measured, extras):
+            observed = look_obs(measured)
+            block = dock_goal_error(look(measured), select_target(extras))
+            return jnp.concatenate([observed, block.astype(observed.dtype)])
+        return augment
     if policy_cfg.type == "orbit":
-        return lambda measured, extras: jnp.concatenate([measured, _orbit_goal_error(look(measured), extras, cfg.dt)])
+        def augment(measured, extras):
+            observed = look_obs(measured)
+            block = _orbit_goal_error(look(measured), extras, cfg.dt)
+            return jnp.concatenate([observed, block.astype(observed.dtype)])
+        return augment
     if policy_cfg.type == "union":
         def augment(measured, extras):
+            observed = look_obs(measured)
+            dtype = observed.dtype
             block = jax.lax.switch(
                 extras[0].astype(jnp.int32),
-                [lambda: zeros12,
-                 lambda: _orbit_goal_error(look(measured), extras[1:6], cfg.dt),
-                 lambda: dock_goal_error(look(measured), select_target(extras))],
+                [lambda: jnp.zeros((GOAL_ERROR_DIM,), dtype),
+                 lambda: _orbit_goal_error(look(measured), extras[1:6], cfg.dt).astype(dtype),
+                 lambda: dock_goal_error(look(measured), select_target(extras)).astype(dtype)],
             )
-            return jnp.concatenate([measured, block])
+            return jnp.concatenate([observed, block])
         return augment
     raise ValueError(f"unknown policy type '{policy_cfg.type}'")

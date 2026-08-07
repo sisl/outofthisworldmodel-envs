@@ -50,6 +50,18 @@ class EnvSpec:
     # in step, because the CLI's `--render` guard reads this one while the
     # render workers reach for the other.
     renderable: bool
+    # Factory for this env's observation function: given a config, returns a
+    # state -> observation callable deciding what a recorded observation
+    # CONTAINS. A factory rather than a plain callable because the choice is a
+    # config field (iss-numerical's `observation.mode`), unlike `view` above,
+    # which is one fixed derivation per env.
+    #
+    # None means the identity -- the env records its state as its observation,
+    # which is what iss and iss-hcw do and the only behaviour that existed
+    # before this field. It is orthogonal to `view`: `view` is what the task
+    # layer (policies, reward, events, the goal-error block) reads out of the
+    # STATE and is unaffected by what gets recorded.
+    make_observe: Callable[[BaseTaskConfig], Callable[[jnp.ndarray], jnp.ndarray]] | None = None
     # How this env's equations of motion are described in a published
     # dataset's card, as the object of "under ...". Every env in the suite
     # flies the same task against the same station, so this phrase and the

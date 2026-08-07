@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -135,3 +136,74 @@ def test_orbit_goal_error_dt_zero_matches_current_projection_target():
 
 def test_make_augment_returns_none_when_disabled():
     assert make_augment(ISSConfig(), PolicyConfig(type="dock")) is None
+
+
+def test_observe_reshapes_the_observation_but_not_the_goal_block():
+    """`observe` decides what the dataset records; `view` decides what the
+    goal error is measured from. An env reporting a reduced observation still
+    scores its goal against the full state, so the block is unchanged and only
+    the part in front of it shrinks."""
+    cfg = ISSConfig(observation={"goal_error": True})
+    s = _state((50.0, 10.0, -20.0), vel=(0.1, 0.0, 0.0), rate=(0.0, 0.02, 0.0))
+    augment = make_augment(cfg, PolicyConfig(type="dock"), observe=lambda m: m[0:6])
+    out = np.asarray(augment(s, jnp.zeros((1,), jnp.float32)))
+    assert out.shape == (6 + GOAL_ERROR_DIM,)
+    np.testing.assert_array_equal(out[0:6], np.asarray(s[0:6]))
+    np.testing.assert_array_equal(
+        out[6:], np.asarray(dock_goal_error(s, jnp.asarray(dock_target(cfg))))
+    )
+
+
+def test_the_goal_block_takes_the_observation_dtype():
+    """An env that observes narrower than it integrates -- iss-numerical, f32
+    observation off an f64 state -- must not have the concatenation promote
+    the whole row back to the view's width. Nothing here narrows the goal
+    ERROR: it is still computed from the f64 view and cast once, at the same
+    boundary the observation itself is cast at.
+    """
+    cfg = ISSConfig(observation={"goal_error": True})
+    s = jnp.asarray(np.asarray(_state((50.0, 10.0, -20.0)), np.float64))
+    augment = make_augment(cfg, PolicyConfig(type="dock"),
+                           observe=lambda m: m.astype(jnp.float32))
+    out = augment(s, jnp.zeros((1,), jnp.float32))
+    assert out.dtype == jnp.float32
+    # ... and the un-narrowed env still emits at its own width.
+    wide = make_augment(cfg, PolicyConfig(type="dock"))(s, jnp.zeros((1,), jnp.float32))
+    assert wide.dtype == jnp.float64
+
+
+def test_the_union_switch_agrees_on_dtype_across_branches():
+    """`lax.switch` rejects branches whose outputs differ, and the zero branch
+    is a literal while the other two inherit the view's width. An f64-state
+    env (iss-hcw, iss-numerical) mixing policies fails to trace at all if the
+    three are not brought to one dtype."""
+    cfg = ISSConfig(observation={"goal_error": True})
+    s = jnp.asarray(np.asarray(_state((50.0, 10.0, -20.0)), np.float64))
+    extras = jnp.asarray([2.0, 0.0, 0.0, 1.0, 100.0, 0.1, 0.0], jnp.float32)
+    for observe in (None, lambda m: m.astype(jnp.float32)):
+        augment = make_augment(cfg, PolicyConfig(type="union"), observe=observe)
+        out = jax.jit(augment)(s, extras)
+        assert out.shape == (13 + GOAL_ERROR_DIM,)
+
+
+def test_every_policy_type_honours_observe():
+    """All four branches build their own concatenation, so each has to reach
+    for the observed part rather than the raw state -- including `union`,
+    whose block comes out of a `lax.switch`."""
+    cfg = ISSConfig(observation={"goal_error": True})
+    s = _state((50.0, 10.0, -20.0), vel=(0.1, 0.0, 0.0), rate=(0.0, 0.02, 0.0))
+    # Per-policy extras widths from `policies.EXTRAS_DIM`; the union vector
+    # selects its dock branch (extras[0] == 2).
+    extras = {"random": jnp.zeros((0,), jnp.float32),
+              "dock": jnp.zeros((1,), jnp.float32),
+              "orbit": jnp.asarray([0.0, 0.0, 1.0, 100.0, 0.1], jnp.float32),
+              "union": jnp.asarray([2.0, 0.0, 0.0, 1.0, 100.0, 0.1, 0.0], jnp.float32)}
+    for policy_type, extra in extras.items():
+        augment = make_augment(cfg, PolicyConfig(type=policy_type), observe=lambda m: m[0:6])
+        full = make_augment(cfg, PolicyConfig(type=policy_type))
+        out, out_full = np.asarray(augment(s, extra)), np.asarray(full(s, extra))
+        assert out.shape == (6 + GOAL_ERROR_DIM,), policy_type
+        np.testing.assert_array_equal(out[0:6], np.asarray(s[0:6]))
+        # Same goal block as the un-observed augment: `observe` narrows what
+        # is recorded, never what the error is measured against.
+        np.testing.assert_array_equal(out[6:], out_full[13:])

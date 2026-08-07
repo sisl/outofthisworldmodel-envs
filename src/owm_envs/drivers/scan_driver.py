@@ -210,12 +210,16 @@ class ScanDriver:
         """
         # `view` extracts the canonical 13D relative view the task layer reads
         # out of the env's own state; `layout` names the slices sensor noise
-        # writes through. Both come from the spec, so an env with a wider
-        # state needs no change here.
+        # writes through; `observe` shapes what gets RECORDED of that state,
+        # and is the identity for an env that records its state directly. All
+        # three come from the spec, so an env with a wider state or its own
+        # observation modes needs no change here.
         view = self.env_spec.view
         layout = self.env_spec.layout
+        make_observe = self.env_spec.make_observe
+        observe = make_observe(self.cfg) if make_observe is not None else (lambda m: m)
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
-        augment = make_augment(self.cfg, self.policy_cfg, view=view)
+        augment = make_augment(self.cfg, self.policy_cfg, view=view, observe=observe)
         # The episode's assigned port, resolved from the same extras the
         # control law and the goal-error block read, so both dock success and
         # the reward are scored against the port the episode was actually
@@ -293,10 +297,14 @@ class ScanDriver:
             # active sub-policy) -- on the `done` iteration `measured_next`
             # is this episode's terminal observation, not the fresh episode's,
             # so it must use `extras` from before the autoreset swap below.
+            #
+            # `augment` already applies `observe` (it appends the goal block
+            # to the observed part), so the two branches emit the same
+            # observation shape either way.
             if augment is not None:
                 obs_out, obs_next_out = augment(measured, extras), augment(measured_next, extras)
             else:
-                obs_out, obs_next_out = measured, measured_next
+                obs_out, obs_next_out = observe(measured), observe(measured_next)
             # `state`/`next_state` ride along un-noised and un-augmented: the
             # true dynamics state behind each emitted observation, on the same
             # pre-step/terminal layout so the segmenter can cut it identically.

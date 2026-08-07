@@ -419,12 +419,20 @@ def _build_union(cfg: BaseTaskConfig, policy_cfg: PolicyConfig) -> tuple[PolicyF
 
     def policy_fn(state, key, extras):
         empty = jnp.zeros((0,), dtype=jnp.float32)
+        # Each branch is brought to f32 because they otherwise disagree: the
+        # random draw is f32 whatever it is handed, while the two computed
+        # branches inherit the dtype of the view they are given, which is f64
+        # for iss-hcw and iss-numerical. `lax.switch` requires one output
+        # type, so a mixture on those envs would not trace at all. f32 is the
+        # width an action already has everywhere else -- the control limits it
+        # is clipped against and the column it is stored in -- and it is what
+        # all three branches already produce on iss.
         return jax.lax.switch(
             extras[0].astype(jnp.int32),
             [
-                lambda: random_fn(state, key, empty),
-                lambda: orbit_fn(state, key, extras[1:6]),
-                lambda: dock_fn(state, key, extras[6:7]),
+                lambda: random_fn(state, key, empty).astype(jnp.float32),
+                lambda: orbit_fn(state, key, extras[1:6]).astype(jnp.float32),
+                lambda: dock_fn(state, key, extras[6:7]).astype(jnp.float32),
             ],
         )
 
