@@ -19,6 +19,7 @@ from owm_envs.drivers.types import RolloutSpec
 from owm_envs.envs import EnvSpec
 from owm_envs.envs.common.goal import GOAL_ERROR_DIM
 from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss_numerical.config import NUM_LAYOUT, OBS_MODE_DIM, NumericalConfig
 from owm_envs.envs.iss_numerical.dynamics import NumericalDynamics, relative_view
 from owm_envs.envs.iss_numerical.observe import make_observe
@@ -38,7 +39,7 @@ NUMERICAL_SPEC = EnvSpec(
 )
 
 
-def _cfg(mode, goal_error=False) -> NumericalConfig:
+def _cfg(mode, goal_error=False, sensor_noise=None) -> NumericalConfig:
     return NumericalConfig(
         dt=0.5,
         max_steps=6,
@@ -47,13 +48,15 @@ def _cfg(mode, goal_error=False) -> NumericalConfig:
         physics={"collision_boxes_path": [], "linear_damping": 0.0},
         orbit={"start_radius_range_m": (80.0, 120.0)},
         observation={"mode": mode, "goal_error": goal_error},
+        sensor_noise=sensor_noise or PRESETS["off"],
     )
 
 
-def _rollout(mode, goal_error=False, env_spec=NUMERICAL_SPEC, policy_type="dock"):
+def _rollout(mode, goal_error=False, env_spec=NUMERICAL_SPEC, policy_type="dock",
+             sensor_noise=None, policy_observe="measurement"):
     driver = ScanDriver(
-        cfg=_cfg(mode, goal_error),
-        policy_cfg=PolicyConfig(type=policy_type),
+        cfg=_cfg(mode, goal_error, sensor_noise),
+        policy_cfg=PolicyConfig(type=policy_type, observe=policy_observe),
         num_envs=2,
         env_spec=env_spec,
     )
@@ -79,6 +82,28 @@ def test_the_goal_block_is_appended_to_the_mode_shaped_observation(policy_type):
     narrower than it integrates."""
     batch = _rollout("relative", goal_error=True, policy_type=policy_type)
     assert batch.observations.shape[2] == OBS_MODE_DIM["relative"] + GOAL_ERROR_DIM
+
+
+def test_the_noise_range_is_the_standoff_not_the_orbit_radius():
+    """`sigma_pos_frac_of_range` is 1% under the noncooperative preset: ~1 m
+    of position error at a ~100 m standoff, or ~68 km measured against the
+    chaser's absolute ECI radius instead. Only the driver supplying the range
+    from the view keeps it the former.
+
+    `observe="state"` flies the policy on the true state, so the noised and
+    clean rollouts follow the same trajectory off the same seed and their
+    difference is exactly the injected error.
+    """
+    clean = _rollout("relative", policy_observe="state")
+    noisy = _rollout("relative", policy_observe="state",
+                     sensor_noise=PRESETS["noncooperative"])
+    length = int(clean.lengths[0])
+    assert int(noisy.lengths[0]) == length
+    error = np.linalg.norm(
+        noisy.observations[0, :length, 2:5] - clean.observations[0, :length, 2:5], axis=1
+    )
+    assert error.max() < 10.0, error.max()   # metres, not kilometres
+    assert error.mean() > 0.05               # and the noise really is switched on
 
 
 def test_a_relative_observation_reports_the_standoff_not_the_orbit_radius():

@@ -8,6 +8,7 @@ from owm_envs.core.quaternion import quat_conjugate, quat_multiply
 from owm_envs.envs.common.layout import VIEW_LABELS, StateLayout
 from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig, apply_sensor_noise
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_numerical.config import NUM_LAYOUT
 
 
 def _state(pos=(60.0, -30.0, 20.0)):
@@ -109,6 +110,47 @@ def test_position_noise_scales_with_range_for_noncooperative():
     # total-RMS = frac * range: 1 m at 100 m vs 0.1 m at 10 m.
     assert far / near == pytest.approx(10.0, rel=0.15)
     assert far == pytest.approx(1.0, rel=0.1)
+
+
+def test_an_explicit_range_replaces_the_position_norm():
+    """`sigma_pos_frac_of_range` is a RELATIVE-navigation sensor rating, but
+    the default range is the norm of the layout's own position slice -- which
+    for an absolute-position layout like iss-numerical's is an ECI radius of
+    ~6.8e6 m, turning the noncooperative preset's 1% into ~68 km of noise on a
+    100 m standoff. Such an env passes its relative range in instead.
+    """
+    state = jnp.concatenate([
+        jnp.array([2461588.0, 43200.0], jnp.float64),          # epoch prefix
+        jnp.array([6.78e6, 0.0, 0.0, 0.0, 7.66e3, 0.0], jnp.float64),   # chief
+        jnp.array([6.78e6, 100.0, 0.0, 0.0, 7.66e3, 0.0], jnp.float64),  # chaser
+        jnp.array([1.0, 0.0, 0.0, 0.0], jnp.float64),
+        jnp.array([0.0, 0.0, 1.1e-3], jnp.float64),
+    ])
+    keys = jax.random.split(jax.random.PRNGKey(0), 4096)
+    noise = PRESETS["noncooperative"]
+
+    def measure(range_m):
+        out = jax.vmap(
+            lambda k: apply_sensor_noise(state, k, noise, layout=NUM_LAYOUT, range_m=range_m)
+        )(keys)
+        err = np.asarray(out[:, NUM_LAYOUT.pos]) - np.asarray(state[NUM_LAYOUT.pos])
+        return float(np.sqrt(np.mean(np.sum(err**2, axis=1))))
+
+    # 1% of the 100 m standoff, not 1% of the orbit radius.
+    assert measure(100.0) == pytest.approx(1.0, rel=0.1)
+    assert measure(None) > 1e4
+
+
+def test_the_default_range_is_the_position_norm_bit_for_bit():
+    """Passing the range the default would have computed reproduces it
+    exactly, so the parameter is a substitution and not a second code path --
+    which is what keeps the envs that do not pass one unchanged."""
+    noise = PRESETS["noncooperative"]
+    s = _state()
+    key = jax.random.PRNGKey(11)
+    default = apply_sensor_noise(s, key, noise)
+    explicit = apply_sensor_noise(s, key, noise, range_m=jnp.linalg.norm(s[0:3]))
+    np.testing.assert_array_equal(np.asarray(default), np.asarray(explicit))
 
 
 def test_negative_scalar_sigma_is_rejected():

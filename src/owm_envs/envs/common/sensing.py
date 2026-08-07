@@ -110,12 +110,22 @@ def apply_sensor_noise(
     key: jax.Array,
     noise: SensorNoiseConfig,
     layout: StateLayout = ISS_LAYOUT,
+    range_m: jnp.ndarray | float | None = None,
 ) -> jnp.ndarray:
     """True state -> measured state. Identity when disabled.
 
     Noise touches only the pos/vel/quat/omega slices; anything else in the
     layout (an epoch prefix, a chief block) passes through untouched -- a
     vehicle knows its own clock, and absolute-chief noise is an env concern.
+
+    `range_m` is the sensor-to-target distance `sigma_pos_frac_of_range`
+    scales against. None takes it from the layout's own position slice, which
+    is right for a layout whose position IS the relative one (iss, iss-hcw)
+    and wrong for one whose position is absolute: iss-numerical's pos slice
+    holds an ECI radius of ~6.8e6 m, so the noncooperative preset's 1% would
+    inject ~68 km of error onto a 100 m standoff. Such an env passes the
+    range from its own relative view instead. Nothing else in the function
+    reads position magnitude, so this is the whole of the coupling.
     """
     if not noise.enabled:
         return state
@@ -124,7 +134,8 @@ def apply_sensor_noise(
     pos, vel = state[layout.pos], state[layout.vel]
     q_bw, omega = state[layout.quat], state[layout.omega]
 
-    sigma_range = noise.sigma_pos_frac_of_range * jnp.linalg.norm(pos) / _SQRT3
+    target_range = jnp.linalg.norm(pos) if range_m is None else range_m
+    sigma_range = noise.sigma_pos_frac_of_range * target_range / _SQRT3
     sigma_pos = jnp.sqrt(_per_axis_sigma(noise.sigma_pos_m) ** 2 + sigma_range**2)
     pos_m = pos + sigma_pos * jax.random.normal(key_pos, (3,), jnp.float32)
 

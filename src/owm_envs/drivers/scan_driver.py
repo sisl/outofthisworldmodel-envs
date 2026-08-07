@@ -235,6 +235,19 @@ class ScanDriver:
         ctrl_low = jnp.array([-force] * 3 + [-torque] * 3, dtype=jnp.float32)
         ctrl_high = -ctrl_low
 
+        def sensor_range(s):
+            """Chaser-to-target distance for `sigma_pos_frac_of_range`.
+
+            Taken from the canonical view rather than left to
+            `apply_sensor_noise`'s default, which reads the layout's own
+            position slice. For iss and iss-hcw that slice IS the view's first
+            three elements, so this is the same expression on the same numbers
+            and their draws are unchanged; for an env whose slice holds an
+            absolute ECI position it is the difference between a 100 m range
+            and a 6.8e6 m one, and so between metres of noise and kilometres.
+            """
+            return jnp.linalg.norm(view(s)[0:3])
+
         def sample_extras(key):
             if extras_fn is None:
                 return jnp.zeros((extras_width,), dtype=jnp.float32)
@@ -251,7 +264,9 @@ class ScanDriver:
             # noise is enabled -- `jax.random.split(key, 4)` never changes.
             if noise.enabled:
                 noise_key, meas_key = jax.random.split(noise_key)
-                measured = apply_sensor_noise(state, meas_key, noise, layout=layout)
+                measured = apply_sensor_noise(
+                    state, meas_key, noise, layout=layout, range_m=sensor_range(state)
+                )
             else:
                 measured = state
 
@@ -273,7 +288,8 @@ class ScanDriver:
             if noise.enabled:
                 noise_key, next_meas_key = jax.random.split(noise_key)
                 measured_next = apply_sensor_noise(
-                    next_state, next_meas_key, noise, layout=layout
+                    next_state, next_meas_key, noise, layout=layout,
+                    range_m=sensor_range(next_state),
                 )
             else:
                 measured_next = next_state
