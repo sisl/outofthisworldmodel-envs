@@ -25,7 +25,9 @@ from gymnasium.envs.registration import register
 
 if TYPE_CHECKING:
     import jax.numpy as jnp
+    import numpy as np
 
+    from ..render.inputs import RenderInputs
     from .common.config import BaseTaskConfig
     from .common.layout import StateLayout
 
@@ -51,12 +53,23 @@ class EnvSpec:
     # state layout are the whole of what a card has to say differently about
     # one env versus another.
     card_summary: str = "rigid-body free-flyer dynamics"
+    # Factory for this env's render adapter: given a config, returns a
+    # (state, action) -> RenderInputs callable that poses a frame from the
+    # env's own state layout. Module-level by construction (never a lambda
+    # or closure) -- render worker processes rebuild the adapter from
+    # (env_name, cfg) via ENV_REGISTRY and have to pickle it across the
+    # process boundary to do it. None until an env's adapter lands; iss-hcw's
+    # stays None until it flips `renderable` to True alongside it.
+    make_render_adapter: (
+        Callable[[BaseTaskConfig], Callable[[np.ndarray, np.ndarray | None], RenderInputs]] | None
+    ) = None
 
 
 def _build_env_registry() -> dict[str, EnvSpec]:
     from .common.layout import ISS_LAYOUT
     from .iss.config import ISSConfig
     from .iss.dynamics import ISSDynamics
+    from .iss.render_adapter import make_render_adapter as iss_make_render_adapter
     from .iss.vector_env import ISSVectorEnv
     from .iss_hcw.config import HCW_LAYOUT, HCWConfig
     from .iss_hcw.dynamics import HCWDynamics
@@ -72,6 +85,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_vector_env=lambda num_envs, cfg: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
             view=ISS_LAYOUT.slice_view,
             renderable=True,
+            make_render_adapter=iss_make_render_adapter,
         ),
         "iss-hcw": EnvSpec(
             name="iss-hcw",
