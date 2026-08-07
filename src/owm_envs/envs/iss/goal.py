@@ -46,6 +46,27 @@ GOAL_ERROR_LABELS: tuple[str, ...] = (
 )
 
 
+# Names, in block order, of the four magnitudes `goal_error_norms` returns.
+GOAL_ERROR_NORM_LABELS: tuple[str, ...] = ("pos_m", "vel_mps", "att_rad", "rate_radps")
+
+
+def goal_error_norms(block):
+    """The four per-quantity magnitudes of a goal-error block, in block order.
+
+    How far the state is from the goal in each of the four quantities the
+    block measures, as one (4,) array. `att_rad` is the rotation angle to the
+    target attitude and nothing else: the axis-angle block is axis * angle
+    with a hemisphere-corrected angle in [0, pi] (see
+    `quaternion.axis_angle_from_quat`), so its norm is that angle.
+    """
+    return jnp.stack([
+        jnp.linalg.norm(block[0:3]),
+        jnp.linalg.norm(block[3:6]),
+        jnp.linalg.norm(block[6:9]),
+        jnp.linalg.norm(block[9:12]),
+    ])
+
+
 def goal_error(measured, target_pos, target_vel, target_quat, target_rate):
     q_err = quat_multiply(quat_conjugate(quat_normalize(measured[6:10])),
                           quat_normalize(target_quat))

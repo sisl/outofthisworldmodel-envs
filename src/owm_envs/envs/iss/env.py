@@ -17,7 +17,12 @@ from gymnasium import spaces
 
 from .config import ISSConfig, dock_port_targets, dock_target
 from .dynamics import ISSDynamics
-from .goal import GOAL_ERROR_DIM, dock_goal_error
+from .goal import (
+    GOAL_ERROR_DIM,
+    GOAL_ERROR_NORM_LABELS,
+    dock_goal_error,
+    goal_error_norms,
+)
 from .reward import iss_reward
 from .sensing import NOISE_STREAM, apply_sensor_noise
 
@@ -100,6 +105,12 @@ class ISSEnv(gym.Env):
         self._jit_step = jax.jit(self.dynamics.step)
         self._jit_reset = jax.jit(self.dynamics.reset)
         self._jit_dock_goal_error = self._build_jit_dock_goal_error()
+        # Built whatever `observation.goal_error` says: the block above is an
+        # observation and this is telemetry, and a run that emits no goal
+        # block still wants to be told whether its policy is closing in.
+        self._jit_goal_error_norms = jax.jit(
+            lambda state, target: goal_error_norms(dock_goal_error(state, target))
+        )
 
     def _build_jit_dock_goal_error(self) -> Any | None:
         """measured -> the goal-error block, or None when it isn't emitted.
@@ -139,6 +150,8 @@ class ISSEnv(gym.Env):
             "collision": False,
             "escaped": False,
             "state": self._true_state(),
+            "goal_pose": self._goal_pose(),
+            "goal_error_true": self._goal_error_true(),
             **self._port_info(),
         }
 
@@ -182,6 +195,8 @@ class ISSEnv(gym.Env):
                 "collision": collision,
                 "escaped": escaped,
                 "state": self._true_state(),
+                "goal_pose": self._goal_pose(),
+                "goal_error_true": self._goal_error_true(),
                 **self._port_info(),
             },
         )
@@ -192,6 +207,36 @@ class ISSEnv(gym.Env):
             return
         self._port_index = int(self.np_random.integers(len(self._port_names)))
         self._dock_pose = self._port_targets[self._port_index]
+
+    def _goal_pose(self) -> np.ndarray:
+        """The (7,) [position, quaternion] pose this episode is flying to.
+
+        The drawn port's row, or `cfg.dock`'s own pose when no ports are
+        configured -- always present, unlike the port name and index, so a
+        consumer reads one key to learn where the episode's goal is whichever
+        kind of config produced it. Same layout and dtype as
+        `config.dock_target` and the rows of `policies.dock_target_table`.
+        """
+        pose = self._cfg_dock_target if self._dock_pose is None else self._dock_pose
+        return np.asarray(pose, dtype=np.float32)
+
+    def _goal_error_true(self) -> dict[str, float]:
+        """How far the TRUE state is from the episode's goal, per quantity.
+
+        Measured against `self._state` and never the observation, deliberately:
+        this is diagnostics for whoever is watching a run -- training logs the
+        per-episode minimum of these to see whether a policy actually
+        approaches its port -- and a sensor-noise draw would answer a
+        different question, one about the navigation system rather than the
+        controller. Nothing a policy sees; the observation's goal block (which
+        does carry the noise, as it must) is separate.
+
+        The goal is the episode's own: the drawn port, or `cfg.dock` when no
+        ports are configured.
+        """
+        target = self._cfg_dock_target if self._dock_pose is None else self._dock_pose
+        norms = np.asarray(self._jit_goal_error_norms(self._state, target))
+        return {label: float(v) for label, v in zip(GOAL_ERROR_NORM_LABELS, norms)}
 
     def _port_info(self) -> dict[str, Any]:
         """The episode's port, for attributing a trajectory to its goal.

@@ -24,6 +24,7 @@ from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_
 from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
 from owm_envs.envs.iss.env import ISSEnv
 from owm_envs.envs.iss.goal import dock_goal_error
+from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 ZERO_ACTION = np.zeros(6, dtype=np.float32)
@@ -103,10 +104,35 @@ def test_info_names_and_indexes_the_same_port_on_reset_and_step():
     env = ISSEnv(cfg)
     _, info = env.reset(seed=5)
     assert cfg.dock.ports[info["dock_port_index"]].name == info["dock_port"]
+    # The pose is the one the port table derives for that name.
+    assert info["goal_pose"].shape == (7,) and info["goal_pose"].dtype == np.float32
+    np.testing.assert_allclose(info["goal_pose"], port_target(info["dock_port"]), atol=1e-6)
+
     _, _, _, _, step_info = env.step(ZERO_ACTION)
     # The goal is the episode's, not the step's: it does not move mid-episode.
     assert step_info["dock_port"] == info["dock_port"]
     assert step_info["dock_port_index"] == info["dock_port_index"]
+    np.testing.assert_array_equal(step_info["goal_pose"], info["goal_pose"])
+
+
+def test_goal_pose_is_present_without_ports_and_is_the_config_pose():
+    # The one key a consumer can always read: a fixed-dock run has no port to
+    # name, but it still has a goal, and this is where it is.
+    env = ISSEnv(ISSConfig())
+    _, info = env.reset(seed=5)
+    assert "dock_port" not in info
+    np.testing.assert_array_equal(info["goal_pose"], dock_target(env.cfg))
+    _, _, _, _, step_info = env.step(ZERO_ACTION)
+    np.testing.assert_array_equal(step_info["goal_pose"], dock_target(env.cfg))
+
+
+def test_goal_pose_follows_the_drawn_port_across_episodes():
+    env = ISSEnv(ISSConfig(dock=DockConfig(ports=("all",))))
+    for seed in range(8):
+        _, info = env.reset(seed=seed)
+        np.testing.assert_allclose(
+            info["goal_pose"], port_target(info["dock_port"]), atol=1e-6
+        )
 
 
 def test_goal_block_measures_against_the_drawn_port():
@@ -204,6 +230,83 @@ def test_a_port_set_round_trips_through_a_config_file_with_its_poses(tmp_path, s
     _, before = ISSEnv(cfg).reset(seed=4)
     _, after = ISSEnv(restored).reset(seed=4)
     assert before["dock_port"] == after["dock_port"]
+
+
+def expected_norms(state: np.ndarray, target: np.ndarray) -> dict[str, float]:
+    block = np.asarray(dock_goal_error(jnp.asarray(state), jnp.asarray(target)))
+    return {
+        "pos_m": float(np.linalg.norm(block[0:3])),
+        "vel_mps": float(np.linalg.norm(block[3:6])),
+        "att_rad": float(np.linalg.norm(block[6:9])),
+        "rate_radps": float(np.linalg.norm(block[9:12])),
+    }
+
+
+def test_true_goal_error_is_measured_from_the_true_state_not_the_noisy_one():
+    # The point of the diagnostic: with a noisy sensor the observation's goal
+    # block and this must disagree, and it is the true state this follows.
+    cfg = ISSConfig(
+        observation={"goal_error": True},
+        sensor_noise=PRESETS["cooperative"],
+        dock=DockConfig(ports=("all",)),
+    )
+    env = ISSEnv(cfg)
+    obs, info = env.reset(seed=2)
+    target = port_target(info["dock_port"])
+
+    expected = expected_norms(info["state"], target)
+    for label, value in expected.items():
+        assert info["goal_error_true"][label] == pytest.approx(value, rel=1e-5, abs=1e-6)
+
+    # Not the noisy block, which the same observation also carries.
+    noisy_pos = float(np.linalg.norm(obs[13:16]))
+    assert info["goal_error_true"]["pos_m"] != pytest.approx(noisy_pos, rel=1e-9)
+    assert obs[:13] is not info["state"] and not np.array_equal(obs[:13], info["state"])
+
+    # And again after a step, against the same episode goal.
+    _, _, _, _, step_info = env.step(ZERO_ACTION)
+    expected = expected_norms(step_info["state"], target)
+    for label, value in expected.items():
+        assert step_info["goal_error_true"][label] == pytest.approx(value, rel=1e-5, abs=1e-6)
+
+
+def test_true_goal_error_follows_the_drawn_port():
+    cfg = ISSConfig(dock=DockConfig(ports=("all",)))
+    env = ISSEnv(cfg)
+    for seed in range(6):
+        _, info = env.reset(seed=seed)
+        drawn = expected_norms(info["state"], port_target(info["dock_port"]))
+        assert info["goal_error_true"]["pos_m"] == pytest.approx(drawn["pos_m"], rel=1e-5)
+        # A different port would give a different distance, so this is a
+        # statement about which target is in force, not just arithmetic.
+        other = "zvezda_aft" if info["dock_port"] != "zvezda_aft" else "rassvet_nadir"
+        assert info["goal_error_true"]["pos_m"] != pytest.approx(
+            expected_norms(info["state"], port_target(other))["pos_m"], rel=1e-3
+        )
+
+
+def test_true_goal_error_falls_back_to_the_config_pose_without_ports():
+    env = ISSEnv(ISSConfig())
+    _, info = env.reset(seed=1)
+    expected = expected_norms(info["state"], np.asarray(dock_target(env.cfg)))
+    for label, value in expected.items():
+        assert info["goal_error_true"][label] == pytest.approx(value, rel=1e-5, abs=1e-6)
+
+
+def test_true_goal_error_reaches_zero_at_the_goal_pose():
+    # Docked at the port, at rest, correctly oriented: every one of the four
+    # magnitudes is zero. Pins that the attitude term is the angle to the
+    # port's own quaternion, not to the config pose's.
+    cfg = ISSConfig(dock=DockConfig(ports=("zvezda_aft",), enabled=False))
+    env = ISSEnv(cfg)
+    env.reset(seed=0)
+    target = port_target("zvezda_aft")
+    env._state = jnp.asarray(
+        np.concatenate([target[0:3], np.zeros(3), target[3:7], np.zeros(3)]),
+        dtype=jnp.float32,
+    )
+    for label, value in env._goal_error_true().items():
+        assert value == pytest.approx(0.0, abs=1e-5), label
 
 
 def test_unknown_port_names_are_rejected_at_load():
