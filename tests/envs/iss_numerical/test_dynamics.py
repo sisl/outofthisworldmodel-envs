@@ -414,11 +414,11 @@ def test_dock_gate_resolves_below_f32_eci_grain():
     """The 10 cm dock gate, applied to vehicles 6.8e6 m from the Earth's
     centre: 9 cm off the port docks and 11 cm does not.
 
-    KNOWN FAILING. `relative_view` does not yet derive the chaser's
-    world-frame attitude -- it reports the identity quaternion -- so the dock
-    gate on attitude error sees a 90 deg miss against the port's pose and
-    never opens, at either distance. The position resolution this test is
-    really about is already there; the attitude channel is not.
+    Both vehicles are absolute ECI states here, so the 2 cm that separates the
+    two cases is one part in 3e8 of the radius they are differenced from --
+    below f32's grain at that magnitude, and the reason this env's state is
+    f64. The gate is the full one, attitude included, so the chaser is placed
+    at the port's own pose through `chaser_state_from_view`.
     """
     cfg = NumericalConfig(physics={"collision_boxes_path": []})
     dyn = NumericalDynamics(cfg)
@@ -475,9 +475,11 @@ def test_reset_zero_width_config_is_the_undispersed_start():
 
 def test_reset_composes_inertial_attitude_and_rate_from_world_relative_ones():
     """`reset` samples a world-relative attitude and body rate but stores
-    inertial ones, and `relative_view`'s attitude channels are a placeholder,
-    so neither composition can be checked by a view round trip. Both are
-    reconstructed here independently, from q_bi and the chief's state.
+    inertial ones. Both compositions are reconstructed here from q_bi and the
+    chief's state directly, rather than through `relative_view` -- a view
+    round trip would only confirm that the two halves of the same conversion
+    agree with each other (`test_view.py` covers that), never that either is
+    the inertial quantity it claims to be.
     """
     dyn = NumericalDynamics(_free_flight_cfg())
     start = dyn.reset(jax.random.PRNGKey(3))

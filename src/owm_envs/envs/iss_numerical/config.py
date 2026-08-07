@@ -12,16 +12,20 @@ orbit (`OrbitConfig`) plus the perturbation switches (`PerturbationsConfig`).
 
 `NUM_LAYOUT` names the raw state's slices: a `[jd, sec]` epoch prefix, the
 chief's ECI position/velocity, the chaser's ECI position/velocity, the
-chaser's body -> world quaternion, and the chaser's body-frame rates -- 21
-elements in total (2 + 6 + 6 + 4 + 3). `NUM_LAYOUT.pos`/`vel`/`quat`/`omega`
+chaser's body -> ECI quaternion `q_bi`, and the chaser's body-frame rates with
+respect to ECI -- 21 elements in total (2 + 6 + 6 + 4 + 3). The attitude
+slices are therefore INERTIAL like the rest of the state, not the world-frame
+`q_bw` and world-relative rates the task layer consumes; `relative_view`
+converts. `NUM_LAYOUT.pos`/`vel`/`quat`/`omega`
 therefore name the CHASER-ABSOLUTE (ECI) slices, not a world-frame relative
 view: per `StateLayout.slice_view`'s own warning, an env whose raw slices
 hold absolute/inertial quantities must not use `slice_view()` as the task
 layer's view, since that would hand inertial numbers to code expecting a
 relative one. `NUM_LAYOUT.slice_view()` is exposed only as the raw 13-vector
 `[chaser_pos, chaser_vel, quat, omega]` for callers that explicitly want the
-chaser's absolute state; the registry's canonical `view` for this env is the
-computed relative view (chaser relative to chief) built in a later task.
+chaser's absolute state; the registry's canonical `view` for this env is
+`dynamics.relative_view`, which derives the chaser's world-frame state
+relative to the chief.
 """
 
 from __future__ import annotations

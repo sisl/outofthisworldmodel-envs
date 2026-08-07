@@ -98,9 +98,13 @@ corrected:
   the relative geometry the task scores untouched.
 * The world<->ECI rotation, also astrojax f32. Orthonormal to ~1e-7, which is
   ~1e-5 m of round-trip error on a 100 m standoff and ~1e-8 m at the dock.
-* The quaternion, through the f32-pinned `core.quaternion` helpers, exactly as
-  in `iss_hcw`: bounded per-step quantization at the 1e-8 level rather than a
-  directional bias, because it is re-derived each step and not summed into.
+* The quaternion inside the integrator, through the f32-pinned
+  `core.quaternion` helpers, exactly as in `iss_hcw`: bounded per-step
+  quantization at the 1e-8 level rather than a directional bias, because it is
+  re-derived each step and not summed into. `relative_view` and
+  `chaser_state_from_view` are the exception and compose their quaternions at
+  the state's own width (`_quat_compose`), because those two have to be exact
+  inverses and an f32 product would floor the round trip at ~1.4e-7 rad.
 """
 
 from __future__ import annotations
@@ -142,7 +146,44 @@ STATE_LABELS: tuple[str, ...] = NUM_LAYOUT.labels
 # drops only the precession/nutation tilt. See the module docstring.
 _DRAG_FRAME_ROTATION = jnp.eye(3, dtype=jnp.float64)
 
-_IDENTITY_QUAT = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float64)
+
+def _quat_conjugate_wide(q: jnp.ndarray) -> jnp.ndarray:
+    """Conjugate of [w,x,y,z] at the input's own dtype. See `_quat_compose`."""
+    return jnp.concatenate([q[0:1], -q[1:4]], axis=0)
+
+
+def _quat_compose(q1: jnp.ndarray, q2: jnp.ndarray) -> jnp.ndarray:
+    """Unit-normalized Hamilton product q1 (x) q2, at the inputs' own dtype.
+
+    `core.quaternion`'s `quat_multiply`/`quat_normalize` route through
+    astrojax's `Quaternion`, which casts to astrojax's module-wide dtype --
+    f32, independent of this package's x64 flag. That is the right trade
+    inside the integrator, where the quaternion is re-derived from the
+    kinematics every step and never summed into, but it is the wrong one for
+    `relative_view` and `chaser_state_from_view`: those two are required to be
+    exact inverses, and an f32 product caps a round trip at ~1.4e-7 rad
+    against the ~3e-16 the f64 state itself carries. Composing here keeps the
+    view at the state's own width.
+
+    Deliberately private and local rather than a second public helper in
+    `core.quaternion`: widening the ones already there would move `iss_hcw`'s
+    integrator off the numerics its golden fixtures were recorded against,
+    and adding parallel wide variants beside them would leave the shared
+    module offering two products with no way for a caller to tell which one
+    its dtype needs. Consolidating is a decision about all three envs, not
+    about this view.
+    """
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    q = jnp.stack(
+        [
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        ]
+    )
+    return q / jnp.linalg.norm(q)
 
 
 def accel_perturbed(
@@ -211,15 +252,38 @@ def relative_view(state: jnp.ndarray) -> jnp.ndarray:
     policies) consumes in place of `NUM_LAYOUT.slice_view`, whose slices hold
     the chaser's ABSOLUTE ECI state.
 
-    Position and velocity are the chaser measured from the chief in world
-    axes, with the velocity taken relative to the ROTATING world frame so it
-    matches what `iss_hcw` carries in-state directly.
+    All four channels are measured against the ROTATING world frame, so the
+    view matches what `iss_hcw` carries in-state directly: position and
+    velocity are the chaser from the chief in world axes with the frame's own
+    motion at that offset removed, `q_bw` is body -> world rather than the
+    stored body -> ECI, and the rates are the body rates the world frame's own
+    rotation has been subtracted from. `chaser_state_from_view` inverts it to
+    f64 -- exactly for the attitude and rate, and to the f32 world<->ECI
+    rotation's ~1e-7 non-orthonormality for position and velocity, which pass
+    through that rotation as a matrix whose transpose is only an approximate
+    inverse where a unit quaternion's conjugate is an exact one.
 
-    The attitude channels are not yet derived: this reports the identity
-    quaternion and passes the inertial body rates through unchanged, rather
-    than the chaser's attitude and rates with respect to the world frame.
-    Anything reading `view[6:13]` therefore reads a placeholder -- including
-    the dock gates on attitude error and body rate.
+    `q_bw` is returned on the w >= 0 hemisphere, matching `quat_from_rotmat`.
+    That resolves the q/-q double cover the way a pure state -> view function
+    has to -- there is no previous view to stay continuous against, unlike
+    `step`, which flips against the last one. It is also the one place the
+    inverse is an inverse of the ROTATION rather than of the components: a
+    state whose q_bi puts q_bw on the w < 0 hemisphere comes back through
+    `chaser_state_from_view` negated, which is the same attitude and the same
+    dynamics but not the same four numbers. The dock gate is indifferent
+    (`EventChecker.docked` takes |w| of the error quaternion), but a consumer
+    reading the raw components will see a sign flip where `iss_hcw`, carrying
+    q_bw in-state, would not.
+
+    The rates inherit `frame_rate_eci`'s in-plane-only frame rate, which is
+    exact whenever the chief's acceleration is central -- two-body motion, and
+    every state `reset` builds. With a non-central perturbation on, the
+    omitted out-of-plane term peaks at 1.1e-6 rad/s at zonal degree 6, which
+    reaches the velocity channel as 1.1e-4 m/s at a 100 m standoff and 2.8e-5
+    m/s at the dock, 0.006% of the 0.5 m/s dock velocity gate. Restoring it
+    needs the chief's acceleration and so the force model; the closed form is
+    in `frame_rate_eci`'s docstring, and keeping it out of here is what makes
+    this function a pure state -> view map.
     """
     r_chief, v_chief = state[2:5], state[5:8]
     r_chaser, v_chaser = state[8:11], state[11:14]
@@ -230,12 +294,21 @@ def relative_view(state: jnp.ndarray) -> jnp.ndarray:
 
     rel_pos = rotation @ offset_eci
     rel_vel = rotation @ (v_chaser - v_chief - jnp.cross(omega_frame, offset_eci))
-    return jnp.concatenate([rel_pos, rel_vel, _IDENTITY_QUAT, state[18:21]], axis=0)
+
+    q_wi = quat_from_rotmat(rotation.T)
+    q_bw = _quat_compose(_quat_conjugate_wide(q_wi), state[14:18])
+    q_bw = jnp.where(q_bw[0] < 0.0, -q_bw, q_bw)
+    omega_rel = state[18:21] - quat_to_rotmat(q_bw).T @ (rotation @ omega_frame)
+    return jnp.concatenate([rel_pos, rel_vel, q_bw, omega_rel], axis=0)
 
 
 def chaser_state_from_view(chief_eci: jnp.ndarray, view: jnp.ndarray) -> jnp.ndarray:
     """Inverse of `relative_view`'s mapping: the chaser's 13D ABSOLUTE state
     `[r_eci, v_eci, q_bi, omega_b]` that presents as `view` against `chief_eci`.
+
+    Applied to a view that came out of `relative_view`, it returns the same
+    ROTATION, which on the w < 0 hemisphere means the negated quaternion --
+    see that function on why the view canonicalizes and this does not.
 
     The three conversions each undo one of the view's: the world-frame offset
     rotates back into ECI and adds to the chief's position; the world-frame
@@ -253,7 +326,7 @@ def chaser_state_from_view(chief_eci: jnp.ndarray, view: jnp.ndarray) -> jnp.nda
 
     q_bw = view[6:10]
     q_wi = quat_from_rotmat(rotation.T)
-    q_bi = quat_normalize(quat_multiply(q_wi, q_bw)).astype(jnp.float64)
+    q_bi = _quat_compose(q_wi, q_bw)
     omega_b = view[10:13] + quat_to_rotmat(q_bw).T @ (rotation @ omega_frame)
     return jnp.concatenate([r_chaser, v_chaser, q_bi, omega_b], axis=0)
 
