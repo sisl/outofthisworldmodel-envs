@@ -15,6 +15,7 @@ to a target is just that target's own distance from the origin, which makes
 the dock gate a statement about which target is in force and nothing else.
 """
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -65,6 +66,45 @@ def test_env_checker_accepts_a_port_set():
     check_env(
         ISSEnv(ISSConfig(observation={"goal_error": True}, dock=DockConfig(ports=("all",)))),
         skip_render_check=True,
+    )
+
+
+def test_no_ports_goal_block_keeps_the_constant_folded_arithmetic():
+    """The guard on `ISSEnv._build_jit_dock_goal_error`'s two forms.
+
+    With no ports the target never changes and is compiled into the goal-error
+    computation as a constant. Passing it as a runtime argument instead -- the
+    obvious cleanup, since it is what a port set already does -- is not
+    bit-identical: XLA folds the constant at a different precision, and the
+    block moves by an ulp. That is the whole reason the two forms exist, so
+    this pins both halves: the emitted block IS the constant-folded one, and
+    the two forms really do differ.
+
+    If the second assertion ever fails because JAX made them agree, the
+    special case has become dead weight and `_build_jit_dock_goal_error` can
+    collapse to the one-line runtime-argument form.
+    """
+    cfg = ISSConfig(observation={"goal_error": True})
+    env = ISSEnv(cfg)
+    pose = jnp.asarray(dock_target(cfg))
+    folded = jax.jit(lambda measured: dock_goal_error(measured, pose))
+    passed_in = jax.jit(dock_goal_error)
+
+    differs_somewhere = False
+    for seed in range(8):
+        obs, _ = env.reset(seed=seed)
+        measured = jnp.asarray(obs[:13])
+        # Exact, not allclose: this is the assertion the refactor would break.
+        np.testing.assert_array_equal(obs[13:], np.asarray(folded(measured)))
+        if not np.array_equal(
+            np.asarray(folded(measured)), np.asarray(passed_in(measured, pose))
+        ):
+            differs_somewhere = True
+
+    assert differs_somewhere, (
+        "the constant-folded and runtime-argument forms of dock_goal_error now "
+        "agree bit for bit; ISSEnv._build_jit_dock_goal_error no longer needs "
+        "to keep them apart"
     )
 
 
