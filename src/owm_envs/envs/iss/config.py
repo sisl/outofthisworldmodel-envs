@@ -19,6 +19,7 @@ import yaml
 from pydantic import Field, field_validator
 
 from ...core.models import ConfigModel
+from .docking_ports import DockPort, port_target_rows, resolve_port_entries
 from .sensing import SensorNoiseConfig
 
 # Directory holding geometry shipped with this package. A relative
@@ -137,6 +138,23 @@ class DockConfig(ConfigModel):
     max_attitude_error_deg: float | None = 5.0
     max_body_rate_rad_s: float | None = 0.008727
 
+    # Ports a Gymnasium episode may be assigned, drawn uniformly at reset (see
+    # `ISSEnv.reset`). Empty keeps the single `position`/`quaternion` pose
+    # above, which is what every config written before this field means. The
+    # gates are shared: whichever port an episode draws, it is that port's
+    # pose the distance and attitude gates are measured against.
+    #
+    # This is the same field, resolved by the same
+    # `docking_ports.resolve_port_entries`, as the generation-side
+    # `policies.DockParams.ports`, so a port set written in an env config and
+    # one written in a generation config name the same episodes.
+    ports: tuple[DockPort, ...] = ()
+
+    @field_validator("ports", mode="before")
+    @classmethod
+    def _resolve_ports(cls, v: object) -> object:
+        return resolve_port_entries(v)
+
 
 class RewardWeights(ConfigModel):
     """Penalty weights for the five reward terms.
@@ -251,6 +269,17 @@ def dock_target(cfg: ISSConfig) -> np.ndarray:
             np.asarray(cfg.dock.quaternion, dtype=np.float32),
         ]
     )
+
+
+def dock_port_targets(cfg: ISSConfig) -> np.ndarray:
+    """The (K, 7) rows an episode may be assigned by `DockConfig.ports`.
+
+    Empty (0, 7) when no ports are configured, which is the signal to the
+    Gymnasium adapters that there is nothing to draw and the single
+    `dock_target(cfg)` pose governs the whole run, as it did before the field
+    existed.
+    """
+    return port_target_rows(cfg.dock.ports)
 
 
 def default_collision_boxes_path() -> str:
