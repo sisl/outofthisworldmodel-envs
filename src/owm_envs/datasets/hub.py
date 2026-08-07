@@ -382,11 +382,14 @@ def _unknown_env_note(env: str, config_parsed: bool) -> str:
     the env that generated the data, and a reader has to be told that before
     trusting any of it.
 
-    `config_parsed` is False when even the as-run config would not go through
-    the fallback's config class (`_fallback_config`), which widens that
-    warning: the measurement model, the start shell and the timestep are then
-    partly `iss` defaults too, so the note has to say so rather than let the
-    values below read as the run's own.
+    `config_parsed` is False when the as-run config went through the
+    fallback's config class only after the keys it does not declare were
+    dropped (`_fallback_config`), which widens the warning: whatever those
+    keys configured is not on the card at all, and anything they would have
+    decided -- the start shell most of all, which every env reads from its
+    own field -- reads as an `iss` default instead of as the run's own. A
+    config that would not parse even after the drop never reaches here; it
+    raises.
     """
     if env in ENV_REGISTRY:
         return ""
@@ -431,13 +434,18 @@ def _fallback_config(path: Path, config_cls: type[BaseTaskConfig]) -> tuple[Base
     keys, so an unregistered env's as-run config generally does NOT parse as
     an `iss` one -- it carries its own sections -- and raising there would
     have crashed the publish path before the card ever got to warn about the
-    unknown env. Instead the keys the class rejected are dropped and the rest
-    is re-read, which is what keeps the settings iss shares with it (dt, the
-    sensor model, the goal-error flag -- everything the repo name is built
-    from) coming from the run rather than from a default. Anything that still
-    will not validate falls back to defaults outright. Either way the second
-    return value is False, and `_unknown_env_note` says on the card which of
-    the values below a reader cannot trust.
+    unknown env. Instead exactly the keys the class rejected as unknown are
+    dropped and the rest is re-read, which keeps the settings iss shares with
+    it (dt, the sensor model, the goal-error flag -- everything the repo name
+    is built from) coming from the run rather than from a default. The second
+    return value is then False, and `_unknown_env_note` says on the card
+    which of the values it carries a reader cannot trust.
+
+    Only unknown KEYS are tolerated. A shared field the class does reject on
+    its value is a config this version genuinely cannot read, and that error
+    is raised: substituting defaults there would publish a card describing a
+    run that never happened, under a repo name derived the same way, with
+    nothing on the card able to say which values were the run's own.
     """
     try:
         return config_cls.from_yaml(path), True
@@ -447,10 +455,7 @@ def _fallback_config(path: Path, config_cls: type[BaseTaskConfig]) -> tuple[Base
         for error in rejected.errors():
             if error["type"] == "extra_forbidden":
                 _drop_key(pruned, error["loc"])
-        try:
-            return config_cls.model_validate(pruned), False
-        except ValidationError:
-            return config_cls(), False
+        return config_cls.model_validate(pruned), False
 
 
 def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig, bool]:
@@ -464,9 +469,14 @@ def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig, bool]:
     iss-hcw run could not be published at all: configs forbid extra keys, so
     parsing one as an ISSConfig fails on the reference orbit it carries.
 
-    A run directory from before the card recorded an env, or one naming an
-    env this build no longer registers, falls back to iss: every such run is
-    an iss run, and reading it that way is better than refusing to publish it.
+    Two kinds of run fall back to iss, and they are not the same kind of
+    fallback. A run directory from before the card recorded an env at all IS
+    an iss run -- nothing else existed when it was written -- so reading it
+    as one is simply correct. A run naming an env this build does not
+    register is not: it may be any env at all, and iss is only the reader of
+    last resort, which beats refusing to publish the data. That second case
+    is what `_unknown_env_note` puts on the card, so the fallback is never
+    silent.
 
     A run with no card AT ALL is a different case and is refused here, which
     is also what makes push_preview and push_run agree: the card is where the
