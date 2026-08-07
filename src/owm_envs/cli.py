@@ -60,6 +60,36 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
     return PolicyConfig(type=policy, observe=observe, dock=DockParams(ports=names))
 
 
+def _check_dock_ports_agree(
+    cfg: ISSConfig, policy_cfg: PolicyConfig, split: str
+) -> None:
+    """Refuse an env port set that generation would not honour.
+
+    Generation resolves an episode's target from `policy.dock.ports`, never
+    from `ISSConfig.dock.ports` -- that second field is the one `ISSEnv` draws
+    from. They are otherwise the same field, resolved by the same code, so a
+    config that sets the env's and leaves the policy's empty reads as a
+    multi-port run and would quietly write single-target data: the one outcome
+    neither reading of the config asks for. `ISSVectorEnv` refuses the same
+    disagreement rather than ignoring it, and so does this.
+
+    An empty `cfg.dock.ports` -- every config written before that field
+    existed -- says nothing about ports and is left alone.
+    """
+    if not cfg.dock.ports or cfg.dock.ports == policy_cfg.dock.ports:
+        return
+    env_names = [port.name for port in cfg.dock.ports]
+    policy_names = [port.name for port in policy_cfg.dock.ports]
+    raise typer.BadParameter(
+        f"split '{split}': dock ports disagree. The env config's dock.ports "
+        f"names {env_names}, the policy's dock.ports names {policy_names}, and "
+        f"generation flies the policy's -- so this run would not record the "
+        f"ports the env config asks for. Name the same ports on both (--dock-"
+        f"ports, or the split's PORTS field), or drop dock.ports from the env "
+        f"config."
+    )
+
+
 def _parse_render_views(spec: str) -> list[str]:
     """`--render-views` -> the view names to record in the generation config.
 
@@ -353,6 +383,7 @@ def generate(
     batches = {}
     for name, spec in gen.splits.items():
         split_policy = spec.policy or policy_cfg
+        _check_dock_ports_agree(cfg, split_policy, name)
         chosen = _resolve_driver(gen.driver, cfg, split_policy, gen.num_envs)
         batch = chosen.driver.generate(
             RolloutSpec(

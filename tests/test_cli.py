@@ -1249,3 +1249,60 @@ def test_an_unknown_render_view_is_a_usage_error(tmp_path):
     ])
     assert result.exit_code != 0
     assert "--render-views" in result.output and "dragon_fpv" in result.output
+
+
+def _env_config_with_ports(tmp_path, *names: str):
+    from owm_envs.envs.iss.config import DockConfig, ISSConfig as Cfg
+
+    path = tmp_path / "env.yaml"
+    Cfg(dock=DockConfig(ports=names)).to_yaml(path)
+    return path
+
+
+def test_env_dock_ports_the_policy_does_not_share_is_a_usage_error(tmp_path):
+    """Generation flies the POLICY's ports. An env config that names its own
+    and a policy that names none would quietly write single-target data, so
+    the disagreement is refused rather than ignored -- as ISSVectorEnv refuses
+    it. Caught before the rollout, not after an hour of it."""
+    cfg_path = _env_config_with_ports(tmp_path, "zvezda_aft", "poisk_zenith")
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(tmp_path / "run"), "--config", str(cfg_path),
+         "--split", "train:1:0", "--steps", "4", "--policy", "dock", "--num-envs", "1",
+         "--driver", "scan", "--no-lerobot"],
+    )
+    assert result.exit_code != 0
+    assert "dock ports disagree" in result.output
+    # Names both sides, so the fix does not need a source dive.
+    assert "zvezda_aft" in result.output and "--dock-ports" in result.output
+    assert not (tmp_path / "run").exists()
+
+
+def test_matching_dock_ports_on_both_sides_generate_normally(tmp_path):
+    cfg_path = _env_config_with_ports(tmp_path, "zvezda_aft", "poisk_zenith")
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--config", str(cfg_path),
+         "--split", "train:2:0", "--steps", "8", "--policy", "dock", "--num-envs", "2",
+         "--driver", "scan", "--no-lerobot", "--dock-ports", "zvezda_aft,poisk_zenith"],
+    )
+    assert result.exit_code == 0, result.output
+    assert ISSConfig.from_yaml(out / "env_config.yaml").dock.ports[0].name == "zvezda_aft"
+
+
+def test_an_env_config_naming_no_ports_is_left_alone(tmp_path):
+    """Every config written before DockConfig.ports existed: it says nothing
+    about ports, so a policy port set is not a disagreement with it."""
+    from owm_envs.envs.iss.config import ISSConfig as Cfg
+
+    cfg_path = tmp_path / "env.yaml"
+    Cfg().to_yaml(cfg_path)
+    out = tmp_path / "run"
+    result = runner.invoke(
+        app,
+        ["generate", "--out", str(out), "--config", str(cfg_path),
+         "--split", "train:2:0", "--steps", "8", "--policy", "dock", "--num-envs", "2",
+         "--driver", "scan", "--no-lerobot", "--dock-ports", "all"],
+    )
+    assert result.exit_code == 0, result.output
