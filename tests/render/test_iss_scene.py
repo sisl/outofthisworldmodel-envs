@@ -10,7 +10,9 @@ import imageio.v3 as iio  # noqa: E402  -- ships with the render extra, like pyg
 import owm_envs.render.iss_scene as scene_module  # noqa: E402
 from PIL import Image  # noqa: E402
 from owm_envs.render.earth import MAP_WIDTHS  # noqa: E402
+from owm_envs.render.inputs import Lighting  # noqa: E402
 from owm_envs.render.iss_scene import (  # noqa: E402
+    _FILL_INTENSITY_FRACTION,
     ISSScene,
     RenderConfig,
     _earth_globe_geometry,
@@ -79,6 +81,130 @@ def test_update_accepts_a_13d_state_not_14d(scene):
     scene.update(np.zeros(13, dtype=np.float32))
     with pytest.raises(ValueError, match="13-element state"):
         scene.update(np.zeros(9, dtype=np.float32))
+
+
+@pytest.fixture
+def lit_scene(scene):
+    """The module-scoped scene, with everything `lighting=` moves put back
+    afterwards so the other tests still see the as-built graph."""
+    nodes = (
+        scene._sun,
+        scene._directional_light,
+        scene._fill_light,
+        scene._earth_group,
+        scene._moon_group,
+    )
+    saved = [(tuple(node.local.position), getattr(node, "intensity", None)) for node in nodes]
+    yield scene
+    for node, (position, intensity) in zip(nodes, saved):
+        node.local.position = position
+        if intensity is not None:
+            node.intensity = intensity
+
+
+def _lighting(**overrides):
+    kwargs = {
+        "sun_direction_world": np.array([0.0, 0.0, 1.0]),
+        "illumination": 0.25,
+        "chief_distance_m": 6_795_000.0,
+        "moon_vector_world": np.array([0.0, 3.6e8, 0.0]),
+    }
+    return Lighting(**(kwargs | overrides))
+
+
+def test_update_without_lighting_moves_nothing(scene):
+    # Every frame rendered before per-frame lighting existed goes through this
+    # path, so it has to stay a no-op for everything but the capsule.
+    def snapshot():
+        return {
+            "sun": tuple(scene._sun.local.position),
+            "light": tuple(scene._directional_light.local.position),
+            "intensity": scene._directional_light.intensity,
+            "fill": tuple(scene._fill_light.local.position),
+            "fill_intensity": scene._fill_light.intensity,
+            "earth": tuple(scene._earth_group.local.position),
+            "moon": tuple(scene._moon_group.local.position),
+        }
+
+    before = snapshot()
+    scene.update(np.zeros(13, dtype=np.float32))
+    assert snapshot() == before
+
+
+def test_the_scene_graph_holds_the_nodes_update_moves(scene):
+    # `update` reaches the sun, lights, Earth and moon through attributes, so
+    # the graph has to keep holding those very objects -- an attribute pointing
+    # at a node that was never added would move nothing at all. Pinned in build
+    # order, which is also the order the lights reach the shader, and including
+    # the one light no attribute holds: the ambient fill is easy to drop while
+    # promoting its neighbours.
+    children = list(scene.scene.children)
+    assert children[:4] == [scene.iss, scene._earth_group, scene._moon_group, scene._sun]
+    assert type(children[4]).__name__ == "AmbientLight"
+    assert children[5:] == [scene._directional_light, scene._fill_light, scene.dragon]
+
+
+def test_update_applies_lighting(lit_scene):
+    cfg = lit_scene.cfg
+    lit_scene.update(np.zeros(13, dtype=np.float32), lighting=_lighting())
+
+    sun_position = [0.0, 0.0, cfg.sun_visual_distance_m]
+    np.testing.assert_allclose(lit_scene._sun.local.position, sun_position)
+    np.testing.assert_allclose(lit_scene._directional_light.local.position, sun_position)
+    assert np.isclose(lit_scene._directional_light.intensity, 0.25 * cfg.directional_light_intensity)
+    assert np.isclose(
+        lit_scene._fill_light.intensity,
+        0.25 * _FILL_INTENSITY_FRACTION * cfg.directional_light_intensity,
+    )
+    np.testing.assert_allclose(lit_scene._earth_group.local.position, [0.0, 0.0, -6_795_000.0])
+    # The moon hangs off the earth centre: earth_center + the geocentric vector.
+    np.testing.assert_allclose(lit_scene._moon_group.local.position, [0.0, 3.6e8, -6_795_000.0])
+
+
+def test_update_keeps_the_moon_at_its_true_distance(lit_scene):
+    # orbit.moon_vector_world hands over direction AND distance so the moon
+    # swings +/-7% in apparent size over a month. Renormalising it to
+    # earth_moon_distance_m -- as the static config placement does -- would
+    # freeze it at the mean and throw that away.
+    perigee_m = 3.633e8
+    lit_scene.update(
+        np.zeros(13, dtype=np.float32),
+        lighting=_lighting(moon_vector_world=np.array([0.0, perigee_m, 0.0])),
+    )
+    earth_center = np.asarray(lit_scene._earth_group.local.position)
+    moon = np.asarray(lit_scene._moon_group.local.position)
+    assert np.isclose(np.linalg.norm(moon - earth_center), perigee_m, rtol=1e-6)
+    assert not np.isclose(np.linalg.norm(moon - earth_center), lit_scene.cfg.earth_moon_distance_m, rtol=1e-3)
+
+
+def test_update_keeps_the_sun_at_its_visual_distance(lit_scene):
+    # The disc's radius is baked from sun_visual_distance_m, so its angular
+    # diameter is only right while it sits at exactly that distance.
+    cfg = lit_scene.cfg
+    before = np.asarray(lit_scene._sun.geometry.positions.data).copy()
+    lit_scene.update(
+        np.zeros(13, dtype=np.float32),
+        lighting=_lighting(sun_direction_world=np.array([0.0, -6.0, 0.0])),
+    )
+    np.testing.assert_allclose(
+        np.linalg.norm(np.asarray(lit_scene._sun.local.position)), cfg.sun_visual_distance_m, rtol=1e-6
+    )
+    np.testing.assert_array_equal(np.asarray(lit_scene._sun.geometry.positions.data), before)
+
+
+def test_shadow_camera_follows_the_key_light(lit_scene):
+    # Nothing here repositions the shadow camera: pygfx re-derives it from the
+    # light's world position on every frame (LightShadow._update_matrix). This
+    # pins that, because if it ever stopped being true the shadows would keep
+    # falling from the light's build-time direction with nothing to show it.
+    light = lit_scene._directional_light
+    lit_scene.update(np.zeros(13, dtype=np.float32), lighting=_lighting())
+    light.shadow._update_matrix(light)
+    np.testing.assert_allclose(
+        np.asarray(light.shadow.camera.world.position),
+        [0.0, 0.0, lit_scene.cfg.sun_visual_distance_m],
+        rtol=1e-6,
+    )
 
 
 def test_render_config_round_trips_through_toml(tmp_path):
