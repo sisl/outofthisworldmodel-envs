@@ -28,6 +28,19 @@ def test_every_registered_env_is_renderable():
     assert ENV_REGISTRY["iss-hcw"].renderable is True
 
 
+def test_renderable_means_having_a_render_adapter():
+    """The flag and the adapter are one fact recorded twice, so they have to
+    agree. A renderable env with no adapter passes the CLI's guard and then
+    fails inside a render worker as a BrokenProcessPool, hours into a run --
+    the exact failure the flag exists to turn into a usage error. An adapter
+    with the flag off is the smaller mistake of rendering nobody can ask for.
+    """
+    assert all(
+        (spec.make_render_adapter is not None) == spec.renderable
+        for spec in ENV_REGISTRY.values()
+    )
+
+
 def test_iss_render_adapter_poses_a_frame_from_a_view_row():
     spec = ENV_REGISTRY["iss"]
     adapter = spec.make_render_adapter(spec.config_cls())

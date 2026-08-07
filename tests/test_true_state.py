@@ -277,7 +277,12 @@ def test_video_poses_truth_not_the_noisy_observation():
     batch = _scan_batch("noncooperative", goal_error=False)
     renderer = _StateCapturingRenderer()
     render_episode_frames(
-        batch, 0, _TinyRenderConfig(), renderer=renderer, adapter=RenderInputs.from_view
+        batch,
+        0,
+        _TinyRenderConfig(),
+        renderer=renderer,
+        adapter=RenderInputs.from_view,
+        state_dim=13,
     )
 
     # The pose the adapter read off each row, against truth's own: rows reach
@@ -304,6 +309,7 @@ def test_video_renders_truth_for_goal_error_batch():
         0,
         RenderConfig(image_width=64, image_height=64),
         adapter=RenderInputs.from_view,
+        state_dim=13,
     )
     assert [clip.shape[1:] for clip in clips.values()] == [(64, 64, 3)]
 

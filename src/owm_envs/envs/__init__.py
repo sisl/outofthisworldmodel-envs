@@ -41,11 +41,14 @@ class EnvSpec:
     make_dynamics: Callable[[BaseTaskConfig], Any]
     make_vector_env: Callable[[int, BaseTaskConfig], Any]
     view: Callable[[jnp.ndarray], jnp.ndarray]
-    # Whether the video path can pose the renderer from this env's recorded
-    # true_state rows, which it reads as the iss layout's element order.
-    # Deliberately given no default: an env that gets this wrong renders
-    # silently wrong video rather than failing, so registering one has to be
-    # the moment somebody answers the question.
+    # Whether the video path can render this env at all -- which since the
+    # RenderInputs seam means exactly that it has a `make_render_adapter`, the
+    # thing that reads its rows in its own element order. Deliberately given
+    # no default: an env that gets this wrong renders silently wrong video
+    # rather than failing, so registering one has to be the moment somebody
+    # answers the question. `tests/envs/test_registry.py` holds the two fields
+    # in step, because the CLI's `--render` guard reads this one while the
+    # render workers reach for the other.
     renderable: bool
     # How this env's equations of motion are described in a published
     # dataset's card, as the object of "under ...". Every env in the suite
@@ -58,8 +61,8 @@ class EnvSpec:
     # env's own state layout. Module-level by construction (never a lambda
     # or closure) -- render worker processes rebuild the adapter from
     # (env_name, cfg) via ENV_REGISTRY and have to pickle it across the
-    # process boundary to do it. None until an env's adapter lands; iss-hcw's
-    # stays None until it flips `renderable` to True alongside it.
+    # process boundary to do it. None for an env whose adapter has not landed,
+    # which is precisely an env whose `renderable` is False.
     make_render_adapter: (
         Callable[[BaseTaskConfig], Callable[[np.ndarray, np.ndarray | None], RenderInputs]] | None
     ) = None

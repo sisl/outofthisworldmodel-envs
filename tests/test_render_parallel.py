@@ -31,6 +31,7 @@ FPV = FPV_KEY
 # adapter from the pair rather than being handed one, because a spawned
 # worker can only be sent something it can rebuild an adapter from.
 ISS = {"env_name": "iss", "env_cfg": ISSConfig()}
+ISS_STATE_DIM = 13
 
 
 class _FakeRenderer:
@@ -153,6 +154,77 @@ def test_a_worker_builds_its_own_render_adapter(monkeypatch):
     np.testing.assert_array_equal(posed.quaternion_bw, [6.0, 7.0, 8.0, 9.0])
 
 
+def test_a_goal_augmented_hcw_batch_is_posed_at_its_own_state_width(monkeypatch):
+    """No truth channel, so the pose comes off the observation -- and an
+    iss-hcw observation is a 15-wide state (a 2-element epoch prefix ahead of
+    the 13D view) followed by the 12-dim goal-error block. What an adapter is
+    owed is its env's whole state row, so the width of the row is asserted
+    here and not only the pose that came out of it: iss-hcw's own adapter
+    happens to read nothing past element 12, so a row truncated to iss's 13
+    would render identically today and stop doing so the moment a layout puts
+    anything the renderer reads further out. Both paths take their width from
+    the registry; this pins the in-process one, which is the one that used to
+    compute the right source and then ignore it.
+    """
+    import owm_envs.datasets.video as video
+
+    from owm_envs.envs.common.epoch_state import epoch_prefix
+    from owm_envs.envs.common.goal import GOAL_ERROR_DIM
+    from owm_envs.envs.common.orbit import ReferenceOrbit
+    from owm_envs.envs.iss_hcw.config import HCWConfig
+
+    posed = []
+
+    class _Capturing(_FakeRenderer):
+        def render_views(self, inputs, views=("DRAGON_FPV",)):
+            posed.append(inputs)
+            return super().render_views(inputs, views)
+
+    monkeypatch.setattr("owm_envs.render.renderer.ISSRenderer", _Capturing)
+    cfg = HCWConfig()
+    state_dim = 15
+    row = np.zeros(state_dim + GOAL_ERROR_DIM, dtype=np.float32)
+    row[:2] = np.asarray(epoch_prefix(ReferenceOrbit(cfg.orbit).epoch0), dtype=np.float32)
+    row[2:state_dim] = np.arange(1.0, 14.0)
+    # A goal block that would be unmistakable if it ever reached a pose.
+    row[state_dim:] = 99.0
+
+    batch = TrajectoryBatch(
+        observations=row.reshape(1, 1, -1),
+        actions=np.zeros((1, 1, 6), dtype=np.float32),
+        rewards=np.zeros((1, 1), dtype=np.float32),
+        lengths=np.array([1], dtype=np.int32),
+        terminated=np.array([True]),
+        truncated=np.array([False]),
+        policy_ids=None,
+    )
+    assert batch.true_state is None
+
+    # The real adapter, wrapped so the row it was handed can be inspected.
+    real = render_adapter_for("iss-hcw", cfg)
+    handed = []
+
+    def recording(state, action=None):
+        handed.append(np.asarray(state).copy())
+        return real(state, action)
+
+    monkeypatch.setattr(video, "render_adapter_for", lambda env_name, env_cfg: recording)
+    list(iter_batch_frames(batch, _Cfg(), env_name="iss-hcw", env_cfg=cfg))
+
+    assert len(handed) == 1
+    np.testing.assert_array_equal(handed[0], row[:state_dim])
+
+    expected = real(row[:state_dim], np.zeros(6, dtype=np.float32))
+    assert len(posed) == 1
+    np.testing.assert_array_equal(posed[0].position_world, expected.position_world)
+    np.testing.assert_array_equal(posed[0].quaternion_bw, expected.quaternion_bw)
+    np.testing.assert_array_equal(
+        posed[0].lighting.sun_direction_world, expected.lighting.sun_direction_world
+    )
+    assert posed[0].lighting.illumination == expected.lighting.illumination
+    assert posed[0].lighting.chief_distance_m == expected.lighting.chief_distance_m
+
+
 def test_parallel_matches_sequential():
     """Needs a real GPU renderer: the point is that a worker process renders
     the same episode to the same bytes as the in-process path."""
@@ -160,7 +232,9 @@ def test_parallel_matches_sequential():
     from owm_envs.render.iss_scene import RenderConfig
 
     cfg = RenderConfig(image_width=64, image_height=64)
-    sequential = render_batch_frames(batch, cfg, adapter=render_adapter_for(**ISS))
+    sequential = render_batch_frames(
+        batch, cfg, adapter=render_adapter_for(**ISS), state_dim=ISS_STATE_DIM
+    )
     parallel = list(iter_batch_frames(batch, cfg, workers=2, **ISS))
     assert len(parallel) == len(sequential)
     for seq, par in zip(sequential, parallel):

@@ -18,9 +18,10 @@ from owm_envs.datasets.video import (  # noqa: E402
 from owm_envs.drivers.types import TrajectoryBatch  # noqa: E402
 from owm_envs.render.inputs import RenderInputs  # noqa: E402
 
-# What iss's own render adapter is: these batches carry iss rows, so this is
-# the adapter the pipeline would build for them.
+# What iss's own render adapter and state width are: these batches carry iss
+# rows, so this is the pair the pipeline would build for them.
 ADAPTER = RenderInputs.from_view
+STATE_DIM = 13
 
 
 class _FakeRenderer:
@@ -74,7 +75,7 @@ def test_render_batch_frames_builds_one_renderer_for_the_whole_batch():
     # ~3.6 s. A fresh renderer per episode would repeat that N times for an
     # N-episode batch.
     batch = small_batch()
-    frames = render_batch_frames(batch, _Cfg(), adapter=ADAPTER)
+    frames = render_batch_frames(batch, _Cfg(), adapter=ADAPTER, state_dim=STATE_DIM)
     assert len(frames) == batch.num_episodes
     assert _FakeRenderer.instances == 1
     assert _FakeRenderer.closes == 1
@@ -83,8 +84,10 @@ def test_render_batch_frames_builds_one_renderer_for_the_whole_batch():
 def test_render_episode_frames_reuses_a_passed_in_renderer():
     batch = small_batch()
     renderer = _FakeRenderer(_Cfg())
-    render_episode_frames(batch, 0, _Cfg(), renderer=renderer, adapter=ADAPTER)
-    render_episode_frames(batch, 1, _Cfg(), renderer=renderer, adapter=ADAPTER)
+    for episode in (0, 1):
+        render_episode_frames(
+            batch, episode, _Cfg(), renderer=renderer, adapter=ADAPTER, state_dim=STATE_DIM
+        )
     assert _FakeRenderer.instances == 1  # only the one built above
     assert _FakeRenderer.closes == 0  # the caller owns closing a passed-in renderer
 
@@ -93,7 +96,7 @@ def test_render_episode_frames_without_a_renderer_builds_and_closes_its_own():
     # Standalone use: no renderer given, so one is built and closed just for
     # this call.
     batch = small_batch()
-    render_episode_frames(batch, 0, _Cfg(), adapter=ADAPTER)
+    render_episode_frames(batch, 0, _Cfg(), adapter=ADAPTER, state_dim=STATE_DIM)
     assert _FakeRenderer.instances == 1
     assert _FakeRenderer.closes == 1
 
@@ -101,7 +104,7 @@ def test_render_episode_frames_without_a_renderer_builds_and_closes_its_own():
 def test_the_default_renders_only_the_egocentric_training_view():
     # Every extra feature costs a full render per frame and a full video
     # stream, so the default must stay what training consumes.
-    clips = render_episode_frames(small_batch(), 0, _Cfg(), adapter=ADAPTER)
+    clips = render_episode_frames(small_batch(), 0, _Cfg(), adapter=ADAPTER, state_dim=STATE_DIM)
     assert list(clips) == [FPV_KEY]
 
 
@@ -109,7 +112,12 @@ def test_the_composite_adds_one_feature_the_size_of_a_single_view():
     # Six views in one frame, not six frames: the mosaic is the same shape as
     # the training view, which is what keeps it affordable to store.
     clips = render_episode_frames(
-        small_batch(), 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY), adapter=ADAPTER
+        small_batch(),
+        0,
+        _Cfg(),
+        keys=(FPV_KEY, COMPOSITE_KEY),
+        adapter=ADAPTER,
+        state_dim=STATE_DIM,
     )
     assert set(clips) == {FPV_KEY, COMPOSITE_KEY}
     assert clips[COMPOSITE_KEY].shape == clips[FPV_KEY].shape
@@ -119,7 +127,9 @@ def test_every_named_view_can_be_written_as_its_own_feature():
     # The full set: six cameras under their own keys plus the mosaic. Each is
     # a video stream of its own, which is what the flag exists to let a run
     # trade away.
-    clips = render_episode_frames(small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS, adapter=ADAPTER)
+    clips = render_episode_frames(
+        small_batch(), 0, _Cfg(), keys=OUTPUT_KEYS, adapter=ADAPTER, state_dim=STATE_DIM
+    )
     assert tuple(clips) == OUTPUT_KEYS
     assert {clip.shape for clip in clips.values()} == {(3, 8, 8, 3)}
 
@@ -140,7 +150,7 @@ def test_each_per_view_feature_carries_its_own_camera():
         _Cfg(),
         keys=OUTPUT_KEYS,
         renderer=_PerViewRenderer(_Cfg()),
-        adapter=ADAPTER,
+        adapter=ADAPTER, state_dim=STATE_DIM,
     )
     for index, view in enumerate(COMPOSITE_VIEWS):
         assert set(np.unique(clips[VIEW_KEYS[view]]).tolist()) == {index + 1}
@@ -164,7 +174,7 @@ def test_only_the_cameras_a_run_asked_for_are_drawn():
         _Cfg(),
         keys=("observation.images.iss_top",),
         renderer=_CountingRenderer(_Cfg()),
-        adapter=ADAPTER,
+        adapter=ADAPTER, state_dim=STATE_DIM,
     )
     assert calls == [("ISS_TOP",)] * int(batch.lengths[0])
 
@@ -182,7 +192,13 @@ def test_the_composite_asks_for_every_view_once_per_frame():
     batch = small_batch()
     renderer = _CountingRenderer(_Cfg())
     render_episode_frames(
-        batch, 0, _Cfg(), keys=(FPV_KEY, COMPOSITE_KEY), renderer=renderer, adapter=ADAPTER
+        batch,
+        0,
+        _Cfg(),
+        keys=(FPV_KEY, COMPOSITE_KEY),
+        renderer=renderer,
+        adapter=ADAPTER,
+        state_dim=STATE_DIM,
     )
     assert calls == [COMPOSITE_VIEWS] * int(batch.lengths[0])
 
@@ -221,7 +237,12 @@ def test_every_frame_is_posed_through_the_environments_adapter():
     renderer = _CapturingRenderer(_Cfg())
     for episode in range(batch.num_episodes):
         render_episode_frames(
-            batch, episode, _Cfg(), renderer=renderer, adapter=counting_adapter
+            batch,
+            episode,
+            _Cfg(),
+            renderer=renderer,
+            adapter=counting_adapter,
+            state_dim=STATE_DIM,
         )
 
     assert len(posed) == sum(lengths), "the adapter is called once per frame"

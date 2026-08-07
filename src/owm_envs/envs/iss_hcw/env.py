@@ -187,6 +187,15 @@ class HCWEnv(PortGoalMixin, gym.Env):
         # docstring on why `self._state` itself never narrows.
         return np.asarray(measured, dtype=np.float32)
 
+    # Both paths below hand out float32 copies of the state -- the row a
+    # dataset records, and the row `render()` poses -- and both are narrow by
+    # design. The render adapter tolerates it: measured over one orbit at 400
+    # epochs, against the f64 state, narrowing moves the sun direction by
+    # 2.3e-6 rad and the moon by 943 m (2.5e-6 rad of arc), a thousandfold
+    # inside the ~2e-3 rad model budget `envs/common/orbit.py` documents, and
+    # the chief distance by 1 m inside its ~4 m numerical one. Illumination
+    # does not move at all. What must never narrow is `self._state` itself,
+    # which the dynamics accumulate from -- see the module docstring.
     def _true_state(self) -> np.ndarray:
         return np.asarray(self._state, dtype=np.float32)
 

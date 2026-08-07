@@ -346,13 +346,12 @@ def generate(
         renderable = ", ".join(name for name, spec in ENV_REGISTRY.items() if spec.renderable)
         raise typer.BadParameter(
             f"--render does not support the '{env_name}' environment yet, only "
-            f"{renderable}. The video path poses the renderer straight off the "
-            "recorded true_state rows, whose element order it takes to be the iss "
-            f"layout's, so an {env_name} row would be read as position and velocity "
-            "where it holds something else entirely -- silently wrong video rather "
-            "than an error. Rendering for the rest of the suite arrives with the "
-            "RenderInputs seam, which is what flips this env's EnvSpec.renderable; "
-            "until then, drop --render to generate the vector dataset."
+            f"{renderable}. Every frame is posed through a render adapter, which "
+            "is what reads an env's rows in that env's own element order, and "
+            f"'{env_name}' has none registered (EnvSpec.make_render_adapter). "
+            "Rendering it arrives with its adapter, which is what flips "
+            "EnvSpec.renderable; until then, drop --render to generate the "
+            "vector dataset."
         )
 
     # Everything from here to the `if render:` block reads the caller's own

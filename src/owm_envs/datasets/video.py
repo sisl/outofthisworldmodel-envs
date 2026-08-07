@@ -136,14 +136,23 @@ def views_for(keys: Sequence[str]) -> tuple[str, ...]:
     return tuple(view for view in COMPOSITE_VIEWS if view in wanted)
 
 
-def _episode_state(batch: TrajectoryBatch, episode_index: int, t: int) -> np.ndarray:
-    # Pose the TRUE state whenever the batch carries one: the camera must not
-    # shake with navigation error, and an observation carrying the goal-error
-    # block is not renderable geometry (25 dims into a renderer that poses
-    # 13). The fallback is measured, not true -- see `render_episode_frames`.
+def _state_source(batch: TrajectoryBatch, state_dim: int) -> np.ndarray:
+    """The rows to pose from, `(episodes, steps, state_dim)`.
+
+    Truth whenever the batch carries it: the camera must not shake with
+    navigation error. Failing that, the first `state_dim` observation dims,
+    which is the measured state -- an observation may carry a goal-error block
+    past the state itself, and those extra dims are not geometry any adapter
+    reads. The width is the producing env's, not a constant: an iss row is 13
+    wide and an iss-hcw row 15, and an env whose adapter reads past 13 would
+    be handed a truncated row.
+
+    One rule for both the in-process and the pooled path, so a split rendered
+    across workers is the same video as one rendered here.
+    """
     if batch.true_state is not None:
-        return batch.true_state[episode_index, t]
-    return batch.observations[episode_index, t][:13]
+        return batch.true_state
+    return batch.observations[..., :state_dim]
 
 
 def tile_views(rendered: dict[str, np.ndarray], height: int, width: int) -> np.ndarray:
@@ -202,12 +211,15 @@ def render_episode_frames(
     renderer: Any | None = None,
     *,
     adapter: RenderAdapter,
+    state_dim: int,
 ) -> dict[str, np.ndarray]:
     """Render one episode to `(L, H, W, 3)` uint8 clips, keyed by feature name.
 
     `adapter` is the source environment's render adapter -- see
     `EnvSpec.make_render_adapter` -- which is what turns each stored row into
-    something the renderer can pose. It has no default because getting it
+    something the renderer can pose, and `state_dim` is that same
+    environment's state width (`EnvSpec.layout.state_dim`), which is how wide
+    a row the adapter is owed. Neither has a default because getting either
     wrong is silently wrong video rather than an error: every caller says
     which environment produced the batch it is handing over.
 
@@ -221,9 +233,9 @@ def render_episode_frames(
 
     A batch whose source cannot supply truth -- a foreign env that emits no
     `info["state"]`, or a batch built before the truth channel existed -- is
-    rendered from its first 13 observation dims instead. That is the MEASURED
-    state, so such a clip does shake with navigation error; it is the best
-    available for that batch, not an equivalent substitute.
+    rendered from its first `state_dim` observation dims instead. That is the
+    MEASURED state, so such a clip does shake with navigation error; it is the
+    best available for that batch, not an equivalent substitute.
 
     `renderer`, when given, is a live `ISSRenderer` to render into -- reused
     across episodes so a multi-episode batch pays the cost of loading the
@@ -243,8 +255,9 @@ def render_episode_frames(
             key: np.empty((length, cfg.image_height, cfg.image_width, 3), dtype=np.uint8)
             for key in keys
         }
+        source = _state_source(batch, state_dim)
         for t in range(length):
-            state = _episode_state(batch, episode_index, t)
+            state = source[episode_index, t]
             action = batch.actions[episode_index, t]
             # One pose serves every view of this frame.
             rendered = renderer.render_views(adapter(state, action), views=views)
@@ -261,19 +274,23 @@ def render_batch_frames(
     keys: Sequence[str] = (FPV_KEY,),
     *,
     adapter: RenderAdapter,
+    state_dim: int,
 ) -> list[dict[str, np.ndarray]]:
     """Render every episode in `batch` to its clips, keyed by feature name.
 
     Builds one `ISSRenderer` for the whole batch and reuses it across
     episodes, then closes it exactly once -- see `render_episode_frames`'s
-    `renderer` argument for why that matters.
+    `renderer` argument for why that matters, and its `adapter` and
+    `state_dim` for what those are.
     """
     from ..render.renderer import ISSRenderer
 
     renderer = ISSRenderer(cfg)
     try:
         return [
-            render_episode_frames(batch, i, cfg, keys=keys, renderer=renderer, adapter=adapter)
+            render_episode_frames(
+                batch, i, cfg, keys=keys, renderer=renderer, adapter=adapter, state_dim=state_dim
+            )
             for i in range(batch.num_episodes)
         ]
     finally:
@@ -403,21 +420,16 @@ def iter_batch_frames(
     or dies mid-episode raises `BrokenProcessPool` here, with its own
     traceback on stderr naming the real cause.
 
-    The truth-vs-observation source choice matches `render_episode_frames` --
-    see its docstring for why a batch without a truth channel is rendered
-    from measured state. The fallback slice widens to the named env's own
-    state width rather than iss's fixed 13, since the adapter it feeds needs
-    a raw state row and a goal-augmented observation carries extra dims past
-    that.
+    Both paths pose from `_state_source` at the named env's own state width --
+    see its docstring for why a batch without a truth channel is rendered from
+    measured state, and why that width cannot be a constant. Sharing the one
+    rule is what makes a split rendered across workers the same video as one
+    rendered in this process.
     """
     from ..envs import ENV_REGISTRY
 
     state_dim = ENV_REGISTRY[env_name].layout.state_dim
-    source = (
-        batch.true_state
-        if batch.true_state is not None
-        else batch.observations[..., :state_dim]
-    )
+    source = _state_source(batch, state_dim)
 
     def payload(episode: int) -> tuple[np.ndarray, np.ndarray, int]:
         length = int(batch.lengths[episode])
@@ -437,7 +449,13 @@ def iter_batch_frames(
         try:
             for episode in range(batch.num_episodes):
                 yield render_episode_frames(
-                    batch, episode, cfg, keys=keys, renderer=renderer, adapter=adapter
+                    batch,
+                    episode,
+                    cfg,
+                    keys=keys,
+                    renderer=renderer,
+                    adapter=adapter,
+                    state_dim=state_dim,
                 )
         finally:
             renderer.close()
