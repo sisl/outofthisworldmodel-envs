@@ -90,6 +90,13 @@ def _build_env_registry() -> dict[str, EnvSpec]:
     from .iss_hcw.dynamics import HCWDynamics
     from .iss_hcw.render_adapter import make_render_adapter as hcw_make_render_adapter
     from .iss_hcw.vector_env import HCWVectorEnv
+    from .iss_numerical.config import NUM_LAYOUT, NumericalConfig
+    from .iss_numerical.dynamics import NumericalDynamics, relative_view
+    from .iss_numerical.observe import make_observe as numerical_make_observe
+    from .iss_numerical.render_adapter import (
+        make_render_adapter as numerical_make_render_adapter,
+    )
+    from .iss_numerical.vector_env import NumericalVectorEnv
 
     return {
         "iss": EnvSpec(
@@ -121,6 +128,27 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             ),
             make_render_adapter=hcw_make_render_adapter,
         ),
+        "iss-numerical": EnvSpec(
+            name="iss-numerical",
+            gym_id="ISS-Numerical-Docking-v0",
+            config_cls=NumericalConfig,
+            layout=NUM_LAYOUT,
+            make_dynamics=NumericalDynamics,
+            make_vector_env=lambda num_envs, cfg: NumericalVectorEnv(num_envs=num_envs, cfg=cfg),
+            # The computed relative view, not NUM_LAYOUT.slice_view: the raw
+            # slices hold the chaser's ABSOLUTE ECI state (see config.py), and
+            # slice_view() would hand the task layer inertial numbers labelled
+            # as relative ones.
+            view=relative_view,
+            renderable=True,
+            make_observe=numerical_make_observe,
+            card_summary=(
+                "two-vehicle ECI propagation with configurable J2-J6 zonal "
+                "gravity, third-body and drag perturbations, and inertial "
+                "attitude dynamics"
+            ),
+            make_render_adapter=numerical_make_render_adapter,
+        ),
     }
 
 
@@ -147,4 +175,9 @@ register(
 register(
     id="ISS-HCW-Docking-v0",
     entry_point="owm_envs.envs.iss_hcw.env:HCWEnv",
+)
+
+register(
+    id="ISS-Numerical-Docking-v0",
+    entry_point="owm_envs.envs.iss_numerical.env:NumericalEnv",
 )

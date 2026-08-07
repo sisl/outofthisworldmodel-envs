@@ -112,10 +112,14 @@ class TrajectoryBatch:
     dock_targets: np.ndarray | None = None
     # (E, T, state_dim) float32, zero-padded past `lengths[e]` on the same
     # episode and time layout as `observations`: the TRUE dynamics state behind
-    # each stored observation, state_dim-wide (13 for the iss env) -- identical
-    # to `observations[..., :state_dim]` when sensor noise is off, and untouched
-    # by the goal-error augmentation that widens `observations`. None when the
-    # source cannot supply truth.
+    # each stored observation, state_dim-wide (13 for the iss env). Identical
+    # to `observations[..., :state_dim]` when sensor noise is off, and
+    # untouched by the goal-error augmentation that widens `observations` --
+    # but only for an env whose `observe` hook is the identity, which is every
+    # env before iss-numerical: that one's observation can be narrower than,
+    # reordered from, or otherwise not a prefix of, the state it was observed
+    # from (see `envs/iss_numerical/observe.py`'s modes), so the identity
+    # holds only when it is one. None when the source cannot supply truth.
     true_state: np.ndarray | None = None
 
     @property
@@ -219,7 +223,9 @@ class PolicySource(Protocol):
     ) -> np.ndarray:
         """Return an action as a numpy array, given a numpy observation."""
 
-    def augment_observation(self, observation: np.ndarray, episode_state: Any) -> np.ndarray:
+    def augment_observation(
+        self, observation: np.ndarray, episode_state: Any, info: dict
+    ) -> np.ndarray:
         """Return the observation to RECORD, given the raw one the driver just
         received. This only affects what gets stored into the episode buffer
         -- `act()` above always receives the raw observation, unaugmented.
@@ -227,6 +233,13 @@ class PolicySource(Protocol):
         `TaskPolicySource` is the only implementor that does otherwise (see
         `envs.common.goal.make_augment`), appending a policy-aware goal-error
         block built from `episode_state`.
+
+        `info` is the SAME lane's info dict that came back alongside
+        `observation` (from `reset()` or the `step()` that produced it, never
+        a different one) -- a source whose goal-error block needs more than
+        the recorded observation itself (e.g. iss-numerical's mode-shaped
+        observation, which is not in general wide enough to read the
+        canonical view back out of) reads `info["measured_state"]` instead.
         """
 
     def policy_id(self, episode_state: Any) -> int:

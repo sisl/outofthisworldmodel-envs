@@ -97,6 +97,16 @@ class NumericalConfig(BaseTaskConfig):
     perturbations: PerturbationsConfig = Field(default_factory=PerturbationsConfig)
     observation: NumericalObservationConfig = Field(default_factory=NumericalObservationConfig)
 
+    def start_shell(self) -> tuple[float, float]:
+        """The orbit dispersions, not the physics field.
+
+        `NumericalDynamics.reset` draws its standoff distance from
+        `orbit.start_radius_range_m` alongside the epoch offset and the rest
+        of the per-episode dispersions, exactly as `HCWConfig` does;
+        `physics.start_radius_range_m` is never read on this env.
+        """
+        return self.orbit.start_radius_range_m
+
 
 # Width of the observation vector under each mode: the three absolute-frame
 # modes report the full 21D state, and "relative" reports the canonical 15D

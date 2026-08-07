@@ -147,11 +147,32 @@ def _state_source(batch: TrajectoryBatch, state_dim: int) -> np.ndarray:
     wide and an iss-hcw row 15, and an env whose adapter reads past 13 would
     be handed a truncated row.
 
+    That fallback assumes the observation's own first `state_dim` columns ARE
+    the state, in the state's own layout -- true for every env before
+    iss-numerical, whose `observe` hook can narrow, reorder, or otherwise
+    reshape what gets recorded (`envs/iss_numerical/observe.py`), so its
+    observation can come out NARROWER than `state_dim` even though nothing
+    was truncated. Slicing such a batch here would silently hand the adapter
+    a truncated, wrongly-laid-out row instead of the state it expects, so a
+    batch that reaches this fallback too narrow to hold `state_dim` columns
+    fails loudly instead: an env whose observation can do this must be
+    rendered from its truth channel, not this one.
+
     One rule for both the in-process and the pooled path, so a split rendered
     across workers is the same video as one rendered here.
     """
     if batch.true_state is not None:
         return batch.true_state
+    width = batch.observations.shape[-1]
+    if width < state_dim:
+        raise ValueError(
+            f"no truth channel to render from, and the observation is only "
+            f"{width} columns wide -- narrower than this env's {state_dim}-wide "
+            f"state, so its first {state_dim} columns cannot be the state in "
+            f"the state's own layout. Rerun with a truth channel recorded "
+            f"(the video path needs one for any env whose observation can be "
+            f"narrower than its state, e.g. iss-numerical's observation modes)."
+        )
     return batch.observations[..., :state_dim]
 
 

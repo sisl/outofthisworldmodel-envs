@@ -62,8 +62,8 @@ class _ConstantPolicySource:
         del observation, episode_state, step, info
         return self._action.copy()
 
-    def augment_observation(self, observation, episode_state):
-        del episode_state
+    def augment_observation(self, observation, episode_state, info):
+        del episode_state, info
         return observation
 
     def policy_id(self, episode_state):
@@ -549,8 +549,8 @@ class _CountingPolicySource:
         self.calls.append((self._env.step_calls, lane, episode_id, step_in_episode))
         return np.zeros((1,), dtype=np.float32)
 
-    def augment_observation(self, observation, episode_state):
-        del episode_state
+    def augment_observation(self, observation, episode_state, info):
+        del episode_state, info
         return observation
 
     def policy_id(self, episode_state):

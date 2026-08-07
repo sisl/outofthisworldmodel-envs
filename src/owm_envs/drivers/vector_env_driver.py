@@ -82,12 +82,18 @@ class VectorEnvDriver:
         self.env_factory = env_factory
         self.policy_source = policy_source
 
-    def _augment(self, observation: np.ndarray, episode_state: Any) -> np.ndarray:
+    def _augment(self, observation: np.ndarray, episode_state: Any, info: dict) -> np.ndarray:
         """The observation to RECORD -- run through the policy source's
         augment hook. Note this is never what `policy_source.act()` sees;
-        `act()` above is always called with the raw `obs[lane]`."""
+        `act()` above is always called with the raw `obs[lane]`.
+
+        `info` must be the SAME lane's info dict that came back alongside
+        `observation` (see `PolicySource.augment_observation`) -- every call
+        site below passes the info from whichever `reset()`/`step()` call
+        actually produced the observation being augmented, never a stale one.
+        """
         return np.asarray(
-            self.policy_source.augment_observation(observation.copy(), episode_state),
+            self.policy_source.augment_observation(observation.copy(), episode_state, info),
             dtype=np.float32,
         )
 
@@ -175,7 +181,8 @@ class VectorEnvDriver:
         # -- `obs_dim` is measured from that augmented width, not the env's
         # raw observation space, since the two can legitimately differ.
         lane_obs: list[list[np.ndarray]] = [
-            [self._augment(o, lane_episode_state[lane])] for lane, o in enumerate(obs)
+            [self._augment(o, lane_episode_state[lane], _lane_info(info, lane))]
+            for lane, o in enumerate(obs)
         ]
         obs_dim = lane_obs[0][0].shape[0]
         # Truth accumulates in lockstep with `lane_obs` -- same seeding, same
@@ -281,7 +288,11 @@ class VectorEnvDriver:
                     # already this new episode's state (set when the previous
                     # one was finalized below), so it's the right state to
                     # augment against.
-                    lane_obs[lane] = [self._augment(next_obs[lane], lane_episode_state[lane])]
+                    lane_obs[lane] = [
+                        self._augment(
+                            next_obs[lane], lane_episode_state[lane], _lane_info(next_info, lane)
+                        )
+                    ]
                     if records_truth:
                         lane_true[lane] = [_lane_state(next_info, lane)]
                     lane_awaiting_reset[lane] = False
@@ -290,7 +301,11 @@ class VectorEnvDriver:
 
                 lane_act[lane].append(actions[lane].copy())
                 lane_rew[lane].append(float(rewards[lane]))
-                lane_obs[lane].append(self._augment(next_obs[lane], lane_episode_state[lane]))
+                lane_obs[lane].append(
+                    self._augment(
+                        next_obs[lane], lane_episode_state[lane], _lane_info(next_info, lane)
+                    )
+                )
                 if records_truth:
                     lane_true[lane].append(_lane_state(next_info, lane))
                 lane_step[lane] += 1
@@ -369,7 +384,8 @@ class VectorEnvDriver:
                 # episode's state (set when it was finalized above) -- the
                 # same state this reset's observation belongs to.
                 lane_obs = [
-                    [self._augment(o, lane_episode_state[lane])] for lane, o in enumerate(obs)
+                    [self._augment(o, lane_episode_state[lane], _lane_info(info, lane))]
+                    for lane, o in enumerate(obs)
                 ]
                 if records_truth:
                     lane_true = [[_lane_state(info, lane)] for lane in range(num_envs)]

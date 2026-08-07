@@ -121,6 +121,7 @@ _SEGMENT_DOC = {
              "ulp, which coarsens through the day from well under 0.5 ms to "
              "7.8 ms -- a 50 ms step spans at least 6.4 of those ulps, so "
              "consecutive frames stay distinct)",
+    "chief": "chief ECI position and velocity ({width}, m, m/s)",
     "pos": "position ({width}, m)",
     "vel": "velocity ({width}, m/s)",
     "quat": "attitude quaternion ({width}, w-first, body to world)",
@@ -189,6 +190,21 @@ def _state_doc(layout: StateLayout) -> str:
     # layout to put its extra segments before the view.
     if len(phrases) == len(_VIEW_FIELDS):
         return body + ", all station-relative"
+    if layout.chief is not None:
+        # A layout carrying a chief block (iss-numerical) stores the
+        # chaser's own ABSOLUTE ECI position, velocity, attitude and body
+        # rate -- unlike iss-hcw, whose pos/vel/quat/omega slices already are
+        # the relative view, calling these station-relative would be false.
+        # The task layer's relative view is derived from this row and the
+        # chief block together, not read off either alone.
+        return (
+            body
+            + " -- position, velocity, attitude and body rate are the "
+              "chaser's own ECI/inertial state, not station-relative; the "
+              "station-relative view the task layer scores is derived from "
+              "this row together with the chief block, not read off either "
+              "alone"
+        )
     return body + " -- position, velocity, attitude and body rate station-relative"
 
 
@@ -222,9 +238,9 @@ def _state_vector_doc(layout: StateLayout) -> str:
     ]
     untouched = (
         (
-            f". The sensor model only ever draws over the relative view, so the "
-            f"rest of the row -- {', '.join(outside)} -- is identical in the two "
-            f"channels"
+            f". The sensor model only ever draws over position, velocity, "
+            f"attitude and body rate, so the rest of the row -- "
+            f"{', '.join(outside)} -- is identical in the two channels"
         )
         if outside
         else ""

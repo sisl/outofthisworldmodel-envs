@@ -54,6 +54,10 @@ class TaskPolicySource:
         self._policy_fn, self._extras_fn = make_policy(cfg, policy_cfg)
         self._extras_width = EXTRAS_DIM[policy_cfg.type]
         self._observe = policy_cfg.observe
+        # No `observe` hook threaded through here (unlike `ScanDriver`): this
+        # source never re-derives the recorded row from `measured` -- see
+        # `augment_observation`, which always hands `make_augment`'s `observed`
+        # override the driver's own observation instead.
         self._augment = make_augment(cfg, policy_cfg, view=view)
 
     def new_episode(self, seed: int) -> _EpisodeState:
@@ -72,19 +76,41 @@ class TaskPolicySource:
         # threading mutable RNG state through the (deliberately opaque,
         # immutable) episode_state the driver holds.
         act_key = jax.random.fold_in(episode_state.key, step)
-        # observe="state" flies the policy on the true state (info["state"])
-        # rather than the possibly-noisy recorded observation; non-ISS infos
-        # without that key fall back to the observation.
-        policy_input = info.get("state", observation) if self._observe == "state" else observation
+        # observe="state" flies the policy on the true state (info["state"]);
+        # "measurement" (the default) flies it on the measured one, which is
+        # info["measured_state"] when the env publishes it (iss-numerical: the
+        # recorded observation can be mode-shaped and so not something `view`
+        # -- built for the raw layout -- can read at all) and the recorded
+        # observation otherwise (iss/iss-hcw, whose observation IS that raw
+        # layout, unchanged from before this key existed).
+        if self._observe == "state":
+            policy_input = info.get("state", observation)
+        else:
+            policy_input = info.get("measured_state", observation)
         action = self._policy_fn(
             self._view(jnp.asarray(policy_input)), act_key, episode_state.extras
         )
         return np.asarray(action, dtype=np.float32)
 
-    def augment_observation(self, observation: np.ndarray, episode_state: _EpisodeState) -> np.ndarray:
+    def augment_observation(
+        self, observation: np.ndarray, episode_state: _EpisodeState, info: dict
+    ) -> np.ndarray:
         if self._augment is None:
             return observation
-        augmented = self._augment(jnp.asarray(observation), episode_state.extras)
+        # `measured` is what the goal-error block is computed FROM (via
+        # `view`, e.g. iss-numerical's raw 21D layout, which `observation` may
+        # not structurally be -- see `act()`); `observed` is what gets
+        # RECORDED, and is always `observation` itself, verbatim -- never
+        # re-derived from `measured` through an `observe` hook. Re-deriving it
+        # would difference `measured`'s already-float32-narrowed ~6.8e6 m ECI
+        # columns a second time (`make_augment`'s docstring), quantizing the
+        # recorded row to ~1 m against the 0.1 m dock gate for no reason: the
+        # env already computed this exact row once, correctly, and handed it
+        # here as `observation`.
+        measured = info.get("measured_state", observation)
+        augmented = self._augment(
+            jnp.asarray(measured), episode_state.extras, observed=jnp.asarray(observation)
+        )
         return np.asarray(augmented, dtype=np.float32)
 
     def policy_id(self, episode_state: _EpisodeState) -> int:
