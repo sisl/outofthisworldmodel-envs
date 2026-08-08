@@ -28,7 +28,7 @@ from .sensing import SensorNoiseConfig
 # default stays valid regardless of where it's loaded from.
 _RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
 
-# Filename, within _RESOURCES_DIR, of the 318-box ISS geometry shipped with
+# Filename, within _RESOURCES_DIR, of the 313-box ISS geometry shipped with
 # this package. This is the default for PhysicsConfig.collision_boxes_path:
 # a real, relative path rather than a magic sentinel, so it stays portable
 # across machines/installs (an absolute path would make configs/iss_default
@@ -283,7 +283,7 @@ def dock_port_targets(cfg: ISSConfig) -> np.ndarray:
 
 
 def default_collision_boxes_path() -> str:
-    """Absolute path to the 318-AABB ISS geometry shipped with this package."""
+    """Absolute path to the 313-AABB ISS geometry shipped with this package."""
     return str(_RESOURCES_DIR / DEFAULT_COLLISION_BOXES_FILENAME)
 
 
@@ -298,7 +298,7 @@ def load_collision_boxes(source: Any) -> tuple[np.ndarray, np.ndarray]:
                             first (a user-supplied file, e.g. "my_boxes.yaml"),
                             then against this package's resources directory
                             (DEFAULT_COLLISION_BOXES_FILENAME there is the
-                            shipped 318-box ISS geometry)
+                            shipped 313-box ISS geometry)
       - an absolute path -> a YAML file containing a list of {center, size} dicts
       - an already-loaded list of {center, size} or {center, half_extents} dicts
 

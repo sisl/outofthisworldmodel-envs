@@ -200,8 +200,9 @@ def generate(
     gen_config: Optional[Path] = typer.Option(
         None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps. "
                    "configs/generation_default.yaml is the shipped docking recipe: a union-policy "
-                   "train split on the five non-zenith ports and a dock-policy val split on all "
-                   "seven, so validation measures the held-out zenith approaches."),
+                   "train split on five ports and a dock-policy val split on all "
+                   "eight, so validation measures the held-out approaches (both zenith "
+                   "corridors and Unity nadir)."),
     config: Optional[Path] = typer.Option(
         None, help="ISSConfig file to load, YAML or TOML by suffix. The shipped "
                    "environments are configs/iss_*.toml: iss_default.toml plus the six "
