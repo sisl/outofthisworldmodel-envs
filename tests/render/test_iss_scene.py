@@ -341,14 +341,17 @@ def test_earth_is_a_full_globe_with_a_normal_map(scene):
 def test_shipped_asset_matches_the_pinned_world_frame():
     # The station's world placement is a constant of the environment: the
     # collision hull and the dock poses are authored against it. Pinning the
-    # shipped asset's world-frame extent (and that the recentred vertex mean
-    # is zero, which is how ISS_RECENTRE_OFFSET was measured) means no asset
-    # swap, upright-rotation change or offset edit can drift it silently.
+    # shipped asset's world-frame extent means no asset swap, upright-rotation
+    # change or offset edit can drift it silently. ISS_RECENTRE_OFFSET stays
+    # frozen at the value measured on the retired ISS_stationary.glb -- moving
+    # it would move the station under the hull and every dock pose -- so
+    # ISS_base.glb's recentred vertex mean is pinned slightly off zero: the
+    # PMM's vertices left the set while the offset did not follow.
     from owm_envs.render import asset_path
     from owm_envs.render.iss_scene import iss_vertices_world
 
     points = iss_vertices_world(asset_path("international-space-station", RenderConfig().iss_asset))
-    assert points.shape == (325374, 3)
-    np.testing.assert_allclose(points.mean(axis=0), [0.0, 0.0, 0.0], atol=1e-5)
+    assert points.shape == (329035, 3)
+    np.testing.assert_allclose(points.mean(axis=0), [-0.004376, 0.135138, 0.085027], atol=1e-5)
     np.testing.assert_allclose(points.min(axis=0), [-55.761206, -25.293193, -31.652401], atol=1e-4)
     np.testing.assert_allclose(points.max(axis=0), [56.227223, 33.333488, 37.131761], atol=1e-4)
