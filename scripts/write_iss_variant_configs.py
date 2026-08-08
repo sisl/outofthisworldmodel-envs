@@ -8,7 +8,7 @@ axis their names differ on.
 
 The generation recipes are configs/generation_default.yaml resized: the
 shipped held-out-port design (a union-policy train split over the five
-non-zenith ports, a dock-policy val split over all seven) is carried through
+non-zenith ports, a dock-policy val split over all eight) is carried through
 untouched, only the split sizes and the lane count change.
 
 Rerun after changing iss_default.toml, generation_default.yaml, or PRESETS;
