@@ -5,7 +5,7 @@ import pytest
 from owm_envs.render import asset_path, resources_dir
 
 EXPECTED = [
-    ("international-space-station", "ISS_stationary.glb"),
+    ("international-space-station", "ISS_base.glb"),
     ("moon", "moon_small.glb"),
     ("spacex-dragon-capsule", "spacex_dragon_2_exterior.glb"),
     # The full-resolution maps are gitignored; these committed fallbacks are

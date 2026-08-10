@@ -9,7 +9,7 @@ from owm_envs.render.loaders import load_cubemap_from_faces, load_glb_scene  # n
 
 
 def test_loads_the_iss_mesh():
-    group = load_glb_scene(asset_path("international-space-station", "ISS_stationary.glb"))
+    group = load_glb_scene(asset_path("international-space-station", "ISS_base.glb"))
     assert len(group.children) > 0
 
 

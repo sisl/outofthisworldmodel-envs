@@ -166,7 +166,7 @@ def main(
         1e-6, help="Maximum allowed displacement of a shared module, in metres."
     ),
 ) -> None:
-    baseline = reference or asset_path("international-space-station", "ISS_stationary.glb")
+    baseline = reference or asset_path("international-space-station", "ISS_base.glb")
     ref, cand = module_vertices(Path(baseline)), module_vertices(candidate)
 
     removed = sorted(set(ref) - set(cand))

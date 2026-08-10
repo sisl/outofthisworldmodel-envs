@@ -226,7 +226,7 @@ def test_the_card_asserts_no_licence(tmp_path):
 def test_the_card_names_the_asset_sources_and_their_unrecorded_terms(tmp_path):
     card = _card(_write_run(tmp_path))
     assert "## Assets and attribution" in card
-    for source in ("ISS_stationary.glb", "Sketchfab", "CGTrader", "NASA SVS"):
+    for source in ("ISS_base.glb", "Sketchfab", "CGTrader", "NASA SVS"):
         assert source in card, f"{source} unattributed"
     assert "never recorded" in card
 
