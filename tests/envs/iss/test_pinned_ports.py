@@ -1,10 +1,10 @@
-"""Pinned docking-port entries: normalisation, verification, and what they buy.
+"""Pinned docking-port entries: normalisation, trust, and what they buy.
 
 A config records ports so a run can be reproduced. A bare name is only a
 reference into the PORTS table, so it stops meaning the same thing the moment
 the table is revised -- these tests pin down that a name resolves to a pose at
-load, that the pose is what gets serialised, and that a stale pinned pose is a
-loud error rather than a silent disagreement.
+load, that the pose is what gets serialised, and that a pinned pose is taken
+as the ground truth for its target even where the table disagrees.
 """
 
 import numpy as np
@@ -75,18 +75,17 @@ def test_pinned_pose_matching_the_table_loads():
     assert [p.name for p in params.ports] == ["rassvet_nadir"]
 
 
-def test_pinned_pose_disagreeing_with_the_table_is_a_load_error():
-    stale = pinned("harmony_nadir_cbm")
-    stale["position"] = [stale["position"][0] + 0.5, *stale["position"][1:]]
-    with pytest.raises(ValidationError, match="harmony_nadir_cbm"):
-        DockParams(ports=(stale,))
-
-
-def test_pinned_quaternion_disagreeing_with_the_table_is_a_load_error():
-    stale = pinned("zvezda_aft")
-    stale["quaternion"] = [0.0, 0.0, 0.0, 1.0]
-    with pytest.raises(ValidationError, match="pinned quaternion .* 'zvezda_aft'"):
-        DockParams(ports=(stale,))
+def test_pinned_pose_disagreeing_with_the_table_is_trusted_as_written():
+    # The config is the ground truth for its own targets: a user who writes a
+    # pose is asking for that pose, not for the table's opinion of the name.
+    moved = pinned("harmony_nadir_cbm")
+    moved["position"] = [moved["position"][0] + 0.5, *moved["position"][1:]]
+    moved["quaternion"] = [0.0, 0.0, 0.0, 1.0]
+    params = DockParams(ports=(moved,))
+    table = np.asarray(dock_target_table(CFG, params))
+    np.testing.assert_allclose(
+        table[0], [*moved["position"], *moved["quaternion"]], atol=1e-6
+    )
 
 
 def test_a_pinned_port_the_table_no_longer_knows_still_loads_and_is_flown_to():

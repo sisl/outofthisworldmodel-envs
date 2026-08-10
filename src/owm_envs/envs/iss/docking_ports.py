@@ -154,7 +154,6 @@ PORTS: tuple[DockingPort, ...] = (
 PORTS_BY_NAME: dict[str, DockingPort] = {p.name: p for p in PORTS}
 PORT_NAMES: tuple[str, ...] = tuple(PORTS_BY_NAME)
 
-
 def _unit(v: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     n = float(np.linalg.norm(v))
     if n < eps:
@@ -223,6 +222,92 @@ def resolve_port_names(names: tuple[str, ...] | list[str]) -> tuple[str, ...]:
             f"duplicate docking port(s) {duplicates}; name each port at most once"
         )
     return tuple(names)
+
+
+class DockPort(ConfigModel):
+    """A port an episode may be assigned, carrying the pose it resolves to.
+
+    The pose is stored, not just the name, so a versioned or as-run config
+    reproduces the run it describes even after the `PORTS` table is revised.
+    A bare name resolves against the table at load (see
+    `resolve_port_entries`); this is what that resolution produces. An entry
+    that already carries its pose is trusted as written.
+    """
+
+    name: str
+    position: tuple[float, float, float]
+    quaternion: tuple[float, float, float, float]
+
+
+def _pinned_from_table(name: str) -> DockPort:
+    position, quaternion = port_pose(PORTS_BY_NAME[name])
+    return DockPort(
+        name=name,
+        position=tuple(float(v) for v in position),
+        quaternion=tuple(float(v) for v in quaternion),
+    )
+
+
+def resolve_port_entries(v: object) -> object:
+    """Normalise a configured port list to a tuple of pinned `DockPort`.
+
+    The one implementation behind every `ports` field -- the generation-side
+    `policies.DockParams.ports` and the environment-side `config.DockConfig
+    .ports` -- so a port set means the same thing wherever it is written.
+
+    An entry may be a bare port name or an already-pinned
+    {name, position, quaternion}; both normalise to the pinned form, so every
+    serialised config carries the poses it used. A pinned entry is taken as
+    the ground truth for its pose -- the table is only consulted to give a
+    bare name one. The keyword "all" expands to every port in `PORTS` here at
+    config-load time, so the as-run record names the ports a run actually
+    used rather than a keyword whose meaning could change with the table.
+    """
+    if not v:
+        return ()
+    entries = list(v)
+    if all(isinstance(entry, str) for entry in entries):
+        # Unchanged path for a name-only config: `resolve_port_names` owns
+        # the "all" expansion and the unknown-name and duplicate errors.
+        return tuple(_pinned_from_table(name) for name in resolve_port_names(tuple(entries)))
+
+    resolved: list[DockPort] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            if entry == "all":
+                raise ValueError(
+                    "the keyword 'all' stands for the whole port list and cannot "
+                    "be mixed with other entries"
+                )
+            resolve_port_names((entry,))
+            resolved.append(_pinned_from_table(entry))
+            continue
+        # A pinned entry is ground truth: whatever pose the config carries is
+        # the pose the run flies to, whether or not the table knows the name
+        # or places it elsewhere. Only a bare name consults the table, because
+        # a name alone has no pose of its own.
+        port = entry if isinstance(entry, DockPort) else DockPort.model_validate(entry)
+        resolved.append(port)
+
+    names = [port.name for port in resolved]
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(
+            f"duplicate docking port(s) {duplicates}; name each port at most once"
+        )
+    return tuple(resolved)
+
+
+def port_target_rows(ports: tuple[DockPort, ...]) -> np.ndarray:
+    """(K, 7) [position, quaternion] rows for resolved port entries.
+
+    Read off the entries' own pinned poses rather than re-resolved from the
+    table, so a config that pins a port the table no longer knows still flies
+    to it.
+    """
+    return np.asarray(
+        [[*port.position, *port.quaternion] for port in ports], dtype=np.float32
+    ).reshape(len(ports), 7)
 
 
 def dock_targets(names: tuple[str, ...] | list[str]) -> np.ndarray:

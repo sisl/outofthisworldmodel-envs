@@ -26,13 +26,7 @@ from ...core.quaternion import (
     quat_to_rotmat,
 )
 from .config import ISSConfig, dock_target
-from .docking_ports import PORTS_BY_NAME, port_pose, resolve_port_names
-
-# How far a pinned pose may sit from the one the current PORTS table derives
-# before the config is rejected. Poses are metres and unit quaternions, and
-# both sides come from the same `port_pose` computation, so anything above
-# float round-off means the table actually moved.
-PINNED_POSE_TOLERANCE = 1e-5
+from .docking_ports import DockPort, port_target_rows, resolve_port_entries
 
 PolicyFn = Callable[[jnp.ndarray, jax.Array, jnp.ndarray], jnp.ndarray]
 ExtrasFn = Callable[[jax.Array], jnp.ndarray]
@@ -124,52 +118,6 @@ class OrbitParams(ConfigModel):
         return v
 
 
-class DockPort(ConfigModel):
-    """A port a dock episode may be assigned, carrying the pose it resolves to.
-
-    The pose is stored, not just the name, so a versioned or as-run config
-    reproduces the run it describes even after the `PORTS` table is revised.
-    A name still resolves against the table at load (see
-    `DockParams._resolve_ports`); this is what that resolution produces.
-    """
-
-    name: str
-    position: tuple[float, float, float]
-    quaternion: tuple[float, float, float, float]
-
-
-def _pinned_from_table(name: str) -> DockPort:
-    position, quaternion = port_pose(PORTS_BY_NAME[name])
-    return DockPort(
-        name=name,
-        position=tuple(float(v) for v in position),
-        quaternion=tuple(float(v) for v in quaternion),
-    )
-
-
-def _verify_against_table(port: DockPort) -> None:
-    """Reject a pinned pose that disagrees with the one `PORTS` derives today.
-
-    A name the table no longer knows is left alone: its pinned pose governs,
-    which is how a config outlives a table revision. But a name the table
-    still knows and now places somewhere else is a genuine conflict between
-    two claims about the same port, and silently preferring either one would
-    make the config lie about what it ran.
-    """
-    expected = _pinned_from_table(port.name)
-    for field, pinned, table in (
-        ("position", port.position, expected.position),
-        ("quaternion", port.quaternion, expected.quaternion),
-    ):
-        if max(abs(a - b) for a, b in zip(pinned, table)) > PINNED_POSE_TOLERANCE:
-            raise ValueError(
-                f"pinned {field} for docking port '{port.name}' disagrees with the "
-                f"current port table: config has {tuple(pinned)}, table derives "
-                f"{tuple(table)}. Re-pin the config against the current table, or "
-                f"rename the entry if it is meant to outlive the table's version."
-            )
-
-
 class DockParams(ConfigModel):
     # Same sizing rationale as OrbitParams: unsaturated inside 100 m against
     # the 1600 N limit and critically damped. From the nearest starts the
@@ -183,52 +131,15 @@ class DockParams(ConfigModel):
     kd_attitude: float = 16_000.0
     # Ports an episode may be assigned, drawn uniformly at reset. Empty keeps
     # the single pose in ISSConfig.dock, which is what a config that predates
-    # multi-port support means.
-    #
-    # An entry may be written as a bare port name or as a pinned
-    # {name, position, quaternion}; both normalise to the pinned form at load,
-    # so this is always a tuple of DockPort afterwards and every serialised
-    # config carries the poses it used. The keyword "all" expands to every
-    # port in docking_ports.PORTS, here at config-load time, so the as-run
-    # record names the ports a run actually used rather than a keyword whose
-    # meaning could change with the table.
+    # multi-port support means. `docking_ports.resolve_port_entries` owns what
+    # an entry may be written as; the same field on DockConfig resolves through
+    # it too, so a generation config and an env config mean the same thing.
     ports: tuple[DockPort, ...] = ()
 
     @field_validator("ports", mode="before")
     @classmethod
     def _resolve_ports(cls, v: object) -> object:
-        if not v:
-            return ()
-        entries = list(v)
-        if all(isinstance(entry, str) for entry in entries):
-            # Unchanged path for a name-only config: `resolve_port_names` owns
-            # the "all" expansion and the unknown-name and duplicate errors,
-            # exactly as before.
-            return tuple(_pinned_from_table(name) for name in resolve_port_names(tuple(entries)))
-
-        resolved: list[DockPort] = []
-        for entry in entries:
-            if isinstance(entry, str):
-                if entry == "all":
-                    raise ValueError(
-                        "the keyword 'all' stands for the whole port list and cannot "
-                        "be mixed with other entries"
-                    )
-                resolve_port_names((entry,))
-                resolved.append(_pinned_from_table(entry))
-                continue
-            port = entry if isinstance(entry, DockPort) else DockPort.model_validate(entry)
-            if port.name in PORTS_BY_NAME:
-                _verify_against_table(port)
-            resolved.append(port)
-
-        names = [port.name for port in resolved]
-        duplicates = sorted({n for n in names if names.count(n) > 1})
-        if duplicates:
-            raise ValueError(
-                f"duplicate docking port(s) {duplicates}; name each port at most once"
-            )
-        return tuple(resolved)
+        return resolve_port_entries(v)
 
 
 class PolicyConfig(ConfigModel):
@@ -428,9 +339,7 @@ def dock_target_table(cfg: ISSConfig, params: DockParams) -> jnp.ndarray:
     """
     if not params.ports:
         return jnp.asarray(dock_target(cfg), dtype=jnp.float32)[None, :]
-    return jnp.asarray(
-        [[*port.position, *port.quaternion] for port in params.ports], dtype=jnp.float32
-    )
+    return jnp.asarray(port_target_rows(params.ports), dtype=jnp.float32)
 
 
 def dock_target_selector(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable:
