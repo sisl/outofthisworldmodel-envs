@@ -1254,7 +1254,8 @@ def test_an_unknown_render_view_is_a_usage_error(tmp_path):
 
 
 def _env_config_with_ports(tmp_path, *names: str):
-    from owm_envs.envs.iss.config import DockConfig, ISSConfig as Cfg
+    from owm_envs.envs.common.config import DockConfig
+    from owm_envs.envs.iss.config import ISSConfig as Cfg
 
     path = tmp_path / "env.yaml"
     Cfg(dock=DockConfig(ports=names)).to_yaml(path)
