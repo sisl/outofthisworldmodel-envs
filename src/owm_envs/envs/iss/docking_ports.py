@@ -1,10 +1,10 @@
 """The station's docking and berthing targets, in the environment world frame.
 
 The render asset is the ISS between February and May 2015 (see
-`render/iss_scene`), with the PMM berthed at Unity nadir. The flown station
-uses eight visiting-vehicle ports; Unity nadir (a Cygnus berth today) is
-occupied by the PMM in this asset, so the seven that are free here are the
-targets, listed in `PORTS` order -- the index recorded per episode:
+`render/iss_scene`). Its source placed the PMM at Unity nadir; `ISS_base.glb`
+ships without it, so all eight visiting-vehicle ports the flown station uses
+are free here and are the targets, listed in `PORTS` order -- the index
+recorded per episode:
 
     entry                 flown-station port           typical visiting vehicle
     harmony_fwd_pma2      Harmony fwd, PMA-2/IDA-2     Crew or Cargo Dragon
@@ -15,6 +15,12 @@ targets, listed in `PORTS` order -- the index recorded per episode:
     pirs_nadir            Prichal nadir on the flown   Soyuz, Progress
                           station; Pirs here
     rassvet_nadir         Rassvet (MRM-1) nadir        Soyuz, Progress
+    unity_nadir_cbm       Unity nadir CBM              Cygnus
+
+Unity nadir is a target for the base station only: the `ISS_cygnus.glb`
+variant berths a Cygnus there, re-occupying the corridor (and the collision
+hull carries no vehicle at that port, so that variant's hull understates the
+station it renders around Unity).
 
 Two of those are not the flown hardware. Harmony zenith carries no PMA/IDA in
 a 2015 asset, so its mating plane is the bare CBM and sits about 2.5 m inboard
@@ -148,6 +154,21 @@ PORTS: tuple[DockingPort, ...] = (
         standoff_m=5.5,
         clearance_m=3.77,
         notes="Deepest nadir point on the station, below the Zarya nadir port.",
+    ),
+    DockingPort(
+        name="unity_nadir_cbm",
+        module="02 Unity Node 1",
+        mechanism="CBM",
+        interface=(0.233, 0.166, -4.918),
+        normal=(0.0, 0.0, -1.0),
+        standoff_m=6.5,
+        clearance_m=3.73,
+        notes=(
+            "Occupied by the PMM in ISS_stationary.glb, free in ISS_base.glb. "
+            "The centreline is where the PMM's and the Cygnus variant's berth "
+            "rings both sit (0.233, 0.166). Rassvet, hanging from Zarya nadir "
+            "just aft, reaches z = -8.9 and sets this standoff."
+        ),
     ),
 )
 

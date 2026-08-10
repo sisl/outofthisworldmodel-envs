@@ -17,8 +17,9 @@ from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "generation_default.yaml"
 
-# Zenith-facing approaches, held out of training so validation measures them.
-HELD_OUT = ("harmony_zenith_cbm", "poisk_zenith")
+# Approaches held out of training so validation measures them: the two
+# zenith-facing corridors, and the Unity nadir berth ISS_base.glb freed.
+HELD_OUT = ("harmony_zenith_cbm", "poisk_zenith", "unity_nadir_cbm")
 TRAIN_PORTS = tuple(name for name in PORT_NAMES if name not in HELD_OUT)
 
 

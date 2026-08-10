@@ -175,6 +175,16 @@ splits:
           - -0.0
           - 0.0
           - 1.0
+        - name: unity_nadir_cbm
+          position:
+          - 0.233
+          - 0.166
+          - -11.418
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
       union_weights:
       - 0.3
       - 0.35

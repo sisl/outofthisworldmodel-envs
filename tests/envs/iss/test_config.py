@@ -131,8 +131,8 @@ def test_invalid_config_is_rejected_at_load(tmp_path):
 
 def test_load_collision_boxes_reads_the_shipped_iss_geometry():
     centers, half_extents = load_collision_boxes(default_collision_boxes_path())
-    assert centers.shape == (318, 3)
-    assert half_extents.shape == (318, 3)
+    assert centers.shape == (313, 3)
+    assert half_extents.shape == (313, 3)
     assert centers.dtype == np.float32
     assert np.all(half_extents >= 0.0)
 
@@ -186,8 +186,8 @@ def test_load_collision_boxes_relative_path_still_finds_shipped_default(
     # geometry, from an arbitrary cwd that doesn't itself contain the file.
     monkeypatch.chdir(tmp_path)
     centers, half_extents = load_collision_boxes(DEFAULT_COLLISION_BOXES_FILENAME)
-    assert centers.shape == (318, 3)
-    assert half_extents.shape == (318, 3)
+    assert centers.shape == (313, 3)
+    assert half_extents.shape == (313, 3)
 
 
 def test_load_collision_boxes_cwd_wins_over_package_on_name_collision(

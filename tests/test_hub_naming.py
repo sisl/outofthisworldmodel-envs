@@ -191,7 +191,7 @@ def test_the_card_reports_the_split_sizes(tmp_path):
 def test_the_card_describes_the_policy_split(tmp_path):
     card = _card(_write_run(tmp_path))
     # The shipped recipe: a union-policy train split over five ports, a
-    # dock-policy val split over all seven.
+    # dock-policy val split over all eight.
     assert "union" in card and "harmony_fwd_pma2" in card
     for held_out in ("harmony_zenith_cbm", "poisk_zenith"):
         assert held_out in card

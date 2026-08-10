@@ -124,7 +124,7 @@ def test_the_recipes_keep_train_and_val_on_different_seeds(name):
 @pytest.mark.parametrize("name", ["generation_500k", "generation_trial"])
 def test_the_recipes_preserve_the_shipped_policy_split(name, default_gen):
     # Resizing a split must not disturb the held-out-port design: train is a
-    # union policy over the five non-zenith ports, val docks at all seven.
+    # union policy over the five non-zenith ports, val docks at all eight.
     # Those policies survive only if the nested config round-trips through
     # YAML faithfully, pinned poses and all, so compare them whole.
     gen = GenerationConfig.from_yaml(CONFIGS / f"{name}.yaml")
