@@ -115,23 +115,49 @@ class ISSEnv(gym.Env):
     def _build_jit_dock_goal_error(self) -> Any | None:
         """measured -> the goal-error block, or None when it isn't emitted.
 
-        With no ports the target never changes, and it is compiled in as a
-        constant -- the arrangement a config without ports had before ports
-        existed, and float32 constant folding is not bit-identical to the same
-        arithmetic on a runtime argument. A port set makes it a per-episode
-        argument read off `_dock_pose` at call time instead.
+        With no ports a naked reset always flies to `cfg.dock`, and that pose
+        is compiled in as a constant -- the arrangement a config without ports
+        had before ports existed, and float32 constant folding is not
+        bit-identical to the same arithmetic on a runtime argument. A port set
+        makes it a per-episode argument read off `_dock_pose` at call time
+        instead.
         """
         if not self.cfg.observation.goal_error:
             return None
         if not self._port_names:
+            # A reset-options override can still retarget a no-ports episode,
+            # so the constant-folded form serves only while `_dock_pose` is
+            # None -- which a naked reset guarantees, keeping published
+            # no-ports observations byte-identical.
             pose = self._cfg_dock_target
-            return jax.jit(lambda measured: dock_goal_error(measured, pose))
+            folded = jax.jit(lambda measured: dock_goal_error(measured, pose))
+            jitted = jax.jit(dock_goal_error)
+            return lambda measured: (
+                folded(measured)
+                if self._dock_pose is None
+                else jitted(measured, self._dock_pose)
+            )
         jitted = jax.jit(dock_goal_error)
         return lambda measured: jitted(measured, self._dock_pose)
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Start an episode, optionally told where to fly via `options`.
+
+        `options` may carry exactly one of:
+          - "dock_port": a configured port name, or a sequence of them. One
+            name targets that port; several draw uniformly among them. Names
+            must come from this environment's own `cfg.dock.ports`.
+          - "dock_pose": an explicit goal, 7 values [position xyz, quaternion
+            wxyz] in the world frame, taken as given -- no port table is
+            consulted. `info` then reports the pose under "goal_pose" but no
+            "dock_port": the episode was aimed at a pose, not a named port.
+
+        A naked reset keeps the existing behaviour: draw uniformly over
+        `cfg.dock.ports`, or fly to `cfg.dock`'s single pose when none are
+        configured.
+        """
         super().reset(seed=seed)
         # Gymnasium seeds self.np_random; derive a JAX key from it so that a given
         # Gymnasium seed reproduces exactly one initial state.
@@ -142,8 +168,12 @@ class ISSEnv(gym.Env):
         self._state = self._jit_reset(dynamics_key)
         # Drawn after the dynamics seed, never before: the port is an extra
         # draw on the end of np_random's stream, so a given seed reproduces
-        # the same initial state whether or not ports are configured.
-        self._draw_port()
+        # the same initial state whether or not ports are configured. An
+        # override from a previous episode never survives into this one.
+        self._port_index = None
+        self._dock_pose = None
+        if not self._apply_goal_options(options):
+            self._draw_port()
         self._step_index = 0
         return self._obs(), {
             "success": False,
@@ -207,6 +237,54 @@ class ISSEnv(gym.Env):
             return
         self._port_index = int(self.np_random.integers(len(self._port_names)))
         self._dock_pose = self._port_targets[self._port_index]
+
+    def _apply_goal_options(self, options: dict[str, Any] | None) -> bool:
+        """Point the episode where `reset(options=...)` says; False if it doesn't.
+
+        See `reset` for the contract. Only a draw among several names consumes
+        randomness, so a single-name or explicit-pose reset leaves np_random's
+        stream where a naked reset's port draw would have started.
+        """
+        if not options:
+            return False
+        port = options.get("dock_port")
+        pose = options.get("dock_pose")
+        if port is not None and pose is not None:
+            raise ValueError("reset options carry dock_port or dock_pose, not both")
+        if pose is not None:
+            row = np.asarray(pose, dtype=np.float32).reshape(-1)
+            if row.shape != (7,):
+                raise ValueError(
+                    "dock_pose must be 7 values [position xyz, quaternion wxyz], "
+                    f"got shape {np.asarray(pose).shape}"
+                )
+            self._dock_pose = jnp.asarray(row)
+            return True
+        if port is None:
+            return False
+        names = (port,) if isinstance(port, str) else tuple(port)
+        if not names:
+            raise ValueError("dock_port names an empty set of ports")
+        unknown = [n for n in names if n not in self._port_names]
+        if unknown:
+            raise ValueError(
+                f"unknown dock_port(s) {unknown}; this environment's configured "
+                f"ports are {list(self._port_names)}"
+                + ("" if self._port_names else " -- configure dock.ports or pass dock_pose")
+            )
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                f"duplicate dock_port(s) {duplicates}; name each port at most once"
+            )
+        name = (
+            names[0]
+            if len(names) == 1
+            else names[int(self.np_random.integers(len(names)))]
+        )
+        self._port_index = self._port_names.index(name)
+        self._dock_pose = self._port_targets[self._port_index]
+        return True
 
     def _goal_pose(self) -> np.ndarray:
         """The (7,) [position, quaternion] pose this episode is flying to.

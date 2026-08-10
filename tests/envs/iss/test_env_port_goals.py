@@ -359,3 +359,92 @@ def test_unknown_port_names_are_rejected_at_load():
 def test_vector_env_refuses_a_port_set_rather_than_ignoring_it():
     with pytest.raises(ValueError, match="does not support per-episode dock ports"):
         ISSVectorEnv(2, ISSConfig(dock=DockConfig(ports=("all",))))
+
+
+def test_reset_options_target_a_single_named_port():
+    env = ISSEnv(at_origin(ports=("harmony_fwd_pma2", "zvezda_aft", "poisk_zenith")))
+    for _ in range(3):
+        _, info = env.reset(seed=0, options={"dock_port": "poisk_zenith"})
+        assert info["dock_port"] == "poisk_zenith"
+        assert info["dock_port_index"] == 2
+        np.testing.assert_allclose(info["goal_pose"], port_target("poisk_zenith"), atol=1e-6)
+
+
+def test_reset_options_sample_uniformly_among_several_names():
+    env = ISSEnv(at_origin(ports=("all",)))
+    subset = ("zvezda_aft", "rassvet_nadir")
+    seen = set()
+    for seed in range(20):
+        _, info = env.reset(seed=seed, options={"dock_port": subset})
+        assert info["dock_port"] in subset
+        seen.add(info["dock_port"])
+    assert seen == set(subset)
+
+
+def test_reset_options_reject_names_outside_the_configured_set():
+    env = ISSEnv(at_origin(ports=("harmony_fwd_pma2", "zvezda_aft")))
+    # poisk_zenith is a real port, but not one this env was configured with.
+    with pytest.raises(ValueError, match="unknown dock_port"):
+        env.reset(seed=0, options={"dock_port": "poisk_zenith"})
+    with pytest.raises(ValueError, match="duplicate dock_port"):
+        env.reset(seed=0, options={"dock_port": ("zvezda_aft", "zvezda_aft")})
+    with pytest.raises(ValueError, match="empty set"):
+        env.reset(seed=0, options={"dock_port": ()})
+
+
+def test_reset_options_reject_a_name_when_no_ports_are_configured():
+    env = ISSEnv(at_origin())
+    with pytest.raises(ValueError, match="configure dock.ports or pass dock_pose"):
+        env.reset(seed=0, options={"dock_port": "zvezda_aft"})
+
+
+def test_reset_options_accept_an_explicit_pose_without_configured_ports():
+    env = ISSEnv(at_origin())
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    _, info = env.reset(seed=0, options={"dock_pose": pose})
+    # The pose is the goal, but it is not a named port.
+    np.testing.assert_allclose(info["goal_pose"], pose, atol=1e-6)
+    assert "dock_port" not in info and "dock_port_index" not in info
+    # Every consumer follows it: drive the true state onto the pose and the
+    # true goal error collapses to zero.
+    env._state = jnp.asarray(
+        np.concatenate([pose[0:3], np.zeros(3), pose[3:7], np.zeros(3)]),
+        dtype=jnp.float32,
+    )
+    for label, value in env._goal_error_true().items():
+        assert value == pytest.approx(0.0, abs=1e-5), label
+
+
+def test_reset_options_pose_governs_the_goal_error_observation():
+    env = ISSEnv(ISSConfig(observation={"goal_error": True}))
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    obs, _ = env.reset(seed=3, options={"dock_pose": pose})
+    np.testing.assert_allclose(
+        obs[13:],
+        np.asarray(dock_goal_error(jnp.asarray(obs[:13]), jnp.asarray(pose))),
+        atol=1e-6,
+    )
+
+
+def test_a_naked_reset_forgets_the_previous_overrides():
+    env = ISSEnv(ISSConfig(observation={"goal_error": True}))
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    env.reset(seed=3, options={"dock_pose": pose})
+    obs, info = env.reset(seed=3)
+    # Back on the configured single pose -- including the byte-identical
+    # constant-folded observation block a no-ports config promises.
+    np.testing.assert_allclose(info["goal_pose"], np.asarray(dock_target(env.cfg)), atol=1e-6)
+    assert "dock_port" not in info
+    fresh_obs, _ = ISSEnv(env.cfg).reset(seed=3)
+    np.testing.assert_array_equal(obs, fresh_obs)
+
+
+def test_reset_options_reject_bad_pose_shapes_and_mixed_keys():
+    env = ISSEnv(at_origin(ports=("all",)))
+    with pytest.raises(ValueError, match="7 values"):
+        env.reset(seed=0, options={"dock_pose": [1.0, 2.0, 3.0]})
+    with pytest.raises(ValueError, match="not both"):
+        env.reset(
+            seed=0,
+            options={"dock_port": "zvezda_aft", "dock_pose": port_target("zvezda_aft")},
+        )
