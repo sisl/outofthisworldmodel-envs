@@ -448,3 +448,29 @@ def test_reset_options_reject_bad_pose_shapes_and_mixed_keys():
             seed=0,
             options={"dock_port": "zvezda_aft", "dock_pose": port_target("zvezda_aft")},
         )
+
+
+def test_reset_options_reject_unknown_keys_rather_than_falling_through():
+    # A typo'd key must not silently become a naked reset against a random
+    # goal -- this is a goal-selection API.
+    env = ISSEnv(at_origin(ports=("all",)))
+    with pytest.raises(ValueError, match="unknown reset option"):
+        env.reset(seed=0, options={"dock_prt": "zvezda_aft"})
+
+
+def test_reset_options_reject_malformed_dock_port_types():
+    env = ISSEnv(at_origin(ports=("all",)))
+    for bad in (123, {"zvezda_aft": 1}, ("zvezda_aft", 3)):
+        with pytest.raises(ValueError, match="port name or a list/tuple"):
+            env.reset(seed=0, options={"dock_port": bad})
+
+
+def test_a_named_override_does_not_leak_into_the_next_naked_reset():
+    cfg = at_origin(ports=("all",))
+    env = ISSEnv(cfg)
+    env.reset(seed=11, options={"dock_port": "rassvet_nadir"})
+    _, after_override = env.reset(seed=11)
+    _, fresh = ISSEnv(cfg).reset(seed=11)
+    # The naked reset after an override draws exactly what a fresh env draws.
+    assert after_override["dock_port"] == fresh["dock_port"]
+    np.testing.assert_array_equal(after_override["goal_pose"], fresh["goal_pose"])

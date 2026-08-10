@@ -247,6 +247,14 @@ class ISSEnv(gym.Env):
         """
         if not options:
             return False
+        # A goal-selection API must not let a typo fall through to a random
+        # goal: an unrecognised key is an error, not a naked reset.
+        unknown_keys = set(options) - {"dock_port", "dock_pose"}
+        if unknown_keys:
+            raise ValueError(
+                f"unknown reset option(s) {sorted(unknown_keys)}; this environment "
+                "understands 'dock_port' and 'dock_pose'"
+            )
         port = options.get("dock_port")
         pose = options.get("dock_pose")
         if port is not None and pose is not None:
@@ -258,11 +266,22 @@ class ISSEnv(gym.Env):
                     "dock_pose must be 7 values [position xyz, quaternion wxyz], "
                     f"got shape {np.asarray(pose).shape}"
                 )
+            # In a no-ports config `_jit_step` has only ever seen dock_pose as
+            # None; the first overridden episode hands it an array and pays a
+            # one-off retrace. Both signatures stay cached after that.
             self._dock_pose = jnp.asarray(row)
             return True
         if port is None:
             return False
-        names = (port,) if isinstance(port, str) else tuple(port)
+        if isinstance(port, str):
+            names: tuple[str, ...] = (port,)
+        elif isinstance(port, (list, tuple)) and all(isinstance(n, str) for n in port):
+            names = tuple(port)
+        else:
+            raise ValueError(
+                "dock_port must be a port name or a list/tuple of port names, "
+                f"got {type(port).__name__}"
+            )
         if not names:
             raise ValueError("dock_port names an empty set of ports")
         unknown = [n for n in names if n not in self._port_names]
