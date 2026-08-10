@@ -154,13 +154,6 @@ PORTS: tuple[DockingPort, ...] = (
 PORTS_BY_NAME: dict[str, DockingPort] = {p.name: p for p in PORTS}
 PORT_NAMES: tuple[str, ...] = tuple(PORTS_BY_NAME)
 
-# How far a pinned pose may sit from the one the current PORTS table derives
-# before the config is rejected. Poses are metres and unit quaternions, and
-# both sides come from the same `port_pose` computation, so anything above
-# float round-off means the table actually moved.
-PINNED_POSE_TOLERANCE = 1e-5
-
-
 def _unit(v: np.ndarray, eps: float = 1e-9) -> np.ndarray:
     n = float(np.linalg.norm(v))
     if n < eps:
@@ -236,8 +229,9 @@ class DockPort(ConfigModel):
 
     The pose is stored, not just the name, so a versioned or as-run config
     reproduces the run it describes even after the `PORTS` table is revised.
-    A name still resolves against the table at load (see
-    `resolve_port_entries`); this is what that resolution produces.
+    A bare name resolves against the table at load (see
+    `resolve_port_entries`); this is what that resolution produces. An entry
+    that already carries its pose is trusted as written.
     """
 
     name: str
@@ -254,29 +248,6 @@ def _pinned_from_table(name: str) -> DockPort:
     )
 
 
-def _verify_against_table(port: DockPort) -> None:
-    """Reject a pinned pose that disagrees with the one `PORTS` derives today.
-
-    A name the table no longer knows is left alone: its pinned pose governs,
-    which is how a config outlives a table revision. But a name the table
-    still knows and now places somewhere else is a genuine conflict between
-    two claims about the same port, and silently preferring either one would
-    make the config lie about what it ran.
-    """
-    expected = _pinned_from_table(port.name)
-    for field, pinned, table in (
-        ("position", port.position, expected.position),
-        ("quaternion", port.quaternion, expected.quaternion),
-    ):
-        if max(abs(a - b) for a, b in zip(pinned, table)) > PINNED_POSE_TOLERANCE:
-            raise ValueError(
-                f"pinned {field} for docking port '{port.name}' disagrees with the "
-                f"current port table: config has {tuple(pinned)}, table derives "
-                f"{tuple(table)}. Re-pin the config against the current table, or "
-                f"rename the entry if it is meant to outlive the table's version."
-            )
-
-
 def resolve_port_entries(v: object) -> object:
     """Normalise a configured port list to a tuple of pinned `DockPort`.
 
@@ -286,10 +257,11 @@ def resolve_port_entries(v: object) -> object:
 
     An entry may be a bare port name or an already-pinned
     {name, position, quaternion}; both normalise to the pinned form, so every
-    serialised config carries the poses it used. The keyword "all" expands to
-    every port in `PORTS` here at config-load time, so the as-run record names
-    the ports a run actually used rather than a keyword whose meaning could
-    change with the table.
+    serialised config carries the poses it used. A pinned entry is taken as
+    the ground truth for its pose -- the table is only consulted to give a
+    bare name one. The keyword "all" expands to every port in `PORTS` here at
+    config-load time, so the as-run record names the ports a run actually
+    used rather than a keyword whose meaning could change with the table.
     """
     if not v:
         return ()
@@ -310,9 +282,11 @@ def resolve_port_entries(v: object) -> object:
             resolve_port_names((entry,))
             resolved.append(_pinned_from_table(entry))
             continue
+        # A pinned entry is ground truth: whatever pose the config carries is
+        # the pose the run flies to, whether or not the table knows the name
+        # or places it elsewhere. Only a bare name consults the table, because
+        # a name alone has no pose of its own.
         port = entry if isinstance(entry, DockPort) else DockPort.model_validate(entry)
-        if port.name in PORTS_BY_NAME:
-            _verify_against_table(port)
         resolved.append(port)
 
     names = [port.name for port in resolved]
