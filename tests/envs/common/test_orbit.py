@@ -1,7 +1,9 @@
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from astrojax import config as astrojax_config
 from astrojax.constants import GM_EARTH
+from astrojax.coordinates.keplerian import state_koe_to_eci
 from astrojax.orbit_dynamics.third_body import moon_position, sun_position
 
 from owm_envs.envs.common.orbit import (
@@ -26,15 +28,41 @@ def test_mean_motion_matches_kepler():
     assert np.isclose(ref.mean_motion, n, rtol=1e-12)
 
 
+def _raan_of(state: np.ndarray) -> float:
+    """Right ascension of the ascending node read back out of an ECI state.
+    The node lies along z_hat x h with h = r x v, i.e. at (-h_y, h_x, 0)."""
+    h = np.cross(state[:3], state[3:6])
+    return float(np.arctan2(h[0], -h[1]))
+
+
 def test_chief_state_radius_and_period():
+    """One period closes the in-plane geometry -- same radius, same speed --
+    but no longer the whole state: J2 has regressed the node by
+    raan_dot * period, some 0.32 deg, in the meantime. So assert the two
+    halves separately. A whole-state closure would now only pass with a
+    tolerance wide enough to swallow a drift of the wrong sign, and a wrong
+    sign is exactly what this must keep catching."""
     ref = ReferenceOrbit(OrbitConfig())
-    x0 = np.asarray(ref.chief_state_eci(0.0))
+    x0 = np.asarray(ref.chief_state_eci(0.0), dtype=np.float64)
     assert abs(np.linalg.norm(x0[:3]) - 6_795_000.0 * (1 - 0.0005)) < 5e3
     period = 2 * np.pi / ref.mean_motion
-    x1 = np.asarray(ref.chief_state_eci(period))
-    # astrojax's Keplerian conversion returns its own (f32) dtype budget --
-    # see the module docstring's error budget note.
-    np.testing.assert_allclose(x1, x0, atol=5.0)  # closes after one period
+    x1 = np.asarray(ref.chief_state_eci(period), dtype=np.float64)
+
+    # In plane, the orbit still closes. The tolerances are astrojax's
+    # Keplerian conversion at its own (f32) dtype budget -- see the module
+    # docstring's error budget note -- and sit far below the ~3.4e4 m the
+    # node regression alone displaces the chief by over one period, so
+    # neither doubles as a licence for the drift to leak in here.
+    assert abs(np.linalg.norm(x1[:3]) - np.linalg.norm(x0[:3])) < 5.0
+    assert abs(np.linalg.norm(x1[3:]) - np.linalg.norm(x0[3:])) < 5e-3
+
+    # Out of plane, it does not. Reading the node back out of the states
+    # pins the drift actually applied to the elements rather than merely the
+    # rate that was computed, and it is signed: a prograde orbit regresses,
+    # so a positive value here is the sign error.
+    raan_dot, _, _ = ref.secular_rates
+    assert _raan_of(x1) - _raan_of(x0) == pytest.approx(raan_dot * period, rel=1e-3)
+    assert _raan_of(x1) < _raan_of(x0)
 
 
 def test_chief_advances_prograde_by_a_quarter_turn():
@@ -148,3 +176,46 @@ def test_moon_is_geocentric_but_sun_is_chief_relative():
     s_geo = s_geo / np.linalg.norm(s_geo)
     parallax = np.arccos(np.clip(np.dot(s_chief, s_geo), -1.0, 1.0))
     assert 1e-5 < parallax < 1e-4
+
+
+DAY_S = 86_400.0
+
+
+def test_secular_rates_match_the_iss_reference():
+    ref = ReferenceOrbit(OrbitConfig())
+    raan_dot, argp_dot, m_dot = ref.secular_rates
+    assert np.rad2deg(raan_dot) * DAY_S == pytest.approx(-4.955, abs=0.01)
+    assert np.rad2deg(argp_dot) * DAY_S == pytest.approx(3.695, abs=0.01)
+    assert np.rad2deg(m_dot - ref.mean_motion) * DAY_S == pytest.approx(0.620, abs=0.01)
+
+
+def test_raan_regresses_over_a_week():
+    # The seven-day epoch window exists to give episodes different orbit
+    # planes. Without secular drift every one of them starts in the same one.
+    ref = ReferenceOrbit(OrbitConfig())
+    raan_dot, _, _ = ref.secular_rates
+    assert np.rad2deg(raan_dot * 7.0 * DAY_S) == pytest.approx(-34.68, abs=0.1)
+
+
+def test_drift_is_zero_at_the_epoch():
+    # Every rate multiplies t, so epoch zero must be untouched.
+    ref = ReferenceOrbit(OrbitConfig())
+    drifted = np.asarray(ref.chief_state_eci(0.0), dtype=np.float64)
+    two_body = np.asarray(state_koe_to_eci(ref._elements0), dtype=np.float64)
+    np.testing.assert_allclose(drifted, two_body, rtol=0, atol=1e-6)
+
+
+def test_the_orbit_plane_moves_over_a_week():
+    ref = ReferenceOrbit(OrbitConfig())
+    week = 7.0 * DAY_S
+
+    def normal(t):
+        x = np.asarray(ref.chief_state_eci(t), dtype=np.float64)
+        n = np.cross(x[:3], x[3:6])
+        return n / np.linalg.norm(n)
+
+    angle = np.arccos(np.clip(np.dot(normal(0.0), normal(week)), -1.0, 1.0))
+    # RAAN regression tilts the normal about the pole; the swept angle is
+    # sin(i) * delta_raan to first order.
+    expected = np.deg2rad(34.68) * np.sin(np.deg2rad(OrbitConfig().inc_deg))
+    assert np.rad2deg(angle) == pytest.approx(np.rad2deg(expected), rel=0.05)
