@@ -6,17 +6,19 @@ passes through the vehicle the renderer draws and reports a clean dock. Each
 committed collision_boxes_<variant>.yaml is that hull plus boxes covering the
 vehicle, written by scripts/write_variant_collision_boxes.py.
 
-Four things are checked, and only the first is a drift guard. That the
+Five things are checked, and only the first is a drift guard. That the
 committed hulls still equal what the writer produces; that each variant
 config names its own asset beside its own hull, since a config that draws a
 Dragon while colliding against a Cygnus is the failure this pairing exists to
 prevent; that the occupied port is now genuinely blocked, which is the whole
-reason the hulls exist; and that the other seven ports keep exactly their
-shipped clearances, which is what confines a hull to its vehicle. The last
-would fail if the writer's cluster selection had pulled in re-tessellated
-station structure alongside the vehicle -- geometry the shipped hull already
-approximates, whose inclusion would silently change collision behaviour at
-ports that berth nothing.
+reason the hulls exist; that no part of the berthed vehicle's surface is out
+of reach of the hull, since a chaser that flies through an uncovered solar
+array registers nothing and the goal-pose check above sees only the one pose;
+and that the other seven ports keep exactly their shipped clearances, which is
+what confines a hull to its vehicle. The last would fail if the writer's
+cluster selection had pulled in re-tessellated station structure alongside the
+vehicle -- geometry the shipped hull already approximates, whose inclusion
+would silently change collision behaviour at ports that berth nothing.
 """
 
 import sys
@@ -61,6 +63,46 @@ def clearance(position: np.ndarray, boxes) -> float:
 @pytest.fixture(scope="module")
 def base_boxes():
     return load_collision_boxes("collision_boxes.yaml")
+
+
+# Radius around the occupied port that holds the whole berthed vehicle. The
+# writer's new-geometry set also contains re-tessellated station structure
+# 20-35 m away, which belongs to the shipped station boxes, not to a vehicle.
+VEHICLE_RADIUS = 15.0
+
+
+def uncovered_area(triangles: np.ndarray, boxes, radius: float) -> tuple[float, float]:
+    """Area of `triangles` further than `radius` from every box, and their total.
+
+    Each triangle is sampled at six barycentric points and contributes the
+    fraction of them that are out of reach, so a partly covered triangle
+    counts partly. `radius` is the chaser radius the collision test expands
+    the boxes by, so anything nearer than that is already caught.
+    """
+    centers, half_extents = boxes
+    edge_a = triangles[:, 1] - triangles[:, 0]
+    edge_b = triangles[:, 2] - triangles[:, 0]
+    area = 0.5 * np.linalg.norm(np.cross(edge_a, edge_b), axis=1)
+
+    weights = np.array(
+        [
+            [2 / 3, 1 / 6, 1 / 6],
+            [1 / 6, 2 / 3, 1 / 6],
+            [1 / 6, 1 / 6, 2 / 3],
+            [1 / 3, 1 / 3, 1 / 3],
+            [0.5, 0.5, 0.0],
+            [0.0, 0.5, 0.5],
+        ]
+    )
+    points = np.einsum("kj,tjd->tkd", weights, triangles).reshape(-1, 3)
+    far = np.empty(len(points), dtype=bool)
+    for start in range(0, len(points), 4096):
+        chunk = points[start : start + 4096]
+        gap = np.maximum(np.abs(chunk[:, None, :] - centers[None]) - half_extents[None], 0.0)
+        far[start : start + 4096] = np.linalg.norm(gap, axis=2).min(axis=1) > radius
+
+    fraction = far.reshape(len(triangles), -1).mean(axis=1)
+    return float((area * fraction).sum()), float(area.sum())
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
@@ -124,6 +166,27 @@ def test_the_occupied_port_is_blocked_under_its_variant_hull(variant, port_name)
     base_cfg = NumericalConfig.from_toml(NUMERICAL / "env" / "coop_goal.toml")
     assert bool(EventChecker(variant_cfg).collision(at_rest, at_rest))
     assert not bool(EventChecker(base_cfg).collision(at_rest, at_rest))
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_no_part_of_the_berthed_vehicle_is_out_of_reach_of_its_hull(variant):
+    # Coverage of the whole vehicle surface, not just the goal pose: every
+    # point of it must lie within a chaser radius of some box, or a chaser can
+    # fly through that part -- a solar array wing, say -- and report nothing.
+    # Measured on the vehicle's own triangles, area-weighted, against the
+    # committed hull and the same radius the EventChecker expands boxes by.
+    cfg = NumericalConfig.from_toml(NUMERICAL / "env" / f"coop_{variant}.toml")
+    radius = cfg.physics.dragon_collision_radius_m
+
+    port = np.asarray(PORTS_BY_NAME[wvcb.OCCUPIED_PORT[variant]].interface, dtype=np.float64)
+    triangles = wvcb.new_triangles(variant)
+    vehicle = triangles[np.linalg.norm(triangles.mean(axis=1) - port, axis=1) < VEHICLE_RADIUS]
+    assert len(vehicle) > 0
+
+    boxes = load_collision_boxes(wvcb.hull_filename(variant))
+    beyond, total = uncovered_area(vehicle, boxes, radius)
+    assert total > 0.0
+    assert beyond == 0.0, f"{beyond:.2f} m^2 of {total:.1f} m^2 beyond {radius} m"
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
