@@ -49,16 +49,13 @@ open at once.
 
 ## iss-numerical commands
 
-The previously used `--config` flag does not exist; the flag is
-`--env-config`.
-
 Trial run, one call per noise variant:
 
     for v in nonoise coop noncoop; do
       uv run owm-envs generate --out outputs/trial_num_${v}_goal \
         --env-config configs/iss_numerical_${v}_goal.toml \
         --gen-config configs/generation_numerical_trial.yaml \
-        --render --render-workers 32 --gpu-index 1
+        --render --render-workers 16 --gpu-index 1
     done
 
 Full 500k run: same, with the 500k gen-config and output directory:
@@ -67,7 +64,7 @@ Full 500k run: same, with the 500k gen-config and output directory:
       uv run owm-envs generate --out outputs/full_num_${v}_goal \
         --env-config configs/iss_numerical_${v}_goal.toml \
         --gen-config configs/generation_numerical_500k.yaml \
-        --render --render-workers 32 --gpu-index 1
+        --render --render-workers 16 --gpu-index 1
     done
 
 Port sweep -- 3 noise variants x 8 ports x 3 successful docked episodes each,
@@ -91,7 +88,7 @@ three held out of it (`harmony_zenith_cbm`, `poisk_zenith`,
 gets no benefit from more than 3 workers, and a 1-episode rollout gets no
 speedup at all. Parallelise a sweep by running several `rollout` invocations
 concurrently, not by raising `--render-workers` above the episode count --
-which is why the command above uses 3, not the 32 that suits `generate`'s
+which is why the command above uses 3, not the 16 that suits `generate`'s
 many-episode splits. Rendering costs about 0.094 s per frame per view; a
 docked `iss-numerical` episode is roughly 6300 steps, so one 3-episode,
 2-view invocation above takes roughly 20 minutes (the 3 episodes render in
@@ -99,10 +96,10 @@ parallel across the 3 workers). The sweep issues 24 such invocations -- 72
 episodes total across 3 variants x 8 ports x 3 episodes -- about 8 hours if
 run one after another.
 
-Paper figure -- a single docked episode at `harmony_fwd_pma2`, with a still
-written every 6 s (`--frame-stride 120` at dt=0.05):
+Still sequence -- a single docked episode at `harmony_fwd_pma2`, with a
+frame written every 6 s (`--frame-stride 120` at dt=0.05):
 
-    uv run owm-envs rollout --out outputs/figures/dock_sequence \
+    uv run owm-envs rollout --out outputs/stills/dock_sequence \
       --env iss-numerical --env-config configs/iss_numerical_coop_goal.toml \
       --policy dock --port harmony_fwd_pma2 --episodes 1 --require-dock \
       --render-views fpv,dragon_iso --frame-stride 120 --gpu-index 1
