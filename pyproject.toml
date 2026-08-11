@@ -5,7 +5,7 @@ description = "Training data environments for the Out of this World Model (OWM) 
 requires-python = ">=3.11"
 dependencies = [
     "astrojax>=0.8.0",
-    "jax>=0.4.30",
+    "jax[cuda13]>=0.4.30",
     "gymnasium>=1.0",
     "numpy>=1.26",
     "pydantic>=2.0",
