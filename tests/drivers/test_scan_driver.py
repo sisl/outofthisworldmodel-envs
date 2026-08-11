@@ -3,6 +3,7 @@ import pytest
 
 from owm_envs.drivers.scan_driver import ScanDriver, supports_fused_rollout
 from owm_envs.drivers.types import RolloutSpec
+from owm_envs.envs import ENV_REGISTRY
 from owm_envs.envs.common.config import DockConfig, PhysicsConfig
 from owm_envs.envs.common.policies import PolicyConfig
 from owm_envs.envs.iss.config import ISSConfig
@@ -213,3 +214,24 @@ def test_num_episodes_mode_keeps_lane_quota_not_fastest_finishers():
     # Lane-major order: episode 0 is lane 0's start, episode 1 is lane 1's.
     np.testing.assert_allclose(batch.observations[0, 0, 2], -85.0, atol=1.0)
     np.testing.assert_allclose(batch.observations[1, 0, 2], -36.0, atol=1.0)
+
+
+def test_accepts_an_explicit_env_spec():
+    # Passing the registry's iss spec must be equivalent to the default, which
+    # is what makes the spec the only thing a second environment has to supply.
+    cfg = ISSConfig(
+        physics=PhysicsConfig(**FREE_FLIGHT_PHYSICS), dock=DockConfig(**FREE_FLIGHT_DOCK)
+    )
+    driver = ScanDriver(
+        cfg=cfg,
+        policy_cfg=PolicyConfig(type="dock"),
+        num_envs=2,
+        env_spec=ENV_REGISTRY["iss"],
+    )
+    spec = RolloutSpec(num_episodes=2, max_steps=10, seed=0)
+    batch = driver.generate(spec)
+    batch.validate()
+    assert batch.num_episodes == 2
+    np.testing.assert_array_equal(
+        batch.observations, make_driver(num_envs=2).generate(spec).observations
+    )

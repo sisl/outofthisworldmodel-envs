@@ -3,7 +3,7 @@ import numpy as np
 
 from owm_envs.envs.common.config import DockConfig, RewardWeights
 from owm_envs.envs.common.events import Events
-from owm_envs.envs.common.reward import iss_reward
+from owm_envs.envs.common.reward import docking_reward
 from owm_envs.envs.iss.config import ISSConfig
 
 NO_EVENTS = Events(collision=jnp.array(False), docked=jnp.array(False), escaped=jnp.array(False))
@@ -16,14 +16,14 @@ def state_at(pos, vel=(0.0, 0.0, 0.0), omega=(0.0, 0.0, 0.0)) -> jnp.ndarray:
 
 def test_reward_is_zero_at_the_dock_pose_with_no_effort():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
-    r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), 0.0, atol=1e-6)
 
 
 def test_reward_decreases_with_distance_from_dock():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
-    near = iss_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
-    far = iss_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    near = docking_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    far = docking_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert float(far) < float(near) < 0.0
 
 
@@ -33,7 +33,7 @@ def test_default_weights_combine_multiple_terms():
     # more than one term active -- e.g. swapping velocity=0.35 and
     # angular_velocity=0.1 in the defaults would leave every other test green.
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
-    r = iss_reward(
+    r = docking_reward(
         state_at((1.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), omega=(1.0, 0.0, 0.0)),
         ZERO_ACTION, NO_EVENTS, cfg,
     )
@@ -48,7 +48,7 @@ def test_position_term_is_summed_squared_not_norm():
         reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
-    r = iss_reward(state_at((3.0, 4.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    r = docking_reward(state_at((3.0, 4.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), -25.0, atol=1e-4)  # 3^2 + 4^2, not the norm 5
 
 
@@ -58,7 +58,7 @@ def test_velocity_term_penalizes_speed():
         reward_weights=RewardWeights(position=0.0, velocity=-1.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
-    r = iss_reward(state_at((0.0, 0.0, 0.0), vel=(2.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0), vel=(2.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), -4.0, atol=1e-4)
 
 
@@ -68,7 +68,7 @@ def test_angular_velocity_term_penalizes_spin():
         reward_weights=RewardWeights(position=0.0, velocity=0.0, angular_velocity=-1.0,
                                      control_effort=0.0, collision=0.0),
     )
-    r = iss_reward(state_at((0.0, 0.0, 0.0), omega=(1.0, 2.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0), omega=(1.0, 2.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), -5.0, atol=1e-4)
 
 
@@ -79,21 +79,21 @@ def test_control_effort_term_penalizes_actuation():
                                      control_effort=-1.0, collision=0.0),
     )
     action = jnp.array([3.0, 0.0, 0.0, 4.0, 0.0, 0.0], dtype=jnp.float32)
-    r = iss_reward(state_at((0.0, 0.0, 0.0)), action, NO_EVENTS, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0)), action, NO_EVENTS, cfg)
     assert np.isclose(float(r), -25.0, atol=1e-4)
 
 
 def test_collision_applies_the_full_penalty_weight():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
     hit = Events(collision=jnp.array(True), docked=jnp.array(False), escaped=jnp.array(False))
-    r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
     assert np.isclose(float(r), cfg.reward_weights.collision, atol=1.0)
 
 
 def test_docking_is_not_penalized():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
     docked = Events(collision=jnp.array(False), docked=jnp.array(True), escaped=jnp.array(False))
-    r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, docked, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, docked, cfg)
     assert np.isclose(float(r), 0.0, atol=1e-6)
 
 
@@ -104,8 +104,8 @@ def test_escaping_is_neither_rewarded_nor_penalized():
     cfg = ISSConfig(dock=DockConfig(position=(0.0, 0.0, 0.0)))
     state = state_at((2000.0, 0.0, 0.0))
     escaped = Events(collision=jnp.array(False), docked=jnp.array(False), escaped=jnp.array(True))
-    assert float(iss_reward(state, ZERO_ACTION, escaped, cfg)) == float(
-        iss_reward(state, ZERO_ACTION, NO_EVENTS, cfg)
+    assert float(docking_reward(state, ZERO_ACTION, escaped, cfg)) == float(
+        docking_reward(state, ZERO_ACTION, NO_EVENTS, cfg)
     )
 
 
@@ -116,7 +116,7 @@ def test_reward_goal_position_none_targets_the_dock_position():
                                      control_effort=0.0, collision=0.0),
     )
     assert cfg.reward_goal_position is None
-    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    r = docking_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), -9.0, atol=1e-4)  # (4-1)^2
 
 
@@ -127,7 +127,7 @@ def test_reward_goal_position_override_targets_the_override_not_the_dock():
         reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
-    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    r = docking_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert np.isclose(float(r), -16.0, atol=1e-4)  # (4-0)^2, not (4-1)^2
 
 
@@ -140,7 +140,7 @@ def test_dock_position_argument_moves_the_position_target():
         reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
-    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg,
+    r = docking_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg,
                    jnp.asarray([4.0, 0.0, 0.0], dtype=jnp.float32))
     assert np.isclose(float(r), 0.0, atol=1e-4)  # peak at the port, not at (1, 0, 0)
 
@@ -154,7 +154,7 @@ def test_reward_goal_position_outranks_a_per_episode_dock_position():
         reward_weights=RewardWeights(position=-1.0, velocity=0.0, angular_velocity=0.0,
                                      control_effort=0.0, collision=0.0),
     )
-    r = iss_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg,
+    r = docking_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg,
                    jnp.asarray([4.0, 0.0, 0.0], dtype=jnp.float32))
     assert np.isclose(float(r), -16.0, atol=1e-4)
 
@@ -163,13 +163,13 @@ def test_penalties_are_negative_rewards():
     """The weights are negative AND the sum is not negated. Getting exactly one
     of those right turns every penalty into a reward."""
     cfg = ISSConfig(reward_goal_position=(0.0, 0.0, 0.0))
-    far = iss_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
-    near = iss_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    far = docking_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    near = docking_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert float(far) < float(near) < 0.0, "being further away must score worse"
 
 
 def test_collision_is_catastrophic_not_rewarded():
     cfg = ISSConfig(reward_goal_position=(0.0, 0.0, 0.0))
     hit = Events(collision=jnp.array(True), docked=jnp.array(False), escaped=jnp.array(False))
-    r = iss_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
+    r = docking_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, hit, cfg)
     assert float(r) < -1000.0, "a collision must be a large NEGATIVE reward"

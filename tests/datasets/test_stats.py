@@ -573,3 +573,20 @@ def test_card_records_min_transitions_and_num_episodes_requested():
     assert metadata.card["splits"]["val"]["num_episodes_requested"] is None
     # "episodes" stays the ACTUAL count regardless of which mode was requested.
     assert metadata.card["splits"]["val"]["episodes"] == val.num_episodes
+
+
+def test_generation_config_env_default_and_roundtrip(tmp_path):
+    gen = GenerationConfig()
+    assert gen.env == "iss"
+    p = tmp_path / "gen.yaml"
+    gen.to_yaml(p)
+    assert GenerationConfig.from_yaml(p).env == "iss"
+
+
+def test_build_run_metadata_records_the_generating_env(tmp_path):
+    gen = GenerationConfig(env="iss", splits={"train": SplitSpec(num_episodes=2, seed=0)})
+    metadata = build_run_metadata(
+        cfg=ISSConfig(), policy_cfg=PolicyConfig(), gen_cfg=gen,
+        batches={"train": batch_with_padding()}, fps=20,
+    )
+    assert metadata.card["env"] == "iss"

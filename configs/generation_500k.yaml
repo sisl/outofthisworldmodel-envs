@@ -1,3 +1,4 @@
+env: iss
 splits:
   train:
     num_episodes: null

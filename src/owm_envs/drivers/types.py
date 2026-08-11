@@ -59,8 +59,8 @@ class TrajectoryBatch:
                occupies a T-wide row regardless of its own length, with the
                unused tail zero-filled, so shorter episodes carry padding
                and only `lengths[e]` entries of row `e` are real.
-      obs_dim  observation vector width (13 for the ISS environment, 25 with the goal-error block)
-      act_dim  action vector width (6 for the ISS environment)
+      obs_dim  observation vector width (13 for the iss env, 25 with the goal-error block)
+      act_dim  action vector width (6 for the iss env)
 
     Padded rather than ragged so that two drivers' outputs can be compared
     elementwise by the equivalence test -- a ragged comparison would need
@@ -107,8 +107,8 @@ class TrajectoryBatch:
     # index into the port table, because the table's indices shift whenever a
     # port is added or removed, so a stored index stops reproducing the
     # episode as soon as the table changes. None only when the source cannot
-    # supply one -- every ISS driver can, recording the `DockConfig` pose for
-    # a run with no port set.
+    # supply one -- every driver in the suite can, recording the `DockConfig`
+    # pose for a run with no port set.
     dock_targets: np.ndarray | None = None
     # (E, T, state_dim) float32, zero-padded past `lengths[e]` on the same
     # episode and time layout as `observations`: the TRUE dynamics state behind
@@ -224,7 +224,7 @@ class PolicySource(Protocol):
         received. This only affects what gets stored into the episode buffer
         -- `act()` above always receives the raw observation, unaugmented.
         Identity (`return observation`) for sources with nothing to append;
-        `ISSPolicySource` is the only implementor that does otherwise (see
+        `TaskPolicySource` is the only implementor that does otherwise (see
         `envs.common.goal.make_augment`), appending a policy-aware goal-error
         block built from `episode_state`.
         """

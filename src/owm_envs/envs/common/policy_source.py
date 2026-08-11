@@ -1,9 +1,13 @@
-"""Adapts the ISS JAX policies to the backend-agnostic PolicySource protocol.
+"""Adapts the JAX task-layer policies to the backend-agnostic PolicySource protocol.
 
 This is where numpy observations become JAX arrays and JAX actions become
 numpy again, and where the PRNG key derives from the integer seed
 `VectorEnvDriver` hands to `new_episode`. Everything JAX-specific about
-dataset generation for the ISS backend lives here, not in `drivers/`.
+dataset generation lives here, not in `drivers/`.
+
+The scripted policies wrapped here are task-layer code serving every env in
+the suite, not one backend's: they read the canonical 13D relative view, and
+`view` is what extracts it from whatever state the env itself carries.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ class _EpisodeState(NamedTuple):
     extras: jnp.ndarray
 
 
-class ISSPolicySource:
+class TaskPolicySource:
     """Wraps `make_policy` behind the backend-agnostic PolicySource protocol."""
 
     def __init__(
@@ -41,7 +45,7 @@ class ISSPolicySource:
         # already is that view, as it is for the iss env.
         self._view = view if view is not None else (lambda m: m)
         self.records_policy_ids = policy_cfg.type == "union"
-        # Every ISS episode has a dock target, so this source always supplies
+        # Every episode in the suite has a dock target, so this source supplies
         # one: the assigned port's pose under a port set, the `DockConfig`
         # pose otherwise. It comes from the same selector the goal-error block
         # uses, so the recorded pose is the one the episode was scored against.

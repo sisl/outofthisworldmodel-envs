@@ -27,7 +27,7 @@ deliberate, not a gap: what can realistically drift between two independent
 rollout implementations is the segmentation/termination logic (two copies of
 "is this lane done, and where does the next episode start"), not the
 per-step arithmetic, which both drivers call through the same `ISSDynamics`,
-`iss_reward`, and policy functions.
+`docking_reward`, and policy functions.
 """
 
 import numpy as np
@@ -38,7 +38,7 @@ from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver
 from owm_envs.envs.common.config import DockConfig, ObservationConfig, PhysicsConfig
 from owm_envs.envs.common.policies import PolicyConfig
-from owm_envs.envs.common.policy_source import ISSPolicySource
+from owm_envs.envs.common.policy_source import TaskPolicySource
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
@@ -48,11 +48,11 @@ DETERMINISTIC = PolicyConfig(type="dock")
 
 
 def drivers_for(cfg, num_envs=2):
-    from owm_envs.envs.common.policy_source import ISSPolicySource
+    from owm_envs.envs.common.policy_source import TaskPolicySource
 
     vec = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-        policy_source=ISSPolicySource(cfg, DETERMINISTIC),
+        policy_source=TaskPolicySource(cfg, DETERMINISTIC),
     )
     scan = ScanDriver(cfg=cfg, policy_cfg=DETERMINISTIC, num_envs=num_envs)
     return vec, scan
@@ -112,7 +112,7 @@ def test_both_drivers_agree_on_free_flight_trajectories():
 def test_scan_and_vector_agree_on_goal_blocks_for_dock():
     # Goal-error augmentation lives in two places -- ScanDriver applies
     # make_augment in-scan, VectorEnvDriver applies it via
-    # ISSPolicySource.augment_observation -- the same two-implementations-of-
+    # TaskPolicySource.augment_observation -- the same two-implementations-of-
     # one-rule drift risk the module docstring describes, now for the
     # appended goal block. One episode per lane keeps this in the bitwise
     # regime documented above. `observe` is pinned explicitly (not left to
@@ -126,7 +126,7 @@ def test_scan_and_vector_agree_on_goal_blocks_for_dock():
     scan = ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=2).generate(spec)
     vector = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=env_cfg),
-        policy_source=ISSPolicySource(cfg, policy_cfg),
+        policy_source=TaskPolicySource(cfg, policy_cfg),
     ).generate(spec)
 
     np.testing.assert_allclose(scan.observations, vector.observations, atol=1e-5)
@@ -153,7 +153,7 @@ def test_scan_and_vector_agree_structurally_on_goal_blocks_for_union():
     scan = ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=2).generate(spec)
     vector = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=env_cfg),
-        policy_source=ISSPolicySource(cfg, policy_cfg),
+        policy_source=TaskPolicySource(cfg, policy_cfg),
     ).generate(spec)
 
     # Structural agreement: same shape and lengths, both honor the episode convention.
@@ -314,11 +314,11 @@ def test_both_drivers_agree_on_episode_length_distribution_for_a_stochastic_poli
     # logic would still show up as a different length distribution.
     cfg = ISSConfig(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
     stochastic = PolicyConfig(type="random")
-    from owm_envs.envs.common.policy_source import ISSPolicySource
+    from owm_envs.envs.common.policy_source import TaskPolicySource
 
     vec = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=4, cfg=cfg),
-        policy_source=ISSPolicySource(cfg, stochastic),
+        policy_source=TaskPolicySource(cfg, stochastic),
     )
     scan = ScanDriver(cfg=cfg, policy_cfg=stochastic, num_envs=4)
     spec = RolloutSpec(num_episodes=8, max_steps=20, seed=3)
@@ -377,7 +377,7 @@ def test_vector_env_driver_generate_is_pure_per_spec():
     def build_driver():
         return VectorEnvDriver(
             env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-            policy_source=ISSPolicySource(cfg, PolicyConfig()),
+            policy_source=TaskPolicySource(cfg, PolicyConfig()),
         )
 
     driver = build_driver()

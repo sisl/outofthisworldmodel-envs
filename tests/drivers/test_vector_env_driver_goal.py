@@ -6,19 +6,19 @@ from owm_envs.drivers.vector_env_driver import VectorEnvDriver
 from owm_envs.envs.common.config import ObservationConfig, dock_target
 from owm_envs.envs.common.goal import dock_goal_error
 from owm_envs.envs.common.policies import PolicyConfig
-from owm_envs.envs.common.policy_source import ISSPolicySource
+from owm_envs.envs.common.policy_source import TaskPolicySource
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 
 def _vector_driver(cfg: ISSConfig, policy_cfg: PolicyConfig, num_envs: int = 2) -> VectorEnvDriver:
-    # ISSPolicySource owns the goal-error augmentation on this path, so the
+    # TaskPolicySource owns the goal-error augmentation on this path, so the
     # env it drives must stay at the raw 13-dim observation -- otherwise the
     # block would be appended twice (see cli._resolve_driver's build_vector).
     env_cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"goal_error": False})})
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=env_cfg),
-        policy_source=ISSPolicySource(cfg, policy_cfg),
+        policy_source=TaskPolicySource(cfg, policy_cfg),
     )
 
 

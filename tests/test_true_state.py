@@ -327,7 +327,7 @@ def test_scan_truth_stays_aligned_across_autoresets():
 def _vector_driver(cfg, policy_type="random", num_envs=2, goal_error=False):
     from owm_envs.drivers.vector_env_driver import VectorEnvDriver
     from owm_envs.envs.common.policies import PolicyConfig
-    from owm_envs.envs.common.policy_source import ISSPolicySource
+    from owm_envs.envs.common.policy_source import TaskPolicySource
     from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
     # The goal-error block is appended by the policy source on this path, so
@@ -338,7 +338,7 @@ def _vector_driver(cfg, policy_type="random", num_envs=2, goal_error=False):
     )
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-        policy_source=ISSPolicySource(source_cfg, PolicyConfig(type=policy_type)),
+        policy_source=TaskPolicySource(source_cfg, PolicyConfig(type=policy_type)),
     )
 
 

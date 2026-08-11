@@ -9,7 +9,7 @@ from owm_envs.drivers.vector_env_driver import VectorEnvDriver, _lane_info
 from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
 from owm_envs.envs.common.docking_ports import dock_targets
 from owm_envs.envs.common.policies import DockParams, PolicyConfig
-from owm_envs.envs.common.policy_source import ISSPolicySource
+from owm_envs.envs.common.policy_source import TaskPolicySource
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
@@ -30,7 +30,7 @@ def make_driver(num_envs=2, policy_type="dock", physics=None, dock=None, ports=(
     policy_cfg = PolicyConfig(type=policy_type, dock=DockParams(ports=ports))
     return VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
-        policy_source=ISSPolicySource(cfg, policy_cfg),
+        policy_source=TaskPolicySource(cfg, policy_cfg),
     )
 
 
@@ -199,7 +199,7 @@ def test_vector_transitions_target_is_met_with_whole_episodes():
     cfg = ISSConfig(max_steps=10)
     driver = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-        policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+        policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock")),
     )
     batch = driver.generate(RolloutSpec(max_steps=10, seed=0, min_transitions=50))
     assert batch.total_transitions >= 50
@@ -213,7 +213,7 @@ def test_vector_transitions_mode_is_deterministic():
     def batch():
         driver = VectorEnvDriver(
             env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+            policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock")),
         )
         return driver.generate(RolloutSpec(max_steps=10, seed=0, min_transitions=50))
 
@@ -233,7 +233,7 @@ def test_vector_transitions_mode_is_independent_of_episodes_mode_at_the_same_see
     def make():
         return VectorEnvDriver(
             env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+            policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock")),
         )
 
     episodes_batch = make().generate(RolloutSpec(max_steps=10, seed=0, num_episodes=2))
@@ -269,7 +269,7 @@ def test_episodes_reset_independently_when_max_steps_is_below_the_env_horizon():
     cfg = free_flight_cfg()
     batch = VectorEnvDriver(
         env_factory=lambda: ISSVectorEnv(num_envs=1, cfg=cfg),
-        policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock")),
+        policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock")),
     ).generate(RolloutSpec(num_episodes=3, max_steps=5, seed=0))
     batch.validate()
     assert np.all(batch.truncated)
@@ -701,7 +701,7 @@ def test_vector_driver_state_policy_actions_match_clean_run():
     def batch(cfg):
         driver = VectorEnvDriver(
             env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock", observe="state")),
+            policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock", observe="state")),
         )
         return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
 
@@ -716,7 +716,7 @@ def test_vector_driver_measurement_policy_consumes_the_observation():
     def batch(observe):
         driver = VectorEnvDriver(
             env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-            policy_source=ISSPolicySource(cfg, PolicyConfig(type="dock", observe=observe)),
+            policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock", observe=observe)),
         )
         return driver.generate(RolloutSpec(num_episodes=2, max_steps=12, seed=0))
 
@@ -731,7 +731,7 @@ def test_vector_state_policy_survives_autoreset_with_noise():
     def batch(cfg):
         driver = VectorEnvDriver(
             env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
-            policy_source=ISSPolicySource(cfg, PolicyConfig(type="random", observe="state")),
+            policy_source=TaskPolicySource(cfg, PolicyConfig(type="random", observe="state")),
         )
         return driver.generate(RolloutSpec(num_episodes=4, max_steps=10, seed=0))
 

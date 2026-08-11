@@ -345,7 +345,7 @@ the chaser's range, and combines with `sigma_pos_m` as independent variances.
 with the data, so the run is reproducible from this repo alone:
 
 ```bash
-owm-envs generate --out run --config env_config.yaml \\
+owm-envs generate --out run --env-config env_config.yaml \\
     --gen-config generation_config.yaml{render_flag}
 ```
 

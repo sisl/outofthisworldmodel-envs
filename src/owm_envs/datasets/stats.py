@@ -116,6 +116,10 @@ class SplitSpec(ConfigModel):
 
 
 class GenerationConfig(ConfigModel):
+    # The recipe's environment identity, validated against ENV_REGISTRY by
+    # the CLI rather than here (importing the registry here would cycle:
+    # ENV_REGISTRY construction pulls in env config classes).
+    env: str = "iss"
     splits: dict[str, SplitSpec] = Field(
         default_factory=lambda: {
             "train": SplitSpec(num_episodes=64, seed=0),
@@ -336,7 +340,7 @@ def build_run_metadata(
         return gen_cfg.splits[name].policy or policy_cfg
 
     card = {
-        "env": "iss",
+        "env": gen_cfg.env,
         "fps": fps,
         "dt": cfg.dt,
         "splits": {

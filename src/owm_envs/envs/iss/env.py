@@ -22,7 +22,7 @@ from ..common.goal import (
     dock_goal_error,
     goal_error_norms,
 )
-from ..common.reward import iss_reward
+from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
 from .config import ISSConfig
 from .dynamics import ISSDynamics
@@ -201,7 +201,7 @@ class ISSEnv(gym.Env):
 
         next_state, events = self._jit_step(self._state, action_j, self._dock_pose)
         reward = float(
-            iss_reward(
+            docking_reward(
                 next_state, action_j, events, self.cfg,
                 None if self._dock_pose is None else self._dock_pose[0:3],
             )

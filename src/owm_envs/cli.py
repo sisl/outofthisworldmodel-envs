@@ -29,11 +29,11 @@ from .datasets.video import (
     parse_view_names,
 )
 from .drivers.types import RolloutSpec
-from .envs.common.config import ObservationConfig
+from .envs import ENV_REGISTRY, EnvSpec
+from .envs.common.config import BaseTaskConfig, ObservationConfig
 from .envs.common.docking_ports import PORT_NAMES
 from .envs.common.policies import DockParams, PolicyConfig
 from .envs.common.sensing import PRESETS
-from .envs.iss.config import ISSConfig
 
 app = typer.Typer(add_completion=False, help="Generate world-model training datasets.")
 
@@ -41,14 +41,14 @@ app = typer.Typer(add_completion=False, help="Generate world-model training data
 @app.command("list")
 def list_envs() -> None:
     """List available environments and their observation/action shapes."""
-    from .envs.iss.env import ISSEnv
-
-    env = ISSEnv()
     typer.echo("Available environments:")
-    typer.echo(
-        f"  iss  (ISS-Docking-v0)  obs={env.observation_space.shape}  "
-        f"act={env.action_space.shape}"
-    )
+    for name, spec in ENV_REGISTRY.items():
+        venv = spec.make_vector_env(1, spec.config_cls())
+        typer.echo(
+            f"  {name}  ({spec.gym_id})  obs={venv.single_observation_space.shape}  "
+            f"act={venv.single_action_space.shape}"
+        )
+        venv.close()
 
 
 def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
@@ -62,12 +62,12 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
 
 
 def _check_dock_ports_agree(
-    cfg: ISSConfig, policy_cfg: PolicyConfig, split: str
+    cfg: BaseTaskConfig, policy_cfg: PolicyConfig, split: str
 ) -> None:
     """Refuse an env port set that generation would not honour.
 
     Generation resolves an episode's target from `policy.dock.ports`, never
-    from `ISSConfig.dock.ports` -- that second field is the one `ISSEnv` draws
+    from `BaseTaskConfig.dock.ports` -- that second field is the one `ISSEnv` draws
     from. They are otherwise the same field, resolved by the same code, so a
     config that sets the env's and leaves the policy's empty reads as a
     multi-port run and would quietly write single-target data: the one outcome
@@ -180,7 +180,10 @@ def _parse_split_flags(
 @app.command()
 def generate(
     out: Path = typer.Option(..., help="Run directory to write."),
-    env: str = typer.Option("iss", help="Environment name."),
+    env: Optional[str] = typer.Option(
+        None,
+        help="Environment to generate with: " + ", ".join(ENV_REGISTRY) + ". "
+             "Default iss. Exclusive with --gen-config, whose env field governs."),
     policy: str = typer.Option("random", help="random | orbit | dock | union -- "
                                "run-level default; a split's :POLICY suffix overrides it."),
     split: Optional[list[str]] = typer.Option(
@@ -199,22 +202,24 @@ def generate(
     fps: Optional[int] = typer.Option(None, help="Frames per second recorded in the dataset. "
                                       "Defaults to the simulation rate, 1/dt."),
     gen_config: Optional[Path] = typer.Option(
-        None, help="GenerationConfig YAML; exclusive with --split/--steps/--num-envs/--driver/--fps. "
+        None, help="GenerationConfig YAML; exclusive with "
+                   "--env/--split/--steps/--num-envs/--driver/--fps/--render-views. "
                    "configs/generation_default.yaml is the shipped docking recipe: a union-policy "
                    "train split on five ports and a dock-policy val split on all "
                    "eight, so validation measures the held-out approaches (both zenith "
                    "corridors and Unity nadir)."),
-    config: Optional[Path] = typer.Option(
-        None, help="ISSConfig file to load, YAML or TOML by suffix. The shipped "
-                   "environments are configs/iss_*.toml: iss_default.toml plus the six "
-                   "noise/goal-error variants the public datasets are generated from."),
+    env_config: Optional[Path] = typer.Option(
+        None, "--env-config",
+        help="Environment config file to load, YAML or TOML by suffix. The shipped "
+             "iss environments are configs/iss_*.toml: iss_default.toml plus the six "
+             "noise/goal-error variants the public datasets are generated from."),
     noise: Optional[str] = typer.Option(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "
-                   "Overrides the --config file's sensor_noise."),
+                   "Overrides the --env-config file's sensor_noise."),
     goal_error: Optional[bool] = typer.Option(
         None, "--goal-error/--no-goal-error",
         help="Append the dock-goal error block to observations. "
-             "Overrides the --config file's observation.goal_error; "
+             "Overrides the --env-config file's observation.goal_error; "
              "default is whatever the config says."),
     observe: str = typer.Option(
         "measurement", help="What scripted policies consume: state | measurement "
@@ -223,7 +228,7 @@ def generate(
         "",
         help="Docking ports the dock and union policies may target, drawn uniformly "
              f"per episode: 'all' or a comma-joined subset of {', '.join(PORT_NAMES)}. "
-             "Empty (the default) keeps the single pose in ISSConfig.dock. Sets the "
+             "Empty (the default) keeps the single pose in BaseTaskConfig.dock. Sets the "
              "default for every split; a :PORTS suffix on --split overrides it, which "
              "is how validation keeps the full set while training holds ports out. The "
              "built-in default splits already put validation on 'all'. Inert for the "
@@ -262,8 +267,6 @@ def generate(
     ),
 ) -> None:
     """Roll out trajectories for every split and write a dataset run directory."""
-    if env != "iss":
-        raise typer.BadParameter(f"unknown environment '{env}'; only 'iss' exists")
     if render and not lerobot:
         raise typer.BadParameter(
             "--render has no effect with --no-lerobot: there is no writer to consume the "
@@ -280,12 +283,15 @@ def generate(
     if render_views is not None:
         _parse_render_views(render_views)
     if gen_config is not None and any(
-        v is not None for v in (split, steps, num_envs, driver, fps, render_views)
+        v is not None for v in (env, split, steps, num_envs, driver, fps, render_views)
     ):
         raise typer.BadParameter(
             "--gen-config is exclusive with "
-            "--split/--steps/--num-envs/--driver/--fps/--render-views"
+            "--env/--split/--steps/--num-envs/--driver/--fps/--render-views"
         )
+    if env is not None and env not in ENV_REGISTRY:
+        raise typer.BadParameter(
+            f"unknown environment '{env}'; available: {', '.join(ENV_REGISTRY)}")
 
     if render:
         from .render.device import check_gpu_index, select_gpu
@@ -334,6 +340,7 @@ def generate(
         resolved_steps = steps if steps is not None else 7200
         try:
             gen = GenerationConfig(
+                env=env or "iss",
                 splits=_parse_split_flags(
                     split or ["train:64:0", "val:8:1::all"], resolved_steps, observe, policy, dock_ports
                 ),
@@ -357,14 +364,21 @@ def generate(
     # was built with.
     view_keys = keys_for_names(gen.render_views)
 
+    env_name = gen.env
+    if env_name not in ENV_REGISTRY:
+        raise typer.BadParameter(
+            f"unknown environment '{env_name}'; available: {', '.join(ENV_REGISTRY)}"
+        )
+    env_spec = ENV_REGISTRY[env_name]
+
     try:
-        cfg = ISSConfig.load(config) if config is not None else ISSConfig()
+        cfg = env_spec.config_cls.load(env_config) if env_config is not None else env_spec.config_cls()
     except (OSError, ValueError, yaml.YAMLError) as exc:
         # A missing file, a suffix load() does not dispatch on, unparseable
         # text, or a field the schema rejects -- all of them are the caller
         # naming the wrong file, not a bug to show a traceback for.
         raise typer.BadParameter(
-            f"cannot read --config {config}: {exc}", param_hint="--config"
+            f"cannot read --env-config {env_config}: {exc}", param_hint="--env-config"
         ) from exc
     if noise is not None:
         if noise not in PRESETS:
@@ -392,7 +406,7 @@ def generate(
     batches = {}
     for name, spec in gen.splits.items():
         split_policy = spec.policy or policy_cfg
-        chosen = _resolve_driver(gen.driver, cfg, split_policy, gen.num_envs)
+        chosen = _resolve_driver(gen.driver, cfg, split_policy, gen.num_envs, env_spec)
         batch = chosen.driver.generate(
             RolloutSpec(
                 num_episodes=spec.num_episodes,
@@ -468,7 +482,7 @@ def generate(
         if lerobot:
             from .datasets.lerobot_writer import write_lerobot_split
 
-            write_lerobot_split(out / name, f"{env}/{name}", batch,
+            write_lerobot_split(out / name, f"{env_name}/{name}", batch,
                                 fps=resolved_fps, frames=frames)
             typer.echo(f"[generate] wrote LeRobot split to {out / name}")
 
@@ -606,15 +620,15 @@ class _Chosen:
         self.driver = driver
 
 
-def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, num_envs: int) -> _Chosen:
+def _resolve_driver(
+    requested: str, cfg: BaseTaskConfig, policy_cfg: PolicyConfig, num_envs: int, env_spec: EnvSpec
+) -> _Chosen:
     from .drivers.scan_driver import ScanDriver, supports_fused_rollout
     from .drivers.vector_env_driver import VectorEnvDriver
-    from .envs.common.policy_source import ISSPolicySource
-    from .envs.iss.dynamics import ISSDynamics
-    from .envs.iss.vector_env import ISSVectorEnv
+    from .envs.common.policy_source import TaskPolicySource
 
     def build_vector() -> _Chosen:
-        # ISSVectorEnv reads its dock pose straight off ISSConfig and has no
+        # The vector env reads its dock pose straight off cfg and has no
         # channel for a per-episode target, so a policy given any port set at
         # all regulates to the assigned port but is scored against DockConfig.
         # One port is no safer than several: even PMA-2's derived pose sits
@@ -631,7 +645,7 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
                 f"scored at the wrong pose for every episode whose assigned port is not "
                 f"DockConfig's; --driver scan does not have this limitation"
             )
-        # ISSPolicySource applies its own policy-aware goal-error block (see
+        # TaskPolicySource applies its own policy-aware goal-error block (see
         # augment_observation) from the ORIGINAL cfg; the env it drives must
         # therefore stay at the raw 13-dim observation, or the block would be
         # appended twice -- once by the env, once by the policy source.
@@ -639,13 +653,15 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
         return _Chosen(
             "vector",
             VectorEnvDriver(
-                env_factory=lambda: ISSVectorEnv(num_envs=num_envs, cfg=env_cfg),
-                policy_source=ISSPolicySource(cfg, policy_cfg),
+                env_factory=lambda: env_spec.make_vector_env(num_envs, env_cfg),
+                policy_source=TaskPolicySource(cfg, policy_cfg, view=env_spec.view),
             ),
         )
 
     def build_scan() -> _Chosen:
-        return _Chosen("scan", ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=num_envs))
+        return _Chosen(
+            "scan", ScanDriver(cfg=cfg, policy_cfg=policy_cfg, num_envs=num_envs, env_spec=env_spec)
+        )
 
     if requested == "vector":
         return build_vector()
@@ -653,5 +669,5 @@ def _resolve_driver(requested: str, cfg: ISSConfig, policy_cfg: PolicyConfig, nu
         return build_scan()
     if requested == "auto":
         # The capability check that lets a future non-JAX backend work unchanged.
-        return build_scan() if supports_fused_rollout(ISSDynamics(cfg)) else build_vector()
+        return build_scan() if supports_fused_rollout(env_spec.make_dynamics(cfg)) else build_vector()
     raise typer.BadParameter(f"unknown driver '{requested}'; use auto, scan or vector")

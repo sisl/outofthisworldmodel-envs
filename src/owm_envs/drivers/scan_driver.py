@@ -17,12 +17,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ..envs import ENV_REGISTRY, EnvSpec
+from ..envs.common.config import BaseTaskConfig
 from ..envs.common.goal import make_augment
 from ..envs.common.policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
-from ..envs.common.reward import iss_reward
+from ..envs.common.reward import docking_reward
 from ..envs.common.sensing import NOISE_STREAM, apply_sensor_noise
-from ..envs.iss.config import ISSConfig
-from ..envs.iss.dynamics import ISSDynamics
 from .types import TRANSITIONS_STREAM, RolloutSpec, TrajectoryBatch, pack_episodes
 
 _UNION_POLICY_IDX = 0
@@ -39,7 +39,13 @@ def supports_fused_rollout(backend: object) -> bool:
 
 
 class ScanDriver:
-    def __init__(self, cfg: ISSConfig, policy_cfg: PolicyConfig, num_envs: int = 8):
+    def __init__(
+        self,
+        cfg: BaseTaskConfig,
+        policy_cfg: PolicyConfig,
+        num_envs: int = 8,
+        env_spec: EnvSpec | None = None,
+    ):
         if int(num_envs) < 1:
             # A non-positive lane count would otherwise reach the horizon
             # calculation below (division by num_envs -> ZeroDivisionError)
@@ -48,7 +54,11 @@ class ScanDriver:
         self.cfg = cfg
         self.policy_cfg = policy_cfg
         self.num_envs = int(num_envs)
-        self.dynamics = ISSDynamics(cfg)
+        # The spec supplies everything env-specific the scan needs: the
+        # backend, the state layout the noise model writes through, and the
+        # view the task layer (policies, reward, goal error) reads.
+        self.env_spec = env_spec if env_spec is not None else ENV_REGISTRY["iss"]
+        self.dynamics = self.env_spec.make_dynamics(cfg)
         if not supports_fused_rollout(self.dynamics):
             raise TypeError(
                 "ScanDriver requires a JAX-traceable backend; use VectorEnvDriver instead."
@@ -118,6 +128,7 @@ class ScanDriver:
             records_policy_ids=records_policy_ids,
             records_dock_targets=True,
             records_true_state=True,
+            state_dim=self.env_spec.layout.state_dim,
         )
 
     def _generate_transitions(
@@ -178,6 +189,7 @@ class ScanDriver:
             records_policy_ids=records_policy_ids,
             records_dock_targets=True,
             records_true_state=True,
+            state_dim=self.env_spec.layout.state_dim,
         )
 
     def _build_runner(self, max_steps: int, horizon: int):
@@ -196,8 +208,14 @@ class ScanDriver:
         extras) is exposed separately because it is also called outside the
         scan.
         """
+        # `view` extracts the canonical 13D relative view the task layer reads
+        # out of the env's own state; `layout` names the slices sensor noise
+        # writes through. Both come from the spec, so an env with a wider
+        # state needs no change here.
+        view = self.env_spec.view
+        layout = self.env_spec.layout
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
-        augment = make_augment(self.cfg, self.policy_cfg)
+        augment = make_augment(self.cfg, self.policy_cfg, view=view)
         # The episode's assigned port, resolved from the same extras the
         # control law and the goal-error block read, so both dock success and
         # the reward are scored against the port the episode was actually
@@ -229,17 +247,17 @@ class ScanDriver:
             # noise is enabled -- `jax.random.split(key, 4)` never changes.
             if noise.enabled:
                 noise_key, meas_key = jax.random.split(noise_key)
-                measured = apply_sensor_noise(state, meas_key, noise)
+                measured = apply_sensor_noise(state, meas_key, noise, layout=layout)
             else:
                 measured = state
 
             key, act_key, reset_key, extras_key = jax.random.split(key, 4)
 
             policy_input = measured if observe_measurement else state
-            action = jnp.clip(policy_fn(policy_input, act_key, extras), ctrl_low, ctrl_high)
+            action = jnp.clip(policy_fn(view(policy_input), act_key, extras), ctrl_low, ctrl_high)
             dock_pose = select_dock_target(extras)
             next_state, events = dynamics.step(state, action, dock_pose)
-            reward = iss_reward(next_state, action, events, cfg, dock_pose[0:3])
+            reward = docking_reward(view(next_state), action, events, cfg, dock_pose[0:3])
 
             # `measured_next` is its own draw (`next_meas_key`) because the
             # terminal observation on the `done` iteration is `next_state`,
@@ -250,7 +268,9 @@ class ScanDriver:
             # deterministic either way.
             if noise.enabled:
                 noise_key, next_meas_key = jax.random.split(noise_key)
-                measured_next = apply_sensor_noise(next_state, next_meas_key, noise)
+                measured_next = apply_sensor_noise(
+                    next_state, next_meas_key, noise, layout=layout
+                )
             else:
                 measured_next = next_state
 

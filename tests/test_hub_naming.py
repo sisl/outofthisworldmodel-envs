@@ -241,7 +241,7 @@ def test_the_card_gives_a_regeneration_command(tmp_path):
     assert "owm-envs generate" in card
     # The as-run configs ride along in the repo, so the command names them
     # rather than guessing which committed variant produced the run.
-    assert "--config env_config.yaml" in card
+    assert "--env-config env_config.yaml" in card
     assert "--gen-config generation_config.yaml" in card
     assert "--render" not in card
 
