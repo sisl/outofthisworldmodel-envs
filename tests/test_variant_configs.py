@@ -4,8 +4,11 @@ The six configs/iss/env/*.toml files are the cross product of the sensor-noise
 presets and goal-error observation, and the two configs/iss/gen/*.yaml
 files are the shipped docking recipe resized. The three
 configs/iss-numerical/env/*_goal.toml files are the same noise presets with
-goal-error always on, and the two configs/iss-numerical/gen/*.yaml files
-are the same recipe retargeted at iss-numerical. All thirteen are written by
+goal-error always on, the three configs/iss-numerical/env/coop_*.toml files
+are that cooperative variant paired with a render asset that berths a
+visiting vehicle and the matching collision hull, and the two
+configs/iss-numerical/gen/*.yaml files are the same recipe retargeted at
+iss-numerical. All sixteen are written by
 scripts/write_iss_variant_configs.py and nothing regenerates them at run time, so
 an edit to iss_default.toml, iss_numerical_default.toml, to PRESETS, or to
 generation_default.yaml would otherwise leave them silently stale -- and a
@@ -107,6 +110,31 @@ def numerical_base() -> NumericalConfig:
 def test_each_numerical_variant_still_equals_what_the_writer_produces(noise_tag, numerical_base):
     committed = NumericalConfig.from_toml(NUMERICAL / "env" / f"{noise_tag}_goal.toml")
     assert committed == wvc.numerical_variant_config(numerical_base, noise_tag)
+
+
+@pytest.mark.parametrize("variant", list(wvc.OCCUPIED_PORT))
+def test_each_variant_asset_config_still_equals_what_the_writer_produces(
+    variant, numerical_base
+):
+    committed = NumericalConfig.from_toml(NUMERICAL / "env" / f"coop_{variant}.toml")
+    assert committed == wvc.numerical_variant_asset_config(numerical_base, variant)
+
+
+@pytest.mark.parametrize("variant", list(wvc.OCCUPIED_PORT))
+def test_the_variant_asset_configs_change_nothing_but_the_asset_and_hull(
+    variant, numerical_base
+):
+    # These three exist to fly the cooperative variant against a station that
+    # berths a visiting vehicle. Anything else drifting -- the noise preset,
+    # the dock gates, the reward weights -- would make a run against a variant
+    # asset incomparable with the cooperative dataset it is meant to extend.
+    committed = NumericalConfig.from_toml(NUMERICAL / "env" / f"coop_{variant}.toml")
+    cooperative = wvc.numerical_variant_config(numerical_base, "coop")
+    stripped = {"physics", "render"}
+    assert committed.model_dump(exclude=stripped) == cooperative.model_dump(exclude=stripped)
+    assert committed.physics.model_dump(
+        exclude={"collision_boxes_path"}
+    ) == cooperative.physics.model_dump(exclude={"collision_boxes_path"})
 
 
 @pytest.mark.parametrize(

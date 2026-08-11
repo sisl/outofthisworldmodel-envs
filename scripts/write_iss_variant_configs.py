@@ -7,7 +7,10 @@ identical across all six and a comparison between two published datasets
 isolates the axis their names differ on) and their two generation recipes,
 plus the three iss-numerical variants (the same noise presets with goal-error
 always on, derived from configs/iss-numerical/env/default.toml) and their two
-generation recipes.
+generation recipes, plus the three iss-numerical variant-asset configs (the
+cooperative variant flown against a render asset that berths a visiting
+vehicle, each pairing that asset with the collision hull carrying the same
+vehicle).
 
 The generation recipes are configs/iss/gen/default.yaml resized: the
 shipped held-out-port design (a union-policy train split over the five
@@ -16,8 +19,10 @@ untouched, only the env, the split sizes and the lane count change -- and,
 for the numerical recipes, the orbit policy's radius range.
 
 Rerun after changing iss_default.toml, iss_numerical_default.toml,
-generation_default.yaml, or PRESETS; tests/test_variant_configs.py fails when
-the committed files drift from what this writes.
+generation_default.yaml, PRESETS, or the variant hulls
+scripts/write_variant_collision_boxes.py writes;
+tests/test_variant_configs.py fails when the committed files drift from what
+this writes.
 
 Usage:
     uv run --extra datasets python scripts/write_iss_variant_configs.py
@@ -30,6 +35,12 @@ from owm_envs.envs.common.config import ObservationConfig
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss_numerical.config import NumericalConfig
+
+# The hull writer is a sibling script, not a package module: running either
+# script puts scripts/ on sys.path, and the tests that import this one add it
+# explicitly. Taking the hull names from there rather than restating them is
+# what keeps a variant config's asset and its collision geometry in step.
+from write_variant_collision_boxes import OCCUPIED_PORT, hull_filename
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 ISS = CONFIGS / "iss"
@@ -113,6 +124,26 @@ def numerical_variant_config(base: NumericalConfig, noise_tag: str) -> Numerical
     )
 
 
+def numerical_variant_asset_config(base: NumericalConfig, variant: str) -> NumericalConfig:
+    """The cooperative numerical variant flown against `variant`'s render asset.
+
+    The asset and the collision hull are derived from the same variant name in
+    one place, so a config cannot draw one visiting vehicle while colliding
+    against another -- the pairing is the whole point of these three configs,
+    since the shipped hull describes the bare station and a chaser flown
+    against it passes through the vehicle the renderer draws.
+    """
+    cooperative = numerical_variant_config(base, "coop")
+    return cooperative.model_copy(
+        update={
+            "physics": cooperative.physics.model_copy(
+                update={"collision_boxes_path": hull_filename(variant)}
+            ),
+            "render": {"iss_asset": f"ISS_{variant}.glb"},
+        }
+    )
+
+
 def numerical_generation_config(
     train_field: str, train_value: int, val_field: str, val_value: int
 ) -> GenerationConfig:
@@ -173,6 +204,11 @@ def main() -> None:
     for noise_tag in NUMERICAL_NOISE_TAGS:
         path = NUMERICAL / "env" / f"{noise_tag}_goal.toml"
         numerical_variant_config(numerical_base, noise_tag).to_toml(path)
+        print(f"wrote {path}")
+
+    for variant in OCCUPIED_PORT:
+        path = NUMERICAL / "env" / f"coop_{variant}.toml"
+        numerical_variant_asset_config(numerical_base, variant).to_toml(path)
         print(f"wrote {path}")
 
     for path, gen in (
