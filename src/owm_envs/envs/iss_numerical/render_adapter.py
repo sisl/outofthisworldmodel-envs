@@ -81,11 +81,11 @@ class _NumericalRenderAdapter:
         chief = state[2:8]
         chief_pos = chief[0:3]
         return (
-            sun_direction_world(chief, epoch),
-            illumination(chief_pos, epoch),
+            sun_direction_world(epoch, chief),
+            illumination(epoch, chief_pos),
             jnp.linalg.norm(chief_pos),
-            moon_vector_world(chief, epoch),
-            earth_rotation_world(chief, epoch),
+            moon_vector_world(epoch, chief),
+            earth_rotation_world(epoch, chief),
             relative_view(state),
         )
 

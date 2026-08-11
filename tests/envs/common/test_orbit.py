@@ -105,9 +105,9 @@ def test_public_surface_is_uniformly_astrojax_dtype():
     x = ref.chief_state_eci(0.0)
     assert x.dtype == dt
     assert ref.world_from_eci(x).dtype == dt
-    assert sun_direction_world(x, ref.epoch0).dtype == dt
-    assert moon_vector_world(x, ref.epoch0).dtype == dt
-    assert illumination(x[:3], ref.epoch0).dtype == dt
+    assert sun_direction_world(ref.epoch0, x).dtype == dt
+    assert moon_vector_world(ref.epoch0, x).dtype == dt
+    assert illumination(ref.epoch0, x[:3]).dtype == dt
 
 
 def test_illumination_extremes():
@@ -116,8 +116,8 @@ def test_illumination_extremes():
     s = sun_position(e)
     s_hat = np.asarray(s) / np.linalg.norm(np.asarray(s))
     r = 6_795_000.0
-    assert float(illumination(jnp.asarray(s_hat * r), e)) == 1.0  # sun side
-    assert float(illumination(jnp.asarray(-s_hat * r), e)) == 0.0  # umbra
+    assert float(illumination(e, jnp.asarray(s_hat * r))) == 1.0  # sun side
+    assert float(illumination(e, jnp.asarray(-s_hat * r))) == 0.0  # umbra
 
 
 def test_illumination_falls_smoothly_across_the_penumbra():
@@ -138,7 +138,7 @@ def test_illumination_falls_smoothly_across_the_penumbra():
 
     def at(theta: float) -> float:
         r = radius * (np.cos(theta) * s_hat + np.sin(theta) * across)
-        return float(illumination(jnp.asarray(r, dtype=jnp.float64), e))
+        return float(illumination(e, jnp.asarray(r, dtype=jnp.float64)))
 
     # Bisect onto the shadow entry edge, then sample 400 render steps through it.
     lo, hi = np.pi / 2.0, np.pi
@@ -163,7 +163,7 @@ def test_earth_rotation_world_puts_the_subpoint_under_the_chief():
     for offset_s in (0.0, 900.0, 43_200.0, 604_800.0):
         epoch = ref.epoch0 + offset_s
         state = ref.chief_state_eci(offset_s)
-        rotation = np.asarray(earth_rotation_world(state, epoch), dtype=np.float64)
+        rotation = np.asarray(earth_rotation_world(epoch, state), dtype=np.float64)
 
         np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=1e-6)
         assert np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6)
@@ -186,7 +186,7 @@ def test_earth_rotation_world_turns_the_ground_under_the_orbit():
 
     def subpoint(offset_s: float) -> np.ndarray:
         rotation = np.asarray(
-            earth_rotation_world(ref.chief_state_eci(offset_s), ref.epoch0 + offset_s),
+            earth_rotation_world(ref.epoch0 + offset_s, ref.chief_state_eci(offset_s)),
             dtype=np.float64,
         )
         # The ECEF point the scene draws at +z_world, back in ECEF axes.
@@ -200,9 +200,9 @@ def test_earth_rotation_world_turns_the_ground_under_the_orbit():
 def test_sun_and_moon_world_vectors():
     ref = ReferenceOrbit(OrbitConfig())
     x = ref.chief_state_eci(0.0)
-    s = np.asarray(sun_direction_world(x, ref.epoch0))
+    s = np.asarray(sun_direction_world(ref.epoch0, x))
     assert np.isclose(np.linalg.norm(s), 1.0)
-    m = np.asarray(moon_vector_world(x, ref.epoch0))
+    m = np.asarray(moon_vector_world(ref.epoch0, x))
     assert 3.4e8 < np.linalg.norm(m) < 4.2e8  # real lunar distance range
 
 
@@ -218,7 +218,7 @@ def test_moon_is_geocentric_but_sun_is_chief_relative():
     moon_eci = np.asarray(moon_position(ref.epoch0), dtype=np.float64)
     sun_eci = np.asarray(sun_position(ref.epoch0), dtype=np.float64)
 
-    moon = moon_vector_world(x, ref.epoch0)
+    moon = moon_vector_world(ref.epoch0, x)
     assert moon.dtype == astrojax_config.get_dtype()
 
     # Independent physical check that the origin is the Earth's centre and
@@ -241,7 +241,7 @@ def test_moon_is_geocentric_but_sun_is_chief_relative():
     # independently computed chief-relative direction, not merely against
     # "differs from geocentric by something small" -- a partial or wrong
     # translation would pass that.
-    s_chief = np.asarray(sun_direction_world(x, ref.epoch0), dtype=np.float64)
+    s_chief = np.asarray(sun_direction_world(ref.epoch0, x), dtype=np.float64)
     s_chief = s_chief / np.linalg.norm(s_chief)
     expected = rot @ ((sun_eci - r_chief) / np.linalg.norm(sun_eci - r_chief))
     expected = expected / np.linalg.norm(expected)

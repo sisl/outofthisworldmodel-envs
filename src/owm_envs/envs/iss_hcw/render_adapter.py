@@ -65,11 +65,11 @@ class _HCWRenderAdapter:
         chief = self._ref.chief_state_eci(t)
         chief_pos = chief[0:3]
         return (
-            sun_direction_world(chief, epoch),
-            illumination(chief_pos, epoch),
+            sun_direction_world(epoch, chief),
+            illumination(epoch, chief_pos),
             jnp.linalg.norm(chief_pos),
-            moon_vector_world(chief, epoch),
-            earth_rotation_world(chief, epoch),
+            moon_vector_world(epoch, chief),
+            earth_rotation_world(epoch, chief),
         )
 
     def __getstate__(self) -> dict[str, Any]:

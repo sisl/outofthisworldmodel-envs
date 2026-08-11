@@ -14,7 +14,7 @@ every rendered frame, for the sun direction, eclipse and moon vector. Its
 chief therefore does precess -- across a 360 s episode by 0.02 deg of RAAN,
 but at an epoch offset days into the window by tens of degrees, which is what
 puts its lighting on the plane the ISS would really be in. The module-level
-sun/moon/eclipse helpers take a chief ECI state and an `Epoch` directly, so
+sun/moon/eclipse helpers take an `Epoch` and a chief ECI state directly, so
 they compose with `ReferenceOrbit` without depending on its instance.
 
 Dtype policy: astrojax's own float dtype config (`astrojax.config`) defaults
@@ -230,7 +230,7 @@ def world_from_eci(chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     return jnp.asarray(RTN_FROM_WORLD.T, rtn_from_eci.dtype) @ rtn_from_eci
 
 
-def earth_rotation_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+def earth_rotation_world(epoch: Epoch, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     """R such that v_world = R @ v_ecef: where the rotating Earth's own axes
     point in world coordinates at `epoch`.
 
@@ -264,7 +264,7 @@ def earth_rotation_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndar
     return rotated.astype(astrojax_config.get_dtype())
 
 
-def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+def sun_direction_world(epoch: Epoch, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     """Unit vector from the chief toward the sun, expressed in world
     coordinates. This one IS translated to the chief -- it feeds a light
     direction at the chief, and the ~3.5e-5 rad parallax against the
@@ -279,7 +279,7 @@ def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarr
     return unit.astype(astrojax_config.get_dtype())
 
 
-def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+def moon_vector_world(epoch: Epoch, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     """Geocentric lunar position vector expressed in WORLD AXES (not
     translated to the chief): direction AND distance, so the true-scale moon
     renders with its real +/-7% apparent-size swing. The geocentric origin is
@@ -296,7 +296,7 @@ def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray
     return rotated.astype(astrojax_config.get_dtype())
 
 
-def illumination(chief_r_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+def illumination(epoch: Epoch, chief_r_eci: jnp.ndarray) -> jnp.ndarray:
     """Conical-shadow illumination fraction in [0, 1] at the chief: the
     fraction of the sun's disc still visible past the Earth's. Returns a
     scalar astrojax-dtype (f32 by default) array.
