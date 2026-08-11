@@ -32,6 +32,12 @@ per step and a rollout integrated to ~-3.6e8, leaving the collision penalty
 at 0.3% of the trajectory -- an agent could fly into the station and barely
 feel it.
 
+All three events on top of the shaped terms -- collision, dock success and
+domain escape -- are absorbing, and that is what sizes their weights: ending
+an episode also stops the shaped cost accruing, so each one is worth its own
+value plus the remainder of the horizon it does not pay. `RewardWeights`
+carries the measured returns they are set against.
+
 The rotational pair is gated on range to the port. Far out the task is to
 close the distance and pointing hardly matters; at the gate, attitude and body
 rate matter as much as position and velocity. See `RewardShapingConfig`.
@@ -152,4 +158,5 @@ def docking_reward(
         )
         + w.collision * events.collision.astype(jnp.float32)
         + w.dock_success * events.docked.astype(jnp.float32)
+        + w.escape * events.escaped.astype(jnp.float32)
     ).astype(jnp.float32)

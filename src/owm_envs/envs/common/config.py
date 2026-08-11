@@ -161,7 +161,7 @@ class DockConfig(ConfigModel):
 
 
 class RewardWeights(ConfigModel):
-    """Weights for the reward's four shaped error terms and two events.
+    """Weights for the reward's four shaped error terms and three events.
 
     The four shaped terms are negative so `docking_reward` is a plain weighted
     sum against non-negative errors, with no negation at the call site. Their
@@ -182,6 +182,42 @@ class RewardWeights(ConfigModel):
     hovering just outside the success gate scores the same ~0 as one that
     actually docks. It sits two orders below `collision`, so no approach risky
     enough to be worth a crash is ever worth taking.
+
+    `escape` is its mirror, and exists because leaving the domain is
+    ABSORBING: every env maps `events.escaped` onto terminated, so an
+    unpenalised exit does not merely score zero, it stops the episode paying
+    the shaped cost it would otherwise keep paying to the horizon. Fleeing
+    becomes a strategy rather than a failure. Measured over the 7200-step
+    horizon: parking just inside the dock gate returns -0.1, holding station
+    at 225 m returns -3,190, and a full-thrust radial run from 225 m out to
+    the 750 m bound returns only -1,892 because it terminates after ~1,800
+    steps. Unpenalised, running away beats loitering by ~1,300 -- which is not
+    a trade an agent that has already learned to approach would take, but is
+    the easiest behaviour to stumble into early, being one sustained thrust
+    against docking's four-way conjunction of tight gates.
+
+    At -10,000 that same run returns -11,892. The magnitude is what makes the
+    ordering hold rather than merely flip one case: it exceeds the shaped cost
+    of an entire horizon held at rest anywhere in the start shell -- -8,523 at
+    the worst attitude on the point of the 500 m shell diametrically opposite
+    the port, 524.6 m from it rather than 500 because the shell is centred on
+    the ISS while the reward is shaped toward a port ~24.6 m off that centre
+    -- so from any start the exit costs more than staying can ever save. The
+    margin there is 1.17x, not orders: a start shell reaching much past 500 m
+    would need this weight raised with it. It is also symmetric with
+    `dock_success`, leaving being exactly as bad as arriving is good.
+
+    It is not a bound on shaped cost. The full-authority worst rollout above
+    is 22x the weight, and station-keeping just inside the boundary costs
+    -12,378 over a horizon, past the escape return. Neither is reached by
+    drifting: one is a horizon spent at full thrust, and the other means
+    flying out to 750 m and stopping dead there rather than crossing -- an
+    aim, not an accident, since the escape test is a strict inequality and a
+    metre of overshoot ends the episode. The weight is sized against what an
+    episode can fall into, not against what one could be built to do. What it
+    holds against unconditionally is `collision`, which stays two orders below
+    it: even the whole escape return is ~84x smaller, so hitting the station
+    remains strictly the worst outcome an episode can have.
     """
 
     position: float = -0.5
@@ -190,6 +226,7 @@ class RewardWeights(ConfigModel):
     body_rate: float = -0.1
     collision: float = -1_000_000.0
     dock_success: float = 10_000.0
+    escape: float = -10_000.0
 
 
 class RewardShapingConfig(ConfigModel):

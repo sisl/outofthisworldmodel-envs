@@ -21,10 +21,18 @@ class Events(NamedTuple):
 
     `escaped` -- the chaser left the spherical domain of radius
     `cfg.max_range_m` -- is an absorbing outcome like `collision`, not a time
-    limit: consumers map it onto terminated, never truncated. It carries no
-    reward term of its own. The position penalty already scores being far
-    from the dock, and a separate escape bonus or penalty would be a second,
-    unweighted opinion on the same thing.
+    limit: consumers map it onto terminated, never truncated. Being absorbing
+    is exactly why it carries a reward term of its own, `RewardWeights.escape`.
+    The position penalty does already score being far from the dock, so it is
+    tempting to read a separate escape penalty as a second, unweighted opinion
+    on the same thing -- but that only accounts for the RATE at which distance
+    is charged, not for the fact that crossing the boundary STOPS the charging.
+    An episode that exits pays the position penalty for the steps it took to
+    get out and nothing for the rest of the horizon, so unpenalised it scores
+    ABOVE the same flight continued in bounds, and above anything else that
+    goes on paying comparable cost -- a chaser that cannot yet close on the
+    port does better to leave than to keep trying. The penalty prices the
+    horizon the exit skips; see `RewardWeights.escape` for its size.
     """
 
     collision: jnp.ndarray

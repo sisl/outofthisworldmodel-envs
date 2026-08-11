@@ -23,6 +23,7 @@ def test_reward_weights_penalties_are_negative_and_the_dock_bonus_is_not():
     assert w.position < 0 and w.velocity < 0
     assert w.attitude < 0 and w.body_rate < 0
     assert w.collision < 0
+    assert w.escape < 0
     assert w.dock_success > 0
 
 
