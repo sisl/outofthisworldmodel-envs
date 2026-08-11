@@ -290,6 +290,15 @@ def test_a_naked_reset_forgets_the_previous_override():
     np.testing.assert_array_equal(after["goal_pose"], fresh["goal_pose"])
 
 
-def test_vector_env_refuses_a_port_set_rather_than_ignoring_it():
-    with pytest.raises(ValueError, match="does not support per-episode dock ports"):
-        NumericalVectorEnv(2, NumericalConfig(dock=DockConfig(ports=("all",))))
+def test_vector_env_draws_ports_per_lane_and_takes_options():
+    venv = NumericalVectorEnv(8, NumericalConfig(dock=DockConfig(ports=("all",))))
+    _, info = venv.reset(seed=0)
+    assert len(set(info["dock_port"])) > 1  # a per-lane draw, not one shared
+    for lane, name in enumerate(info["dock_port"]):
+        np.testing.assert_allclose(info["goal_pose"][lane], _port_row(name), atol=1e-6)
+    _, info = venv.reset(seed=1, options={"dock_port": "zvezda_aft"})
+    assert set(info["dock_port"]) == {"zvezda_aft"}
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    _, info = venv.reset(seed=2, options={"dock_pose": pose})
+    np.testing.assert_array_equal(info["goal_pose"], np.tile(pose, (8, 1)))
+    assert "dock_port" not in info
