@@ -98,6 +98,21 @@ class VectorEnvDriver:
             raise ValueError(f"max_steps must be >= 1, got {spec.max_steps}")
 
         env = self.env_factory()
+        cfg = getattr(env, "cfg", None)
+        if cfg is not None and getattr(cfg.dock, "ports", ()):
+            # The vector adapters draw each lane's port themselves, but this
+            # driver's policies fly to targets drawn from their own table --
+            # two independent draws that would let an episode be flown to one
+            # port and gated against another. Refused until the driver reads
+            # the env's lane draws; the scan driver hands the policy's target
+            # to the dynamics itself, so it has no such split.
+            env.close()
+            raise ValueError(
+                "VectorEnvDriver cannot yet align the environment's per-lane "
+                "dock-port draws with the policy's own targets; generate "
+                "multi-port data with the scan driver, or clear dock.ports "
+                "from the env config."
+            )
         try:
             result = self._run(env, spec)
         except BaseException:

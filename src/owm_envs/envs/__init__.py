@@ -39,6 +39,18 @@ class EnvSpec:
     make_dynamics: Callable[[BaseTaskConfig], Any]
     make_vector_env: Callable[[int, BaseTaskConfig], Any]
     view: Callable[[jnp.ndarray], jnp.ndarray]
+    # Whether the video path can pose the renderer from this env's recorded
+    # true_state rows, which it reads as the iss layout's element order.
+    # Deliberately given no default: an env that gets this wrong renders
+    # silently wrong video rather than failing, so registering one has to be
+    # the moment somebody answers the question.
+    renderable: bool
+    # How this env's equations of motion are described in a published
+    # dataset's card, as the object of "under ...". Every env in the suite
+    # flies the same task against the same station, so this phrase and the
+    # state layout are the whole of what a card has to say differently about
+    # one env versus another.
+    card_summary: str = "rigid-body free-flyer dynamics"
 
 
 def _build_env_registry() -> dict[str, EnvSpec]:
@@ -46,6 +58,9 @@ def _build_env_registry() -> dict[str, EnvSpec]:
     from .iss.config import ISSConfig
     from .iss.dynamics import ISSDynamics
     from .iss.vector_env import ISSVectorEnv
+    from .iss_hcw.config import HCW_LAYOUT, HCWConfig
+    from .iss_hcw.dynamics import HCWDynamics
+    from .iss_hcw.vector_env import HCWVectorEnv
 
     return {
         "iss": EnvSpec(
@@ -56,6 +71,26 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=ISSDynamics,
             make_vector_env=lambda num_envs, cfg: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
             view=ISS_LAYOUT.slice_view,
+            renderable=True,
+        ),
+        "iss-hcw": EnvSpec(
+            name="iss-hcw",
+            gym_id="ISS-HCW-Docking-v0",
+            config_cls=HCWConfig,
+            layout=HCW_LAYOUT,
+            make_dynamics=HCWDynamics,
+            make_vector_env=lambda num_envs, cfg: HCWVectorEnv(num_envs=num_envs, cfg=cfg),
+            view=HCW_LAYOUT.slice_view,
+            # Until the RenderInputs seam lands, the video path would read
+            # this env's epoch prefix as a position.
+            renderable=False,
+            # No internal comma: the card reads "under {card_summary} and
+            # against the station's collision hull", which a comma clause
+            # turns into a garden path.
+            card_summary=(
+                "Clohessy-Wiltshire relative dynamics about a Keplerian chief "
+                "with gravity-gradient attitude torque"
+            ),
         ),
     }
 
@@ -78,4 +113,9 @@ def __getattr__(name: str) -> Any:
 register(
     id="ISS-Docking-v0",
     entry_point="owm_envs.envs.iss.env:ISSEnv",
+)
+
+register(
+    id="ISS-HCW-Docking-v0",
+    entry_point="owm_envs.envs.iss_hcw.env:HCWEnv",
 )

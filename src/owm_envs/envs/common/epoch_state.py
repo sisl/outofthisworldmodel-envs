@@ -50,7 +50,7 @@ def epoch_prefix(epoch: Epoch, dtype=jnp.float64) -> jnp.ndarray:
     )
 
 
-def advance_epoch_state(prefix: jnp.ndarray, dt: float) -> jnp.ndarray:
+def advance_epoch_state(prefix: jnp.ndarray, dt: float | jnp.ndarray) -> jnp.ndarray:
     jd = prefix[..., 0].astype(jnp.float64)
     sec = prefix[..., 1].astype(jnp.float64) + jnp.float64(dt)
     days, sec = jnp.floor_divide(sec, _SECONDS_PER_DAY), jnp.mod(sec, _SECONDS_PER_DAY)

@@ -258,6 +258,18 @@ class BaseTaskConfig(ConfigModel):
     # (the default) renders with `RenderConfig`'s own defaults.
     render: dict[str, Any] | None = None
 
+    def start_shell(self) -> tuple[float, float]:
+        """The start-radius range this env's reset actually disperses over.
+
+        An env whose reset draws from somewhere other than the physics block
+        overrides this -- see `HCWConfig`, which disperses from its orbit
+        config and never reads the physics field at all. Anything describing
+        or checking where episodes begin has to ask through here rather than
+        read `physics.start_radius_range_m` directly, or it reports the wrong
+        shell for those envs.
+        """
+        return self.physics.start_radius_range_m
+
 
 def dock_target(cfg: BaseTaskConfig) -> np.ndarray:
     """The (7,) [position, quaternion] row `DockConfig` names.

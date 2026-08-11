@@ -11,6 +11,21 @@ def test_registry_has_iss():
     assert spec.layout.state_dim == 13
 
 
+def test_registry_has_iss_hcw():
+    spec = ENV_REGISTRY["iss-hcw"]
+    assert spec.gym_id == "ISS-HCW-Docking-v0"
+    assert spec.layout.state_dim == 15
+    assert spec.make_dynamics(spec.config_cls()).state_dim == 15
+
+
+def test_only_the_envs_the_renderer_can_pose_are_renderable():
+    # The video path reads recorded true_state rows as iss-layout poses, so
+    # this flag is what the CLI's --render guard reads instead of comparing
+    # names. iss-hcw flips to True with the RenderInputs seam, not before.
+    assert ENV_REGISTRY["iss"].renderable is True
+    assert ENV_REGISTRY["iss-hcw"].renderable is False
+
+
 def test_registry_keys_match_their_spec_name():
     assert all(k == s.name for k, s in ENV_REGISTRY.items())
 

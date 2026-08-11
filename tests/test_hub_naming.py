@@ -18,16 +18,21 @@ import pytest
 
 from owm_envs.datasets.hub import (
     _dataset_card,
+    _run_env,
+    _segments,
+    _state_doc,
     dataset_name,
     hub_namespace,
     push_preview,
     push_run,
 )
 from owm_envs.datasets.stats import GenerationConfig
-from owm_envs.envs.common.config import ObservationConfig
+from owm_envs.envs import ENV_REGISTRY
+from owm_envs.envs.common.config import BaseTaskConfig, ObservationConfig
 from owm_envs.envs.common.policies import PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS, SensorNoiseConfig
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_hcw.config import HCWConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -75,8 +80,9 @@ COUNTS = {
 
 def _write_run(
     tmp_path: Path,
-    env_cfg: ISSConfig | None = None,
+    env_cfg: BaseTaskConfig | None = None,
     *,
+    env: str = "iss",
     features: dict | None = None,
     video: bool = False,
     finished: bool = True,
@@ -92,7 +98,7 @@ def _write_run(
     PolicyConfig().to_yaml(run / "policy_config.yaml")
     (run / "normalization_stats.json").write_text("{}")
     (run / "dataset_card.json").write_text(json.dumps({
-        "env": "iss",
+        "env": env,
         "fps": round(1.0 / env_cfg.dt),
         "dt": env_cfg.dt,
         "splits": {
@@ -125,28 +131,31 @@ def _write_run(
 
 
 def _card(run: Path) -> str:
-    env_cfg = ISSConfig.from_yaml(run / "env_config.yaml")
-    return _dataset_card(dataset_name(env_cfg), run, env_cfg)
+    env_spec, env_cfg = _run_env(run)
+    return _dataset_card(
+        dataset_name(env_cfg, env=env_spec.name), run, env_spec, env_cfg
+    )
 
 
 def test_names_cover_the_matrix():
-    assert dataset_name(ISSConfig()) == "owm-iss-nonoise-nogoal-dt50ms"
+    assert dataset_name(ISSConfig(), env="iss") == "owm-iss-nonoise-nogoal-dt50ms"
     assert dataset_name(
         ISSConfig(sensor_noise=PRESETS["cooperative"],
-                  observation=ObservationConfig(goal_error=True))
+                  observation=ObservationConfig(goal_error=True)),
+        env="iss",
     ) == "owm-iss-coop-goal-dt50ms"
     assert dataset_name(
-        ISSConfig(sensor_noise=PRESETS["noncooperative"])
+        ISSConfig(sensor_noise=PRESETS["noncooperative"]), env="iss"
     ) == "owm-iss-noncoop-nogoal-dt50ms"
 
 
 def test_custom_noise_is_named_custom():
     cfg = ISSConfig(sensor_noise=SensorNoiseConfig(enabled=True, sigma_pos_m=9.9))
-    assert dataset_name(cfg) == "owm-iss-custom-nogoal-dt50ms"
+    assert dataset_name(cfg, env="iss") == "owm-iss-custom-nogoal-dt50ms"
 
 
 def test_dt_tag_scales():
-    assert dataset_name(ISSConfig(dt=0.1)) == "owm-iss-nonoise-nogoal-dt100ms"
+    assert dataset_name(ISSConfig(dt=0.1), env="iss") == "owm-iss-nonoise-nogoal-dt100ms"
 
 
 def test_the_env_name_is_a_component_not_a_prefix():
@@ -155,13 +164,222 @@ def test_the_env_name_is_a_component_not_a_prefix():
 
 @pytest.mark.parametrize("config_name, expected", sorted(VARIANT_NAMES.items()))
 def test_each_committed_variant_names_its_published_dataset(config_name, expected):
-    assert dataset_name(ISSConfig.from_toml(CONFIGS / f"{config_name}.toml")) == expected
+    assert dataset_name(
+        ISSConfig.from_toml(CONFIGS / f"{config_name}.toml"), env="iss"
+    ) == expected
 
 
 def test_the_six_variants_get_six_distinct_names():
     # Two variants collapsing onto one name would publish one over the other.
-    names = {dataset_name(ISSConfig.from_toml(CONFIGS / f"{c}.toml")) for c in VARIANT_NAMES}
+    names = {
+        dataset_name(ISSConfig.from_toml(CONFIGS / f"{c}.toml"), env="iss")
+        for c in VARIANT_NAMES
+    }
     assert len(names) == len(VARIANT_NAMES)
+
+
+def test_a_run_is_named_and_parsed_through_the_env_that_generated_it(tmp_path):
+    # Every step of the publish path used to be hardcoded to iss, which an
+    # iss-hcw run cannot survive: configs forbid extra keys, so parsing its
+    # as-run config as an ISSConfig fails outright on the reference orbit it
+    # carries -- and had it parsed, the repo would have been named after the
+    # wrong environment.
+    run = _write_run(
+        tmp_path, HCWConfig(sensor_noise=PRESETS["cooperative"]), env="iss-hcw"
+    )
+
+    env_spec, env_cfg = _run_env(run)
+    assert env_spec.name == "iss-hcw"
+    assert isinstance(env_cfg, HCWConfig)
+    assert push_preview(run)[0] == "owm-iss-hcw-coop-nogoal-dt50ms"
+    # The card's own load example names the split the writer actually wrote.
+    assert 'LeRobotDataset("iss-hcw/train"' in _card(run)
+
+
+@pytest.mark.parametrize("recorded_env", [None, "iss-numerical"])
+def test_a_run_the_registry_cannot_place_publishes_as_iss(tmp_path, recorded_env):
+    # A run directory written before the card recorded an env, or one naming
+    # an env this build does not register: as far as anything here can tell
+    # both are iss runs, and reading them that way beats refusing to publish
+    # them at all.
+    run = _write_run(tmp_path)
+    card = json.loads((run / "dataset_card.json").read_text())
+    if recorded_env is None:
+        del card["env"]
+    else:
+        card["env"] = recorded_env
+    (run / "dataset_card.json").write_text(json.dumps(card))
+
+    assert push_preview(run)[0] == "owm-iss-noncoop-goal-dt50ms"
+
+
+def test_a_card_naming_an_unknown_env_says_so_and_still_loads_its_own_split(tmp_path):
+    # The two names deliberately diverge: the repo is named after the iss
+    # fallback, because that is the config class that actually parsed the
+    # as-run config, while the load example names the split directory really
+    # on disk, which the writer built from the card's own env. What must not
+    # happen is a reader taking the iss state layout below for this dataset's.
+    run = _write_run(tmp_path, env="iss-numerical")
+
+    card = _card(run)
+    assert "generated by the `iss-numerical` environment" in card
+    assert "does not register" in card
+    assert 'LeRobotDataset("iss-numerical/train"' in card
+    assert "# owm-iss-noncoop-goal-dt50ms" in card
+
+
+def test_a_card_for_a_known_env_carries_no_unknown_env_warning(tmp_path):
+    assert "does not register" not in _card(_write_run(tmp_path))
+
+
+def test_a_run_with_no_card_at_all_is_refused_by_preview_and_push(tmp_path, api):
+    # push_preview tolerating a missing card while push_run crashed on it was
+    # the worst of both: the preview named a repo and printed the sizes it was
+    # about to mirror over, and only then did the push die. A run this old
+    # predates metadata the card is the only source of, so both refuse it, with
+    # the same error naming the file.
+    run = _write_run(tmp_path)
+    (run / "dataset_card.json").unlink()
+
+    with pytest.raises(FileNotFoundError, match="dataset_card.json missing"):
+        push_preview(run)
+    with pytest.raises(FileNotFoundError, match="hand-write dataset_card.json"):
+        push_run(run)
+    assert api.calls == []
+
+
+# An iss-hcw run's own schema: a 15-wide state behind a 2-element epoch
+# prefix, and no goal-error block, which is what the shipped config asks for.
+HCW_FEATURES = {
+    **FEATURES,
+    "observation_vector": {"dtype": "float32", "shape": [15], "names": None},
+    "state_vector": {"dtype": "float32", "shape": [15], "names": None},
+}
+
+
+def _hcw_run(tmp_path: Path) -> Path:
+    """A synthetic run under the committed iss-hcw config, which is what an
+    iss-hcw dataset would actually be generated from."""
+    return _write_run(
+        tmp_path,
+        HCWConfig.from_toml(CONFIGS / "iss_hcw_default.toml"),
+        env="iss-hcw",
+        features=HCW_FEATURES,
+    )
+
+
+def test_the_card_describes_the_state_the_env_actually_carries(tmp_path):
+    # iss-hcw stores 15 elements, the first two an absolute epoch. A card
+    # describing the iss 13 would omit them entirely and then call the whole
+    # row station-relative, which the epoch is not.
+    card = _card(_hcw_run(tmp_path))
+    assert "epoch as [Julian day, seconds of day] (2;" in card
+    assert (
+        "body rate (3, rad/s) -- position, velocity, attitude and body rate "
+        "station-relative"
+    ) in card
+    assert "rad/s), all station-relative" not in card
+
+
+def test_the_card_gives_the_epochs_timescale_and_recorded_grain(tmp_path):
+    # The simulator carries the epoch at float64 and the dataset records it at
+    # float32, so what a consumer can resolve off these two columns is not what
+    # the run integrated. Naming the timescale matters for the same reason: the
+    # columns are only useful against an ephemeris.
+    card = _card(_hcw_run(tmp_path))
+    assert "UTC, the day number exact" in card
+    assert "coarsens through the day from well under 0.5 ms to 7.8 ms" in card
+    # Coarse, but not so coarse that two frames of a 20 Hz run collide. The
+    # claim is about what the STEP spans, not about the gap between two
+    # rounded timestamps, which is a whole number of ulps either side of it;
+    # and 6.4 is the span at the coarsest ulp of the day, so it is a floor.
+    assert "a 50 ms step spans at least 6.4 of those ulps" in card
+
+
+def test_the_card_gives_the_noise_identity_at_this_envs_offsets(tmp_path):
+    # The obs-minus-truth identity holds over the relative view, which sits
+    # behind the epoch prefix here. Quoting the iss offsets would print an
+    # expression whose two operands are not even the same width.
+    card = _card(_hcw_run(tmp_path))
+    assert "`observation_vector[2:8] - state_vector[2:8]`" in card
+    assert "`observation_vector[12:15] - state_vector[12:15]`" in card
+    # Never one range spanning the quaternion columns, at these offsets or
+    # at the iss ones.
+    assert "observation_vector[2:15]" not in card
+    assert "observation_vector[:13]" not in card
+    # And it has to say why the epoch columns are exempt rather than leave a
+    # reader to wonder whether the sensor model touched them -- the epoch
+    # phrase is the one named as untouched, so the tail of that phrase is what
+    # ties the two together.
+    assert "epoch as [Julian day, seconds of day] (2;" in card
+    assert "consecutive frames stay distinct) -- is identical in the two channels" in card
+
+
+@pytest.mark.parametrize("write", [_write_run, _hcw_run], ids=["iss", "iss-hcw"])
+def test_the_card_confines_the_noise_identity_to_the_additive_channels(tmp_path, write):
+    # Subtracting the four quaternion columns recovers no sigma: attitude
+    # error is a rotation COMPOSED onto the true attitude, and then
+    # sign-resolved onto its hemisphere. A card promising a difference there
+    # would send anyone measuring the model back off the data to a number that
+    # means nothing.
+    card = _card(write(tmp_path))
+    assert "Over the ADDITIVE channels -- position and velocity, and body rate --" in card
+    assert "`quat_multiply(quat_conjugate(state_quat), observation_quat)`" in card
+
+
+def test_the_card_says_what_the_policy_actually_consumed(tmp_path):
+    # The observation row is what was RECORDED. What the scripted policy read
+    # is the canonical view sliced out of it -- never the epoch columns -- and
+    # under observe=state it is not this row at all.
+    card = _card(_hcw_run(tmp_path))
+    assert "the MEASURED state the policy acted on" not in card
+    assert "epoch columns were never policy input" in card
+    assert "`--observe state` flew the policy on the true state" in card
+
+
+def test_the_card_states_the_starts_and_dynamics_of_its_own_env(tmp_path):
+    card = _card(_hcw_run(tmp_path))
+    assert "from starts between 80 m and 120 m out to a station docking port," in card
+    assert "Clohessy-Wiltshire relative dynamics" in card
+    assert "rigid-body free-flyer" not in card
+
+
+def test_the_iss_card_still_reads_as_it_did(tmp_path):
+    # The three sentences above are generated now rather than written out, and
+    # the published iss cards are regenerated from this code -- so the iss
+    # wording of each has to come back unchanged. Pinned exactly, newlines
+    # included: the intro's line break moved when the two values became
+    # interpolations (they cannot both wrap where the fixed text did), and
+    # this is what says where it sits now rather than leaving the next move
+    # to go unnoticed.
+    card = _card(_write_run(tmp_path))
+    assert (
+        "position (3, m), velocity (3, m/s), attitude quaternion (4, w-first, body to "
+        "world) and body rate (3, rad/s), all station-relative"
+    ) in card
+    assert "`observation_vector[0:6] - state_vector[0:6]`" in card
+    assert "`observation_vector[10:13] - state_vector[10:13]`" in card
+    assert (
+        "manoeuvring from starts between 100 m and 500 m out to a station docking port,\n"
+        "under rigid-body free-flyer dynamics and against the station's 318-box "
+        "collision hull."
+    ) in card
+
+
+@pytest.mark.parametrize("env_name", sorted(ENV_REGISTRY))
+def test_every_registered_env_can_document_its_own_state(env_name):
+    # The state description is generated from the layout, so an env whose
+    # layout this cannot describe -- a segment with no prose of its own, or
+    # columns no segment covers -- either publishes a card silently missing
+    # part of its state or dies at push time, with a whole dataset already
+    # generated behind it. Registering the env is what should surface that.
+    layout = ENV_REGISTRY[env_name].layout
+    doc = _state_doc(layout)
+    documented = sum(sl.stop - sl.start for _, sl in _segments(layout))
+    assert documented == layout.state_dim, (
+        f"{env_name}: the card documents {documented} of {layout.state_dim} "
+        f"state columns -- {doc}"
+    )
 
 
 def test_the_card_gives_the_viewer_one_config_per_split(tmp_path):
@@ -174,7 +392,7 @@ def test_the_card_documents_the_truth_channel(tmp_path):
     card = _card(_write_run(tmp_path))
     assert "`state_vector`" in card
     # The obs-minus-truth identity is the whole reason the column is written.
-    assert "observation_vector[:13] - state_vector" in card
+    assert "observation_vector[0:6] - state_vector[0:6]" in card
 
 
 def test_the_card_omits_the_truth_channel_when_the_run_has_none(tmp_path):

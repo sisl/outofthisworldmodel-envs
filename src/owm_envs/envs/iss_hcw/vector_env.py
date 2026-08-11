@@ -1,8 +1,10 @@
-"""Gymnasium vector-environment adapter for the ISS docking task.
+"""Gymnasium vector-environment adapter for the iss-hcw docking task.
 
 Subclasses gymnasium.vector.VectorEnv directly rather than wrapping N single
 envs in SyncVectorEnv -- the physics is natively batched via jax.vmap, and
-SyncVectorEnv would discard that.
+SyncVectorEnv would discard that. Structurally mirrors
+`envs/iss/vector_env.py`; see `env.py`'s module docstring for how the 15D
+float64 `HCWDynamics` state changes the f32 boundary versus `iss`.
 
 Autoreset is NEXT_STEP: when a sub-env terminates or truncates, the step after
 that returns its reset observation with reward 0 and both flags false.
@@ -26,26 +28,26 @@ from ..common.goal import dock_goal_error
 from ..common.port_goals import parse_goal_options
 from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
-from .config import ISSConfig
-from .dynamics import ISSDynamics
+from .config import HCW_LAYOUT, HCWConfig
+from .dynamics import HCWDynamics
 from .env import _observation_space
 
 
-class ISSVectorEnv(VectorEnv):
+class HCWVectorEnv(VectorEnv):
     # render_fps is overridden per instance in __init__; the class-level value
-    # is the rate implied by ISSConfig's own default dt.
+    # is the rate implied by HCWConfig's own default dt.
     metadata = {
         "render_modes": [],
         "render_fps": 20,
         "autoreset_mode": AutoresetMode.NEXT_STEP,
     }
 
-    def __init__(self, num_envs: int = 1, cfg: ISSConfig | None = None):
-        self.cfg = cfg or ISSConfig()
+    def __init__(self, num_envs: int = 1, cfg: HCWConfig | None = None):
+        self.cfg = cfg or HCWConfig()
         # Per-instance because it depends on cfg.dt, which the class does not know.
         self.metadata = {**self.metadata, "render_fps": render_fps(self.cfg)}
         self.num_envs = int(num_envs)
-        self.dynamics = ISSDynamics(self.cfg)
+        self.dynamics = HCWDynamics(self.cfg)
 
         self.single_observation_space = _observation_space(self.cfg)
         self.single_action_space = action_space(self.cfg)
@@ -64,17 +66,27 @@ class ISSVectorEnv(VectorEnv):
         self._batched_step = jax.jit(jax.vmap(self.dynamics.step))
         self._batched_reset = jax.jit(jax.vmap(self.dynamics.reset))
         self._batched_reward = jax.jit(
-            jax.vmap(lambda s, a, e: docking_reward(s, a, e, self.cfg))
+            jax.vmap(
+                lambda s, a, e: docking_reward(HCW_LAYOUT.slice_view(s), a, e, self.cfg)
+            )
         )
         self._batched_noise = (
             jax.jit(
-                jax.vmap(lambda s, k: apply_sensor_noise(s, k, self.cfg.sensor_noise))
+                jax.vmap(
+                    lambda s, k: apply_sensor_noise(s, k, self.cfg.sensor_noise, layout=HCW_LAYOUT)
+                )
             )
             if self.cfg.sensor_noise.enabled
             else None
         )
         self._batched_dock_goal_error = (
-            jax.jit(jax.vmap(lambda measured: dock_goal_error(measured, jnp.asarray(dock_target(self.cfg)))))
+            jax.jit(
+                jax.vmap(
+                    lambda measured: dock_goal_error(
+                        HCW_LAYOUT.slice_view(measured), jnp.asarray(dock_target(self.cfg))
+                    )
+                )
+            )
             if self.cfg.observation.goal_error
             else None
         )
@@ -94,11 +106,11 @@ class ISSVectorEnv(VectorEnv):
         self._lane_ports: np.ndarray | None = None
         self._lane_targets: jnp.ndarray | None = None
         self._batched_reward_to = jax.jit(
-            jax.vmap(lambda s, a, e, p: docking_reward(s, a, e, self.cfg, p))
+            jax.vmap(lambda s, a, e, p: docking_reward(HCW_LAYOUT.slice_view(s), a, e, self.cfg, p))
         )
         self._batched_dock_goal_error_to = (
             jax.jit(
-                jax.vmap(lambda measured, target: dock_goal_error(measured, target))
+                jax.vmap(lambda measured, target: dock_goal_error(HCW_LAYOUT.slice_view(measured), target))
             )
             if self.cfg.observation.goal_error
             else None

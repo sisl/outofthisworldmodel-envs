@@ -357,9 +357,17 @@ def test_unknown_port_names_are_rejected_at_load():
         DockConfig(ports=("poisk_zenith", "poisk_zenith"))
 
 
-def test_vector_env_refuses_a_port_set_rather_than_ignoring_it():
-    with pytest.raises(ValueError, match="does not support per-episode dock ports"):
-        ISSVectorEnv(2, ISSConfig(dock=DockConfig(ports=("all",))))
+def test_vector_env_draws_ports_per_lane_rather_than_refusing():
+    # The vector adapter honours the same port set the single env does, one
+    # independent draw per lane; tests/envs/iss/test_vector_env.py covers the
+    # redraw-at-autoreset and options behaviour in depth.
+    venv = ISSVectorEnv(4, ISSConfig(dock=DockConfig(ports=("all",))))
+    _, info = venv.reset(seed=0)
+    assert info["dock_port_index"].shape == (4,)
+    for lane, name in enumerate(info["dock_port"]):
+        np.testing.assert_allclose(
+            info["goal_pose"][lane], port_target(name), atol=1e-6
+        )
 
 
 def test_reset_options_target_a_single_named_port():

@@ -56,3 +56,21 @@ def test_non_contiguous_slices_are_rejected():
             pos=slice(0, 3), vel=slice(3, 6), quat=slice(8, 12), omega=slice(12, 15),
             labels=ISS_LAYOUT.labels + ("pad_a", "pad_b"),
         )
+
+
+def test_wrong_pos_width_is_rejected():
+    with pytest.raises(ValueError, match="pos must have width 3"):
+        StateLayout(
+            state_dim=12,
+            pos=slice(0, 2), vel=slice(2, 5), quat=slice(5, 9), omega=slice(9, 12),
+            labels=ISS_LAYOUT.labels[:-1],
+        )
+
+
+def test_wrong_quat_width_is_rejected():
+    with pytest.raises(ValueError, match="quat must have width 4"):
+        StateLayout(
+            state_dim=12,
+            pos=slice(0, 3), vel=slice(3, 6), quat=slice(6, 9), omega=slice(9, 12),
+            labels=ISS_LAYOUT.labels[:-1],
+        )

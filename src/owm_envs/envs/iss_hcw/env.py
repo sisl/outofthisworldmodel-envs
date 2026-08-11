@@ -1,8 +1,14 @@
-"""Gymnasium single-environment adapter for the ISS docking task.
+"""Gymnasium single-environment adapter for the iss-hcw docking task.
 
-Thin wrapper over ISSDynamics at a numpy boundary. Stable-Baselines3 consumes
-single envs (it builds its own DummyVecEnv/SubprocVecEnv), so this is the entry
-point for SB3 interop -- gymnasium.vector.VectorEnv is not what SB3 accepts.
+Structurally mirrors `envs/iss/env.py`; the differences all trace back to
+`HCWDynamics` carrying a 15D state (an [jd, sec] epoch prefix ahead of the
+canonical 13D view) at float64, where `ISSDynamics` carries the 13D view
+alone at float32. `HCWDynamics.step`'s internal accumulation depends on that
+epoch prefix never being rounded to f32 -- `envs/iss_hcw/dynamics.py`
+documents a measured 290 s/orbit drift if it is -- so `self._state` is kept
+at whatever dtype `HCWDynamics` hands back (float64) for its entire life;
+only `_obs()` and `_true_state()` narrow to float32, and only on freshly
+computed copies, never by writing back into `self._state`.
 """
 
 from __future__ import annotations
@@ -20,17 +26,17 @@ from ..common.goal import GOAL_ERROR_DIM
 from ..common.port_goals import PortGoalMixin
 from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
-from .config import ISSConfig
-from .dynamics import ISSDynamics
+from .config import HCW_LAYOUT, HCWConfig
+from .dynamics import HCWDynamics
 
 
-def _observation_space(cfg: ISSConfig) -> spaces.Box:
+def _observation_space(cfg: HCWConfig) -> spaces.Box:
     inf = np.inf
     low = np.array(
-        [-inf] * 3 + [-inf] * 3 + [-1.0] * 4 + [-inf] * 3, dtype=np.float32
+        [0.0, 0.0] + [-inf] * 3 + [-inf] * 3 + [-1.0] * 4 + [-inf] * 3, dtype=np.float32
     )
     high = np.array(
-        [inf] * 3 + [inf] * 3 + [1.0] * 4 + [inf] * 3, dtype=np.float32
+        [inf, 86400.0] + [inf] * 3 + [inf] * 3 + [1.0] * 4 + [inf] * 3, dtype=np.float32
     )
     if cfg.observation.goal_error:
         low = np.concatenate([low, [-inf] * GOAL_ERROR_DIM]).astype(np.float32)
@@ -38,22 +44,22 @@ def _observation_space(cfg: ISSConfig) -> spaces.Box:
     return spaces.Box(low=low, high=high, dtype=np.float32)
 
 
-class ISSEnv(PortGoalMixin, gym.Env):
+class HCWEnv(PortGoalMixin, gym.Env):
     # render_fps is overridden per instance in __init__; the class-level value
-    # is the rate implied by ISSConfig's own default dt.
+    # is the rate implied by HCWConfig's own default dt.
     metadata = {"render_modes": ["rgb_array"], "render_fps": 20}
 
-    def __init__(self, cfg: ISSConfig | None = None, render_mode: str | None = None):
+    def __init__(self, cfg: HCWConfig | None = None, render_mode: str | None = None):
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
             raise ValueError(
                 f"unknown render_mode {render_mode!r}; expected one of "
                 f"{self.metadata['render_modes']} or None"
             )
 
-        self.cfg = cfg or ISSConfig()
+        self.cfg = cfg or HCWConfig()
         # Per-instance because it depends on cfg.dt, which the class does not know.
         self.metadata = {**self.metadata, "render_fps": render_fps(self.cfg)}
-        self.dynamics = ISSDynamics(self.cfg)
+        self.dynamics = HCWDynamics(self.cfg)
         self.observation_space = _observation_space(self.cfg)
         self.action_space = action_space(self.cfg)
         self.render_mode = render_mode
@@ -72,27 +78,18 @@ class ISSEnv(PortGoalMixin, gym.Env):
         # episode costs no recompilation.
         self._jit_step = jax.jit(self.dynamics.step)
         self._jit_reset = jax.jit(self.dynamics.reset)
-        # This env's state IS the 13-wide task view, so the port machinery's
-        # view hook is the identity.
-        self._init_port_goals(view=lambda state: state)
+        # This env's state is [epoch | task view]; the port machinery reads
+        # the view through the layout.
+        self._init_port_goals(view=HCW_LAYOUT.slice_view)
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[np.ndarray, dict[str, Any]]:
-        """Start an episode, optionally told where to fly via `options`.
+        """Start an episode; `options` may target a port or pose.
 
-        `options` may carry exactly one of:
-          - "dock_port": a configured port name, or a sequence of them. One
-            name targets that port; several draw uniformly among them. Names
-            must come from this environment's own `cfg.dock.ports`.
-          - "dock_pose": an explicit goal, 7 values [position xyz, quaternion
-            wxyz] in the world frame, taken as given -- no port table is
-            consulted. `info` then reports the pose under "goal_pose" but no
-            "dock_port": the episode was aimed at a pose, not a named port.
-
-        A naked reset keeps the existing behaviour: draw uniformly over
-        `cfg.dock.ports`, or fly to `cfg.dock`'s single pose when none are
-        configured.
+        See `PortGoalMixin` for the options contract -- the same one `ISSEnv`
+        honours: "dock_port" names one or several of this env's configured
+        ports, "dock_pose" is an explicit (7,) [position, quaternion] goal.
         """
         super().reset(seed=seed)
         # Gymnasium seeds self.np_random; derive a JAX key from it so that a given
@@ -133,7 +130,7 @@ class ISSEnv(PortGoalMixin, gym.Env):
         next_state, events = self._jit_step(self._state, action_j, self._dock_pose)
         reward = float(
             docking_reward(
-                next_state, action_j, events, self.cfg,
+                HCW_LAYOUT.slice_view(next_state), action_j, events, self.cfg,
                 None if self._dock_pose is None else self._dock_pose[0:3],
             )
         )
@@ -165,22 +162,23 @@ class ISSEnv(PortGoalMixin, gym.Env):
 
     def _obs(self) -> np.ndarray:
         if not self.cfg.sensor_noise.enabled:
-            measured = jnp.asarray(self._state, dtype=jnp.float32)
+            measured = self._state
         else:
             # Noise draws come from `_noise_key`, a fold_in side stream set up
             # in reset() -- split here, never touching np_random or the
-            # dynamics key.
+            # dynamics key. `apply_sensor_noise` leaves the epoch prefix
+            # (HCW_LAYOUT.epoch) untouched: a vehicle knows its own clock.
             self._noise_key, subkey = jax.random.split(self._noise_key)
             measured = apply_sensor_noise(
-                jnp.asarray(self._state), subkey, self.cfg.sensor_noise
+                self._state, subkey, self.cfg.sensor_noise, layout=HCW_LAYOUT
             )
         if self._jit_dock_goal_error is not None:
             # Computed from `measured`, not `self._state`: the goal block
             # must reflect the same (possibly noisy) observation the caller
-            # receives, never a second noise draw or privileged truth. It
-            # measures against the episode's own port -- the same row the
-            # dynamics score `docked` against and the reward is shaped toward.
+            # receives, never a second noise draw or privileged truth.
             measured = jnp.concatenate([measured, self._jit_dock_goal_error(measured)])
+        # The float64 state is cast down on this copy only -- see the module
+        # docstring on why `self._state` itself never narrows.
         return np.asarray(measured, dtype=np.float32)
 
     def _true_state(self) -> np.ndarray:
@@ -194,8 +192,12 @@ class ISSEnv(PortGoalMixin, gym.Env):
 
         if self._renderer is None:
             self._renderer = self._make_renderer()
+        # The renderer's lighting is posed from its own static config, not
+        # from the epoch and chief geometry carried in this env's state --
+        # that seam (RenderInputs) lands in PR 5.
         return self._renderer.render(
-            np.asarray(self._state, dtype=np.float32), view=self.cfg.render_view
+            np.asarray(HCW_LAYOUT.slice_view(self._state), dtype=np.float32),
+            view=self.cfg.render_view,
         )
 
     def _make_renderer(self) -> Any:

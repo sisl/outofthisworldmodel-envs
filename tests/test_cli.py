@@ -4,6 +4,7 @@ import re
 
 import pytest
 import typer
+import yaml
 from typer.testing import CliRunner
 
 from owm_envs.cli import app, _parse_split_flags
@@ -12,6 +13,7 @@ from owm_envs.envs.common.docking_ports import PORT_NAMES
 from owm_envs.envs.common.policies import DockParams, PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
+from owm_envs.envs.iss_hcw.config import HCWConfig
 
 runner = CliRunner()
 
@@ -47,6 +49,27 @@ def test_env_flag_accepts_iss(tmp_path):
     assert result.exit_code == 0, result.output
     recorded = GenerationConfig.from_yaml(out / "generation_config.yaml")
     assert recorded.env == "iss"
+
+
+def test_env_flag_accepts_iss_hcw(tmp_path):
+    # The whole pipeline under a second environment, not just the registry
+    # lookup: a 15-wide float64 state through the driver, the packer's state
+    # widths, the statistics and the as-run record. `--steps 20` keeps the
+    # f64 scan cheap -- what is under test is the wiring, not the horizon.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-hcw",
+        "--split", "train:2:0", "--steps", "20", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert GenerationConfig.from_yaml(out / "generation_config.yaml").env == "iss-hcw"
+    # The as-run config has to be the HCW one: an ISSConfig would round-trip
+    # through this file quite happily, silently dropping the reference orbit
+    # the trajectories were actually flown against.
+    assert "orbit" in yaml.safe_load((out / "env_config.yaml").read_text())
+    recorded = HCWConfig.from_yaml(out / "env_config.yaml")
+    assert recorded.orbit.epoch == HCWConfig().orbit.epoch
+    assert json.loads((out / "dataset_card.json").read_text())["env"] == "iss-hcw"
 
 
 def test_config_flag_is_gone(tmp_path):
@@ -402,6 +425,75 @@ def test_failed_render_leaves_no_completed_run_marker(tmp_path, monkeypatch):
     for name in ("normalization_stats.json", "dataset_card.json", "summary.json",
                  "env_config.yaml", "policy_config.yaml"):
         assert not (out / name).exists(), f"{name} survived a failed render"
+
+
+@pytest.mark.parametrize("source", ["flag", "recipe"])
+def test_render_is_refused_for_a_non_iss_environment(tmp_path, monkeypatch, source):
+    """Rendering reads the recorded true_state rows as iss-layout poses, so an
+    iss-hcw row -- whose first two elements are an epoch, not a position --
+    would come out as silently wrong video rather than an error. Refused for
+    both ways the env can be named, and before the GPU is probed: selecting an
+    adapter pins one for the whole process, which is real cost to spend on an
+    invocation that was never going to run."""
+    probed = []
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: probed.append(index))
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: probed.append(index))
+
+    if source == "flag":
+        args = ["--env", "iss-hcw", "--steps", "4", "--split", "train:1:0"]
+    else:
+        recipe = tmp_path / "gen.yaml"
+        GenerationConfig(
+            env="iss-hcw",
+            splits={"train": SplitSpec(num_episodes=1, max_steps=4, seed=0)},
+            num_envs=1,
+        ).to_yaml(recipe)
+        args = ["--gen-config", str(recipe)]
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, ["generate", "--out", str(out), *args, "--render"])
+    assert result.exit_code != 0
+    assert "--render" in result.output and "iss-hcw" in result.output
+    assert probed == [], "probed the GPU for an invocation that was a usage error"
+    assert not out.exists(), "the check must precede the rollout"
+
+
+def test_a_usage_error_below_the_render_guard_still_precedes_the_gpu_probe(
+    tmp_path, monkeypatch
+):
+    """Every argument the run reads -- the env config, the noise preset, the
+    goal-error override, the policy -- is checked before an adapter is probed.
+    An unknown --noise is one of those: the run cannot start, and the probe
+    would pin a device for the process on the way to saying so."""
+    probed = []
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: probed.append(index))
+    monkeypatch.setattr("owm_envs.render.device.check_gpu_index", lambda index: probed.append(index))
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss", "--steps", "4",
+        "--split", "train:1:0", "--noise", "nope", "--render",
+    ])
+    assert result.exit_code != 0
+    assert "unknown --noise preset 'nope'" in result.output
+    assert probed == [], "probed the GPU for an invocation that was a usage error"
+    assert not out.exists(), "the check must precede the rollout"
+
+
+def test_render_stays_available_for_iss(tmp_path, monkeypatch):
+    """The guard must discriminate: one that refused every --render would
+    satisfy the test above without being right."""
+    pytest.importorskip("lerobot", reason="--render requires the datasets extra")
+
+    def stop(index):
+        raise RuntimeError("stop-after-select")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", stop)
+    result = runner.invoke(app, [
+        "generate", "--out", str(tmp_path / "run"), "--env", "iss", "--steps", "4",
+        "--split", "train:1:0", "--render",
+    ])
+    assert isinstance(result.exception, RuntimeError), result.output
 
 
 def test_render_without_lerobot_is_rejected(tmp_path):
@@ -953,10 +1045,18 @@ def test_gpu_index_is_untouched_when_not_rendering(tmp_path, monkeypatch):
 
 
 def _pushable_run(tmp_path):
-    """The two artifacts `owm-envs push` reads before it uploads anything."""
+    """The three artifacts `owm-envs push` reads before it uploads anything.
+
+    The card is one of them: it names the environment the run was generated
+    with, which is what decides the config class the env config is parsed
+    through and the env component of the repo name.
+    """
     run = tmp_path / "run"
     run.mkdir()
     ISSConfig(sensor_noise=PRESETS["cooperative"]).to_yaml(run / "env_config.yaml")
+    (run / "dataset_card.json").write_text(
+        json.dumps({"env": "iss", "fps": 20, "dt": 0.05})
+    )
     (run / "summary.json").write_text(json.dumps({"counts": {
         "train": {"episodes": 96, "transitions": 500_012},
         "val": {"episodes": 11, "transitions": 50_004},
