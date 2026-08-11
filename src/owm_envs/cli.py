@@ -62,12 +62,12 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
 
 
 def _check_dock_ports_agree(
-    cfg: ISSConfig, policy_cfg: PolicyConfig, split: str
+    cfg: BaseTaskConfig, policy_cfg: PolicyConfig, split: str
 ) -> None:
     """Refuse an env port set that generation would not honour.
 
     Generation resolves an episode's target from `policy.dock.ports`, never
-    from `ISSConfig.dock.ports` -- that second field is the one `ISSEnv` draws
+    from `BaseTaskConfig.dock.ports` -- that second field is the one `ISSEnv` draws
     from. They are otherwise the same field, resolved by the same code, so a
     config that sets the env's and leaves the policy's empty reads as a
     multi-port run and would quietly write single-target data: the one outcome
@@ -228,7 +228,7 @@ def generate(
         "",
         help="Docking ports the dock and union policies may target, drawn uniformly "
              f"per episode: 'all' or a comma-joined subset of {', '.join(PORT_NAMES)}. "
-             "Empty (the default) keeps the single pose in ISSConfig.dock. Sets the "
+             "Empty (the default) keeps the single pose in BaseTaskConfig.dock. Sets the "
              "default for every split; a :PORTS suffix on --split overrides it, which "
              "is how validation keeps the full set while training holds ports out. The "
              "built-in default splits already put validation on 'all'. Inert for the "
