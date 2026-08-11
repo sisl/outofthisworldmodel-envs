@@ -37,7 +37,7 @@ def only(**weights) -> RewardWeights:
     return RewardWeights(**{**zeroed, **weights})
 
 
-def huber(e: float, delta: float, scale: float) -> float:
+def pseudo_huber(e: float, delta: float, scale: float) -> float:
     return (np.sqrt(e * e + delta * delta) - delta) / scale
 
 
@@ -58,11 +58,11 @@ def test_reward_decreases_with_distance_from_the_dock():
     assert float(far) < float(near) < 0.0
 
 
-def test_position_term_is_the_normalised_huber_of_the_norm():
+def test_position_term_is_the_normalised_pseudo_huber_of_the_norm():
     cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(position=-1.0))
     r = docking_reward(state_at((3.0, 4.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     # The norm, 5.0 -- not the summed square, 25.0.
-    assert float(r) == pytest.approx(-huber(5.0, 1.0, 225.0), abs=1e-6)
+    assert float(r) == pytest.approx(-pseudo_huber(5.0, 1.0, 225.0), abs=1e-6)
 
 
 def test_position_term_is_linear_in_the_far_field():
@@ -86,7 +86,7 @@ def test_position_term_is_quadratic_near_the_goal():
 def test_velocity_term_penalises_speed():
     cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(velocity=-1.0))
     r = docking_reward(state_at((0.0, 0.0, 0.0), vel=(3.0, 4.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
-    assert float(r) == pytest.approx(-huber(5.0, 0.1, 5.0), abs=1e-6)
+    assert float(r) == pytest.approx(-pseudo_huber(5.0, 0.1, 5.0), abs=1e-6)
 
 
 def test_attitude_term_penalises_misalignment_against_the_dock_quaternion():
@@ -94,13 +94,13 @@ def test_attitude_term_penalises_misalignment_against_the_dock_quaternion():
     # 90 deg about x, at the port so the gate is fully open.
     quarter = (0.7071068, 0.7071068, 0.0, 0.0)
     r = docking_reward(state_at((0.0, 0.0, 0.0), quat=quarter), ZERO_ACTION, NO_EVENTS, cfg)
-    assert float(r) == pytest.approx(-huber(np.pi / 2.0, 0.05, np.pi), abs=1e-5)
+    assert float(r) == pytest.approx(-pseudo_huber(np.pi / 2.0, 0.05, np.pi), abs=1e-5)
 
 
 def test_body_rate_term_penalises_spin():
     cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(body_rate=-1.0))
     r = docking_reward(state_at((0.0, 0.0, 0.0), omega=(0.03, 0.04, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
-    assert float(r) == pytest.approx(-huber(0.05, 0.005, 0.05), abs=1e-6)
+    assert float(r) == pytest.approx(-pseudo_huber(0.05, 0.005, 0.05), abs=1e-6)
 
 
 def test_rotational_terms_are_gated_down_when_far_from_the_port():
@@ -118,7 +118,7 @@ def test_rotational_gate_reaches_full_weight_at_the_port():
     cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(attitude=-1.0))
     quarter = (0.7071068, 0.7071068, 0.0, 0.0)
     r = docking_reward(state_at((0.0, 0.0, 0.0), quat=quarter), ZERO_ACTION, NO_EVENTS, cfg)
-    assert float(r) == pytest.approx(-huber(np.pi / 2.0, 0.05, np.pi), abs=1e-5)
+    assert float(r) == pytest.approx(-pseudo_huber(np.pi / 2.0, 0.05, np.pi), abs=1e-5)
 
 
 def test_rotational_gate_floor_is_configurable():
@@ -131,7 +131,7 @@ def test_rotational_gate_floor_is_configurable():
     # far=0 makes the gate 1/(1 + (d/d0)^2), which at 10x d0 is ~1/101.
     r = abs(float(docking_reward(state_at((250.0, 0.0, 0.0), quat=quarter),
                                  ZERO_ACTION, NO_EVENTS, cfg)))
-    assert r == pytest.approx(huber(np.pi / 2.0, 0.05, np.pi) / 101.0, rel=1e-4)
+    assert r == pytest.approx(pseudo_huber(np.pi / 2.0, 0.05, np.pi) / 101.0, rel=1e-4)
 
 
 def test_a_step_of_shaped_cost_is_bounded_at_about_one_at_the_numerical_start_shell_edge():
@@ -213,11 +213,11 @@ def test_default_weights_combine_every_shaped_term():
     quarter = (0.7071068, 0.7071068, 0.0, 0.0)
     state = state_at((10.0, 0.0, 0.0), vel=(0.5, 0.0, 0.0), quat=quarter, omega=(0.01, 0.0, 0.0))
     expected = (
-        w.position * huber(10.0, s.position_delta_m, s.position_scale_m)
-        + w.velocity * huber(0.5, s.velocity_delta_m_s, s.velocity_scale_m_s)
+        w.position * pseudo_huber(10.0, s.position_delta_m, s.position_scale_m)
+        + w.velocity * pseudo_huber(0.5, s.velocity_delta_m_s, s.velocity_scale_m_s)
         + gate(10.0) * (
-            w.attitude * huber(np.pi / 2.0, s.attitude_delta_rad, s.attitude_scale_rad)
-            + w.body_rate * huber(0.01, s.rate_delta_rad_s, s.rate_scale_rad_s)
+            w.attitude * pseudo_huber(np.pi / 2.0, s.attitude_delta_rad, s.attitude_scale_rad)
+            + w.body_rate * pseudo_huber(0.01, s.rate_delta_rad_s, s.rate_scale_rad_s)
         )
     )
     r = docking_reward(state, ZERO_ACTION, NO_EVENTS, cfg)
@@ -249,7 +249,7 @@ def test_reward_goal_position_override_targets_the_override():
         reward_weights=only(position=-1.0),
     )
     r = docking_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
-    assert float(r) == pytest.approx(-huber(4.0, 1.0, 225.0), abs=1e-6)
+    assert float(r) == pytest.approx(-pseudo_huber(4.0, 1.0, 225.0), abs=1e-6)
 
 
 def test_reward_goal_position_outranks_a_per_episode_dock_pose():
@@ -260,7 +260,7 @@ def test_reward_goal_position_outranks_a_per_episode_dock_pose():
     )
     pose = jnp.asarray([4.0, 0.0, 0.0, *IDENTITY], dtype=jnp.float32)
     r = docking_reward(state_at((4.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg, pose)
-    assert float(r) == pytest.approx(-huber(4.0, 1.0, 225.0), abs=1e-6)
+    assert float(r) == pytest.approx(-pseudo_huber(4.0, 1.0, 225.0), abs=1e-6)
 
 
 def test_reward_goal_position_does_not_override_the_attitude_target():

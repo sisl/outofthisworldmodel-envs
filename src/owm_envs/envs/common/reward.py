@@ -5,7 +5,7 @@ pointwise from one state and the terms are summed into one scalar. Gymnasium
 expects a per-step scalar, and the discounted sum over an episode takes the
 place of the horizon average an MPPI-style cost function would compute.
 
-Every error enters as a NORM passed through a normalised Huber,
+Every error enters as a NORM passed through a normalised pseudo-Huber,
 
     f(e; delta, scale) = (sqrt(e**2 + delta**2) - delta) / scale
 
@@ -59,8 +59,30 @@ from .config import BaseTaskConfig
 from .events import Events
 
 
-def _huber(error: jnp.ndarray, delta: float, scale: float) -> jnp.ndarray:
-    """Normalised Huber of a non-negative error. Zero at zero error."""
+def _pseudo_huber(error: jnp.ndarray, delta: float, scale: float) -> jnp.ndarray:
+    """Normalised pseudo-Huber of a non-negative error. Zero at zero error.
+
+    The pseudo-Huber `delta**2 * (sqrt(1 + (e/delta)**2) - 1)`, divided by
+    `delta * scale`. Not the piecewise Huber, and the difference is the reason
+    for the choice rather than an approximation of it.
+
+    The piecewise Huber's far-field slope IS `delta`, which ties the knee to
+    the pull: shrinking `delta` to move the quadratic region closer to zero
+    also flattens the far field. This form's far-field slope is 1 for every
+    `delta`, so `delta` sets where the term turns quadratic and `scale` sets
+    the far-field pull, independently. That matters most for the attitude
+    term, whose 0.05 rad knee under a piecewise Huber would leave a far-field
+    slope 20x weaker than the other terms and break the normalisation that
+    puts every term at ~1 at the edge of its envelope.
+
+    It is also smooth everywhere rather than merely continuous in its first
+    derivative, which costs nothing here and is one less kink for a value
+    function to fit around.
+
+    The two agree to within 0.2% at both ends and differ by ~18% through the
+    knee, so nothing about the budget depends on which is used -- only the
+    coupling above does.
+    """
     return (jnp.sqrt(error * error + delta * delta) - delta) / scale
 
 
@@ -112,14 +134,18 @@ def docking_reward(
     )
 
     return (
-        w.position * _huber(distance, shaping.position_delta_m, shaping.position_scale_m)
-        + w.velocity * _huber(speed, shaping.velocity_delta_m_s, shaping.velocity_scale_m_s)
+        w.position
+        * _pseudo_huber(distance, shaping.position_delta_m, shaping.position_scale_m)
+        + w.velocity
+        * _pseudo_huber(speed, shaping.velocity_delta_m_s, shaping.velocity_scale_m_s)
         + rotation_gate
         * (
             w.attitude
-            * _huber(attitude_error, shaping.attitude_delta_rad, shaping.attitude_scale_rad)
+            * _pseudo_huber(
+                attitude_error, shaping.attitude_delta_rad, shaping.attitude_scale_rad
+            )
             + w.body_rate
-            * _huber(body_rate, shaping.rate_delta_rad_s, shaping.rate_scale_rad_s)
+            * _pseudo_huber(body_rate, shaping.rate_delta_rad_s, shaping.rate_scale_rad_s)
         )
         + w.collision * events.collision.astype(jnp.float32)
         + w.dock_success * events.docked.astype(jnp.float32)
