@@ -4,9 +4,13 @@
 per-episode sampling ranges consumed by later tasks (epoch offsets, start
 state). `ReferenceOrbit` wraps astrojax to turn those elements into the
 chief's ECI state and the world<->ECI rotation at a given time offset from
-the epoch. The module-level sun/moon/eclipse helpers take a chief ECI state
-and an `Epoch` directly, so they compose with `ReferenceOrbit` without
-depending on its instance.
+the epoch, drifting the elements at their first-order J2 secular rates on the
+way. That drift is an initial condition only: it puts the chief in the orbit
+plane it would actually occupy an offset of hours or days later, and once an
+episode runs the chief is numerically propagated through the full perturbed
+force model instead. The module-level sun/moon/eclipse helpers take a chief
+ECI state and an `Epoch` directly, so they compose with `ReferenceOrbit`
+without depending on its instance.
 
 Dtype policy: astrojax's own float dtype config (`astrojax.config`) defaults
 to f32 and is deliberately NOT flipped here. `state_koe_to_eci`,
@@ -47,6 +51,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 from astrojax import config as astrojax_config
+from astrojax.constants import J2_EARTH, R_EARTH
 from astrojax.coordinates.keplerian import state_koe_to_eci
 from astrojax.epoch import Epoch
 from astrojax.orbit_dynamics.srp import eclipse_conical
@@ -76,6 +81,11 @@ class OrbitConfig(ConfigModel):
     mean_anomaly_deg: float = 0.0
     # Per-episode start-time offset from `epoch`, sampled uniformly at
     # reset (Task 3). (0.0, 0.0) reproduces today's single fixed epoch.
+    # A window of a few orbits only re-phases the chief along a fixed plane;
+    # a multi-day one moves the plane itself, since `ReferenceOrbit` carries
+    # the elements forward at their J2 secular rates (-4.955 deg/day of RAAN
+    # for these elements). That plane motion, against a sun which moves ~1
+    # deg/day, is what varies the beta angle and so the lighting.
     epoch_offset_range_s: tuple[float, float] = (0.0, 0.0)
     # Initial-state sampling knobs (Task 3). Defaults match the current
     # reset exactly: a fixed start radius, zero initial speed, and a
@@ -132,7 +142,7 @@ RTN_FROM_WORLD: np.ndarray = np.array(
 
 
 class ReferenceOrbit:
-    """Two-body Keplerian chief + world<->ECI mapping."""
+    """Keplerian chief under J2 secular drift + world<->ECI mapping."""
 
     def __init__(self, cfg: OrbitConfig) -> None:
         self.cfg = cfg
@@ -151,14 +161,46 @@ class ReferenceOrbit:
             ],
             dtype=jnp.float64,
         )
+        # J2 secular rates. The chief's initial state is the only thing this
+        # class produces -- once an episode starts, iss-numerical integrates
+        # the chief through the full perturbed force model. But that in-episode
+        # propagation covers 360 s, which is 0.02 deg of RAAN, while the epoch
+        # window spans a week. Advancing only the mean anomaly across that
+        # window would start every episode in the SAME orbital plane, and the
+        # lighting diversity the window exists for would come from solar and
+        # lunar motion alone (~7 deg of beta angle instead of ~35).
+        #
+        # First-order secular theory, from the same J2 as
+        # `envs/common/zonal_gravity`, so the initial condition and the force
+        # model that receives it agree about the Earth's oblateness. Short-
+        # period and higher-order terms are not modelled: they are bounded and
+        # small next to a week of secular regression, and the chief's exact
+        # phase within an orbit is already dispersed by the epoch offset
+        # itself.
+        inclination = float(np.deg2rad(cfg.inc_deg))
+        semi_latus_rectum = cfg.sma_m * (1.0 - cfg.ecc**2)
+        j2_rate = 1.5 * self.mean_motion * J2_EARTH * (R_EARTH / semi_latus_rectum) ** 2
+        sin_inclination_squared = np.sin(inclination) ** 2
+        self.secular_rates: tuple[float, float, float] = (
+            -j2_rate * np.cos(inclination),
+            j2_rate * (2.0 - 2.5 * sin_inclination_squared),
+            self.mean_motion
+            + j2_rate
+            * np.sqrt(1.0 - cfg.ecc**2)
+            * (1.0 - 1.5 * sin_inclination_squared),
+        )
 
     def chief_state_eci(self, t_s) -> jnp.ndarray:
-        """Chief ECI state at epoch0 + t_s: advance the mean anomaly by n*t
-        and convert. Two-body only; perturbed propagation is iss-numerical's
-        job, not this class's. Returns a (6,) astrojax-dtype (f32 by default)
-        array."""
-        m = self._elements0[5] + self.mean_motion * jnp.asarray(t_s, jnp.float64)
-        elements = self._elements0.at[5].set(jnp.mod(m, 2.0 * jnp.pi))
+        """Chief ECI state at epoch0 + t_s: advance the secularly-drifting
+        elements and convert. First-order J2 secular theory, not a numerical
+        propagation -- perturbed propagation is iss-numerical's job, not this
+        class's. Returns a (6,) astrojax-dtype (f32 by default) array."""
+        raan_dot, argp_dot, m_dot = self.secular_rates
+        t = jnp.asarray(t_s, jnp.float64)
+        elements = self._elements0
+        elements = elements.at[3].set(jnp.mod(elements[3] + raan_dot * t, 2.0 * jnp.pi))
+        elements = elements.at[4].set(jnp.mod(elements[4] + argp_dot * t, 2.0 * jnp.pi))
+        elements = elements.at[5].set(jnp.mod(elements[5] + m_dot * t, 2.0 * jnp.pi))
         return state_koe_to_eci(elements)
 
     def world_from_eci(self, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
