@@ -6,19 +6,27 @@ passes through the vehicle the renderer draws and reports a clean dock. Each
 committed collision_boxes_<variant>.yaml is that hull plus boxes covering the
 vehicle, written by scripts/write_variant_collision_boxes.py.
 
-Five things are checked, and only the first is a drift guard. That the
+Six things are checked, and only the first is a drift guard. That the
 committed hulls still equal what the writer produces; that each variant
 config names its own asset beside its own hull, since a config that draws a
 Dragon while colliding against a Cygnus is the failure this pairing exists to
-prevent; that the occupied port is now genuinely blocked, which is the whole
-reason the hulls exist; that no part of the berthed vehicle's surface is out
-of reach of the hull, since a chaser that flies through an uncovered solar
-array registers nothing and the goal-pose check above sees only the one pose;
-and that the other seven ports keep exactly their shipped clearances, which is
-what confines a hull to its vehicle. The last would fail if the writer's
-cluster selection had pulled in re-tessellated station structure alongside the
-vehicle -- geometry the shipped hull already approximates, whose inclusion
-would silently change collision behaviour at ports that berth nothing.
+prevent; that the asset it names resolves to a packaged file, since `render`
+is an unvalidated dict and a renamed or absent GLB would otherwise surface
+only at render time; that the occupied port is now genuinely blocked, which is
+the whole reason the hulls exist; that no part of the berthed vehicle's
+surface is out of reach of the hull, since a chaser that flies through an
+uncovered solar array registers nothing and the goal-pose check above sees
+only the one pose; and that the other seven ports keep exactly their shipped
+clearances, which is what confines a hull to its vehicle. The last would fail
+if the writer's cluster selection had pulled in re-tessellated station
+structure alongside the vehicle -- geometry the shipped hull already
+approximates, whose inclusion would silently change collision behaviour at
+ports that berth nothing.
+
+One further check is on the writer rather than on a hull: that its sampling
+lattice leaves no cell unmarked that a triangle enters by more than a sample
+spacing, on the triangle shapes -- slivers, degenerate edges, faces metres
+across -- a lattice sized by area steps over.
 """
 
 import sys
@@ -32,6 +40,7 @@ from owm_envs.envs.common.config import load_collision_boxes
 from owm_envs.envs.common.docking_ports import PORTS, PORTS_BY_NAME, port_pose
 from owm_envs.envs.common.events import EventChecker
 from owm_envs.envs.iss_numerical.config import NumericalConfig
+from owm_envs.render import asset_path
 
 REPO = Path(__file__).resolve().parents[1]
 NUMERICAL = REPO / "configs" / "iss-numerical"
@@ -70,6 +79,36 @@ def base_boxes():
 # 20-35 m away, which belongs to the shipped station boxes, not to a vehicle.
 VEHICLE_RADIUS = 15.0
 
+# Triangles chosen for the shapes that defeat an area-sized sampling lattice:
+# a 50 m x 1 mm sliver, a 10:1 right triangle, three collinear points spanning
+# 30 m with no area at all, and a 30 m equilateral face large enough that any
+# fixed cap on the lattice size would bite. Shifted so that no vertex lands on
+# a cell boundary and the three planar ones sit near the middle of a cell in
+# z, where a flat triangle reaches a cell's interior rather than its face.
+ADVERSARIAL_TRIANGLES = np.array(
+    [
+        [[0.0, 0.0, 0.0], [50.0, 0.0, 0.0], [0.0, 1e-3, 0.0]],
+        [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        [[0.0, 0.0, 0.0], [15.0, 7.5, 3.0], [30.0, 15.0, 6.0]],
+        [[0.0, 0.0, 0.0], [30.0, 0.0, 0.0], [15.0, 25.981, 0.0]],
+    ]
+) + np.array([0.137, 0.229, 0.263])
+
+
+def occupied_cells(points: np.ndarray, depth: float = 0.0) -> set[tuple[int, ...]]:
+    """Indices of the VOXEL cells `points` fall in, on a grid through the origin.
+
+    A point nearer than `depth` to any face of its cell is dropped. No lattice
+    of pitch `depth` can be relied on to land inside a cell a surface merely
+    grazes at a corner, so that is what separates the cells a triangle passes
+    through from the ones it only clips.
+    """
+    index = np.floor(points / wvcb.VOXEL).astype(int)
+    if depth > 0.0:
+        offset = points - index * wvcb.VOXEL
+        index = index[np.minimum(offset, wvcb.VOXEL - offset).min(axis=1) >= depth]
+    return set(map(tuple, index.tolist()))
+
 
 def uncovered_area(triangles: np.ndarray, boxes, radius: float) -> tuple[float, float]:
     """Area of `triangles` further than `radius` from every box, and their total.
@@ -103,6 +142,43 @@ def uncovered_area(triangles: np.ndarray, boxes, radius: float) -> tuple[float, 
 
     fraction = far.reshape(len(triangles), -1).mean(axis=1)
     return float((area * fraction).sum()), float(area.sum())
+
+
+@pytest.mark.parametrize("index", range(len(ADVERSARIAL_TRIANGLES)))
+def test_sampling_marks_the_voxels_a_triangle_enters_a_sample_deep(index):
+    # The hull is built from the cells the sampled points land in, so a
+    # lattice coarser than VOXEL lets a triangle cross a cell nothing marks --
+    # an unfilled hole in the vehicle, and one that grows with the triangle's
+    # aspect ratio rather than its area. Ground truth is 200k points drawn
+    # uniformly over the triangle.
+    #
+    # The predicate is deliberately "enters a cell by more than
+    # SAMPLE_SPACING from every face", not "touches the cell at all". The
+    # latter is unsatisfiable by any finite lattice: a triangle can clip a
+    # cell corner in less space than the lattice pitch, and asserting it
+    # fails on the 30 m equilateral below even against a correct sampler.
+    # Deeper than the pitch is the provable guarantee -- a lattice of pitch p
+    # always holds a sample inside a cell a surface penetrates further than p
+    # from every face. So this is not a hedge, and strengthening it to bare
+    # containment would only make the test unsatisfiable.
+    #
+    # It costs no detection power either. Sizing the lattice from sqrt(area)
+    # rather than the longest edge leaves 99 of 100, 9 of 34, 10 of 12 and
+    # 1321 of 1603 cells unmarked across the four triangles below.
+    triangle = ADVERSARIAL_TRIANGLES[index : index + 1]
+    marked = occupied_cells(wvcb.sample_triangles(triangle, wvcb.SAMPLE_SPACING))
+
+    uv = np.random.default_rng(0).random((200_000, 2))
+    folded = uv.sum(axis=1) > 1.0
+    uv[folded] = 1.0 - uv[folded]
+    weights = np.column_stack([1.0 - uv.sum(axis=1), uv])
+    reached = occupied_cells(weights @ triangle[0], depth=wvcb.SAMPLE_SPACING)
+
+    # Guards against a vacuous pass: a triangle lying near a cell face is
+    # filtered away entirely and would then assert over an empty set.
+    assert len(reached) > 10
+    missed = reached - marked
+    assert not missed, f"{len(missed)} of {len(reached)} cells reached but unmarked"
 
 
 @pytest.mark.parametrize("variant", VARIANTS)
@@ -143,6 +219,18 @@ def test_each_variant_config_pairs_its_asset_with_its_own_hull(variant, asset, h
     cfg = NumericalConfig.from_toml(NUMERICAL / "env" / f"coop_{variant}.toml")
     assert cfg.render == {"iss_asset": asset}
     assert cfg.physics.collision_boxes_path == hull
+
+
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_each_variant_config_names_a_render_asset_that_is_packaged(variant):
+    # NumericalConfig.render is dict[str, Any] with no validation, so the
+    # asset name reaches the renderer unchecked: a renamed, deleted or
+    # unfetched git-lfs GLB passes every other check in this file and fails
+    # only when a frame is drawn. asset_path resolves within the packaged
+    # resources and raises when the file is absent, so this needs no GPU.
+    cfg = NumericalConfig.from_toml(NUMERICAL / "env" / f"coop_{variant}.toml")
+    path = asset_path("international-space-station", cfg.render["iss_asset"])
+    assert path.is_file()
 
 
 @pytest.mark.parametrize(

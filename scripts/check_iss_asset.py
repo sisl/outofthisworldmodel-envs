@@ -5,9 +5,11 @@ hull, the dock poses and the recentre offset in `render/iss_frame` are all
 authored against it. A variant asset (other spacecraft berthed at other
 ports) is only usable if every module it shares with the reference sits at the
 same coordinates, so swapping the file cannot move the station. Shared modules
-are compared as point sets, to within `--tolerance`: an exporter is free to
-split or merge vertices, so what has to hold is that the surface is in the
-same place, not that the vertex buffer is written the same way.
+are compared as point sets, to within `--tolerance`: the symmetric maximum
+nearest-neighbour distance between their vertices, which ignores vertex count
+and ordering. Coincident splits, merges and reorderings therefore pass. It is
+a distance on points rather than on surfaces, so a module re-tessellated with
+new interior vertices fails even though its surface has not moved.
 
 Works on the glTF document directly -- vertex positions grouped by their
 nearest named ancestor node -- so it needs no render extra and no GPU. The
@@ -183,11 +185,12 @@ def main(
         None, help="Baseline GLB; default is the shipped ISS asset."
     ),
     tolerance: float = typer.Option(
-        1e-3,
+        1e-5,
         help=(
-            "Maximum displacement of a shared module, in metres, that still "
-            "counts as the same placement. Above the float32 round-trip noise "
-            "of re-exporting a GLB, far below the 0.1 m dock gate."
+            "Largest symmetric nearest-neighbour distance between a shared "
+            "module's two vertex sets, in metres, that still counts as the "
+            "same placement. Above the 7e-06 m float32 round-trip noise of "
+            "re-exporting a GLB, far below the 0.1 m dock gate."
         ),
     ),
 ) -> None:
