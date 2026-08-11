@@ -11,7 +11,7 @@ from typing import NamedTuple
 
 import jax.numpy as jnp
 
-from ...core.quaternion import quat_conjugate, quat_multiply
+from ...core.quaternion import quat_angle_between
 from .config import BaseTaskConfig, load_collision_boxes
 
 
@@ -128,12 +128,7 @@ class EventChecker:
         # on at trace time rather than with jnp.where -- `docked` runs inside
         # jit/vmap, but `self.cfg.dock.*` is not a traced array.
         if self.cfg.dock.max_attitude_error_deg is not None:
-            q_err = quat_multiply(quat_conjugate(q_bw), target[3:7])
-            # abs() handles the q/-q double cover: q and -q are the same
-            # rotation, but without it their w components differ in sign and
-            # give angles 2*pi apart.
-            w_err = jnp.clip(jnp.abs(q_err[0]), -1.0, 1.0)
-            angle = 2.0 * jnp.arccos(w_err)
+            angle = quat_angle_between(q_bw, target[3:7])
             aligned = angle <= self._dock_max_attitude_error_rad
             docked = jnp.logical_and(docked, aligned)
 

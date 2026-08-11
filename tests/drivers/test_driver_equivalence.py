@@ -134,10 +134,12 @@ NUMERICAL_DIVERGENCE = {
     # N. 1.9x measured 7.6 and inside the 14.6 N the budget above allows; a
     # 1600 N limit, so this is 0.9% of an action.
     "action": 14.5,
-    # Relative, because `docking_reward`'s control-effort term is
-    # -0.05 * sum(action**2) against ~1600 N actions, so the reward runs at
-    # ~1e5-1e6 here and 16 N of action difference is worth ~2.6e3 of it.
-    # Measured 6.8e-3.
+    # Written relative, but absolute in practice: every shaped term is
+    # normalised, so the reward runs at |r| <= 0.26 here and the max(|r|, 1)
+    # floor at the call site turns this into a flat 2.0e-2. No term reads the
+    # action, so the action divergence above cannot reach the reward -- only
+    # the state can, dominated by the velocity term at w/scale = 0.2/5.0 per
+    # m/s against 6.9e-5 m/s of divergence. Measured 2.0e-6.
     "reward": 2.0e-2,
 }
 

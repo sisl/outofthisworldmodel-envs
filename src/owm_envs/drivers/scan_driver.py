@@ -276,7 +276,7 @@ class ScanDriver:
             action = jnp.clip(policy_fn(view(policy_input), act_key, extras), ctrl_low, ctrl_high)
             dock_pose = select_dock_target(extras)
             next_state, events = dynamics.step(state, action, dock_pose)
-            reward = docking_reward(view(next_state), action, events, cfg, dock_pose[0:3])
+            reward = docking_reward(view(next_state), action, events, cfg, dock_pose)
 
             # `measured_next` is its own draw (`next_meas_key`) because the
             # terminal observation on the `done` iteration is `next_state`,

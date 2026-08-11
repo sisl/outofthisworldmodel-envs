@@ -160,22 +160,66 @@ class DockConfig(ConfigModel):
 
 
 class RewardWeights(ConfigModel):
-    """Penalty weights for the five reward terms.
+    """Weights for the reward's four shaped error terms and two events.
 
-    Negative so that `docking_reward` is a plain weighted sum of these against
-    non-negative error terms -- no separate negation needed at the call site.
+    The four shaped terms are negative so `docking_reward` is a plain weighted
+    sum against non-negative errors, with no negation at the call site. Their
+    magnitudes sum to 1, and each shaped term is normalised to ~1 at the edge
+    of the operating envelope (see `RewardShapingConfig`), so one step's shaped
+    cost is bounded at about 1 and a 7200-step rollout at about -7200. That
+    bound is the whole point: it is what leaves `collision` two orders of
+    magnitude above anything an episode can accumulate by flying badly, so the
+    penalty for hitting the station dominates the trajectory rather than being
+    swamped by it.
 
-    NOTE: `collision` at -1e6 was tuned for MPPI planning, where rewards are
-    averaged over a horizon. As a per-step Gymnasium reward it is an enormous
-    negative spike that will dominate RL gradients. Retuning is deliberately
-    left to the consumer.
+    `dock_success` is positive and is the one term that is not a penalty. It
+    exists because all four shaped terms bottom out at zero, so a chaser
+    hovering just outside the success gate scores the same ~0 as one that
+    actually docks. It sits two orders below `collision`, so no approach risky
+    enough to be worth a crash is ever worth taking.
     """
 
-    position: float = -1.0
-    velocity: float = -0.35
-    angular_velocity: float = -0.1
-    control_effort: float = -0.05
+    position: float = -0.5
+    velocity: float = -0.2
+    attitude: float = -0.2
+    body_rate: float = -0.1
     collision: float = -1_000_000.0
+    dock_success: float = 10_000.0
+
+
+class RewardShapingConfig(ConfigModel):
+    """Knee and scale for each shaped error term, and the rotational range gate.
+
+    Each error norm goes through `(sqrt(e**2 + delta**2) - delta) / scale`,
+    which is ~e/scale far out and ~e**2/(2*delta*scale) near zero. The far
+    field therefore has a constant gradient -- a chaser 225 m out feels a
+    steady pull toward the port, which a saturating shape would not give it --
+    while the near field is smooth with zero slope at the origin, so the last
+    metre is worth flying precisely.
+
+    `scale` is the error at which the term reaches ~1: the outer edge of the
+    start shell for position, and for the rest the largest value the task can
+    present. `delta` is where the term turns quadratic, set near each
+    quantity's success gate.
+
+    The rotational gate is `far + (1 - far) / (1 + (d/d0)**2)` on the range `d`
+    to the port. Far out, attitude and body rate barely matter -- the job is to
+    close the distance -- and by the time the chaser is at the gate they matter
+    as much as position and velocity do.
+    """
+
+    position_delta_m: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    position_scale_m: float = Field(default=225.0, gt=0, allow_inf_nan=False)
+    velocity_delta_m_s: float = Field(default=0.1, gt=0, allow_inf_nan=False)
+    velocity_scale_m_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+    attitude_delta_rad: float = Field(default=0.05, gt=0, allow_inf_nan=False)
+    attitude_scale_rad: float = Field(default=math.pi, gt=0, allow_inf_nan=False)
+    rate_delta_rad_s: float = Field(default=0.005, gt=0, allow_inf_nan=False)
+    rate_scale_rad_s: float = Field(default=0.05, gt=0, allow_inf_nan=False)
+    # A weight fraction, not a distance: zero (no rotational term at all when
+    # far out) and one (no gating) are both meaningful settings.
+    rotation_gate_far: float = Field(default=0.1, ge=0, le=1, allow_inf_nan=False)
+    rotation_gate_range_m: float = Field(default=25.0, gt=0, allow_inf_nan=False)
 
 
 class ObservationConfig(ConfigModel):
@@ -232,6 +276,7 @@ class BaseTaskConfig(ConfigModel):
     observation: ObservationConfig = Field(default_factory=ObservationConfig)
 
     reward_weights: RewardWeights = Field(default_factory=RewardWeights)
+    reward_shaping: RewardShapingConfig = Field(default_factory=RewardShapingConfig)
     # Overrides the reward's position-error target. When None (default),
     # docking_reward measures distance to `dock.position`, as it should for a
     # docking task. The ISS origin [0, 0, 0] is INSIDE the station's

@@ -88,21 +88,25 @@ def test_reward_peaks_at_the_assigned_port_not_the_config_pose():
     for index, name in enumerate(PORT_NAMES):
         target = select(jnp.asarray([float(index)]))
         at_port = jnp.concatenate([target[0:3], jnp.zeros(3), target[3:7], jnp.zeros(3)])
-        at_port_reward = float(
-            docking_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG, target[0:3])
-        )
-        # Reward is a sum of negative-weighted quadratics, so "peak" is the
-        # maximum: at the assigned port the position term is zero, and the
-        # same state scored against DockConfig's pose is strictly worse.
+        at_port_reward = float(docking_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG, target))
+        # Every shaped term is a Huber of a norm and so bottoms out at zero:
+        # parked on the assigned port holding its attitude, at rest, all four
+        # are exactly zero and no state can score higher. Scored against
+        # DockConfig's pose the same state pays for both the position and the
+        # attitude offset, so it is strictly worse for every port. The margin
+        # is only ~7e-4 for harmony_fwd_pma2, whose derived pose is 0.84 m off
+        # DockConfig at the same attitude -- 0.84 m against a 225 m position
+        # scale is genuinely almost the same target -- so the separation is
+        # asserted as strict, not against a fixed floor.
         against_config = float(docking_reward(at_port, jnp.zeros(6), NO_EVENTS, CFG))
-        assert at_port_reward == pytest.approx(0.0, abs=1e-3), name
-        assert against_config < at_port_reward - 0.1, name
+        assert at_port_reward == pytest.approx(0.0, abs=1e-6), name
+        assert against_config < at_port_reward, name
 
 
 def test_reward_without_a_port_set_is_unchanged():
-    # The scan driver now always passes a dock position; with no ports
-    # configured that position IS DockConfig's, so a fixed state/action probe
-    # must reproduce the value the reward produced before the argument existed.
+    # The scan driver now always passes a dock pose; with no ports configured
+    # that pose IS DockConfig's, so a fixed state/action probe must reproduce
+    # the value the reward produced before the argument existed.
     policy_cfg = PolicyConfig(type="dock")
     select = dock_target_selector(CFG, policy_cfg)
     state = jnp.asarray(
@@ -111,7 +115,7 @@ def test_reward_without_a_port_set_is_unchanged():
     )
     action = jnp.asarray([5.0, -3.0, 1.0, 0.4, 0.2, -0.1], dtype=jnp.float32)
     target = select(jnp.zeros((EXTRAS_DIM["dock"],)))
-    assert float(docking_reward(state, action, NO_EVENTS, CFG, target[0:3])) == float(
+    assert float(docking_reward(state, action, NO_EVENTS, CFG, target)) == float(
         docking_reward(state, action, NO_EVENTS, CFG)
     )
 

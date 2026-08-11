@@ -220,7 +220,7 @@ class HCWVectorEnv(VectorEnv):
             )
             rewards = np.array(
                 self._batched_reward_to(
-                    next_states, actions_j, events, self._lane_targets[:, 0:3]
+                    next_states, actions_j, events, self._lane_targets
                 ),
                 dtype=np.float32,
             )
