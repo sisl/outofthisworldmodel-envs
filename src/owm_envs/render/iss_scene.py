@@ -33,6 +33,7 @@ from pygfx.renderers.wgpu import get_shared
 from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
 from owm_envs.render import asset_path
+from owm_envs.render.atmosphere import atmosphere_shell
 from owm_envs.render.earth import MAP_WIDTHS, earth_texture_path
 from owm_envs.render.inputs import Lighting
 from owm_envs.render.iss_frame import ISS_RECENTRE_OFFSET, UPRIGHT_EULER_XYZ
@@ -58,7 +59,19 @@ class RenderConfig(ConfigModel):
     earth_subpoint_lon_deg: float = -122.1697
     earth_subpoint_lat_deg: float = 37.4275
     show_earth_glow: bool = True
-    earth_glow_strength: float = 1.2
+    # Brightness of the atmospheric limb, and how sharply it fades with
+    # altitude -- `earth_glow_falloff` stands in for a scale height, so larger
+    # is a tighter, brighter rim.
+    #
+    # `earth_atmosphere_scale` is where the air ends, as a multiple of the
+    # surface radius. 1.02 puts it 128 km up, a little above the Karman line
+    # and close to the depth of the blue band the limb actually shows. It has
+    # to stay BELOW the station's own radius: the shader shades the air still
+    # in front of the camera, so a shell the camera flies inside stops being a
+    # rim at the horizon and becomes a wash over the whole sky.
+    earth_glow_strength: float = 0.9
+    earth_glow_falloff: float = 3.0
+    earth_atmosphere_scale: float = 1.020
     show_earth_clouds: bool = True
     earth_cloud_altitude_m: float = 12_000.0
     earth_cloud_opacity: float = 0.8
@@ -274,6 +287,11 @@ def _read_map(path: Path) -> np.ndarray:
 _DISTANT_QUEUE = 2000  # Earth's surface, the Sun, the Moon -- all below the deck
 _CLOUD_QUEUE = 2100  # the deck, over them
 _GLOW_QUEUE = 2200  # the atmospheric limb, over the deck
+
+# The rim's colour: a Rayleigh-scattered blue, brighter and less saturated than
+# the sky from the ground because the path this shades is a limb path through
+# the whole atmosphere rather than a vertical one.
+EARTH_GLOW_COLOR = (0.56, 0.87, 1.0, 1.0)
 
 # The fill light is a fixed fraction of the key light, which is what makes it
 # a fill and not a second sun: it keeps the shadowed side readable rather than
@@ -594,7 +612,7 @@ class ISSScene:
         self._earth_surface_group.add(earth_mesh)
 
         if cfg.show_earth_glow and cfg.earth_glow_strength > 0.0:
-            self._add_earth_glow(earth_group, earth_mesh.local.rotation)
+            self._add_earth_glow(earth_group)
 
         if cfg.show_earth_clouds:
             cloud_tex = _load_cloud_texture(self._earth_clouds_path, opacity=cfg.earth_cloud_opacity)
@@ -623,60 +641,32 @@ class ISSScene:
         self._apply_earth_surface_rotation(None)
         return earth_group
 
-    def _add_earth_glow(self, earth_group: gfx.Group, surface_rotation) -> None:
-        # Layered additive backface shells approximate a thin atmospheric rim
-        # without a custom Fresnel shader.
+    def _add_earth_glow(self, earth_group: gfx.Group) -> None:
+        """The atmospheric limb, as one screen-space pass.
+
+        Parented to the globe, because `atmosphere.AtmosphereShader` reads the
+        planet's centre off this object's own world transform -- so it follows
+        when `_apply_lighting` moves the Earth to the chief's true altitude,
+        with nothing per-frame to update.
+
+        Drawn after the cloud deck and before the station, on `_GLOW_QUEUE`,
+        and compared on `<=` for the same reason everything else at this range
+        is: the rim reaches ~1e6 m, where a float32 depth rounds to exactly
+        1.0 and would lose `<` against the cleared buffer. The station and the
+        capsule are metres away, so their depths sit far below the rim's and
+        occlude it normally.
+        """
         cfg = self.cfg
-        color = (0.56, 0.87, 1.0, 1.0)
-        shell_count = 64
-        inner_scale, outer_scale = 1.003, 1.090
-        t = np.linspace(0.0, 1.0, shell_count, dtype=np.float32)
-        scales = inner_scale + (outer_scale - inner_scale) * np.power(t, 1.35)
-        opacities = np.geomspace(0.020, 0.0008, shell_count).astype(np.float32)
-
-        # 256x128, not the 96x48 a sphere this smooth would otherwise want.
-        # Only the sliver of each shell outside the globe's silhouette is ever
-        # visible -- the rest is depth-rejected -- and at 96x48 the facets
-        # along that sliver are coarser than it is wide, so they leave gaps
-        # that read as black polygons bitten out of the limb, shifting as the
-        # pose turns. Measured over the reported episode, the gaps close
-        # completely at 256x128 (96x48: 0.96% of the band, 128x64: 0.35%,
-        # 192x96: 0.04%, 256x128: none) and both directions matter about
-        # equally, so both are raised. Costs ~17% of a frame, 17.0 -> 19.8 ms
-        # at 512x512, and no extra memory.
-        #
-        # One geometry for all 64 shells, scaled per shell rather than rebuilt
-        # at each radius: they differ only in radius, which is a uniform scale,
-        # so sharing costs nothing and keeps the finer tessellation from
-        # multiplying 64-fold in memory. A Fresnel shader on a single sphere
-        # would be the cheap way to draw this rim, and is the real fix if it
-        # ever needs to get more expensive than it already is.
-        geom = gfx.sphere_geometry(radius=1.0, width_segments=256, height_segments=128)
-
-        for scale, base_opacity in zip(scales, opacities):
-            mat = gfx.MeshBasicMaterial(color=color)
-            mat.opacity = float(np.clip(base_opacity * cfg.earth_glow_strength, 0.0, 1.0))
-            mat.alpha_mode = "add"
-            mat.side = gfx.VisibleSide.back
-            mat.depth_write = False
-            # These shells reach much further out than the surface does -- the
-            # camera sits inside the outer ones, so their back faces run to
-            # ~1.4e7 m -- and past the depth range those fragments round to a
-            # depth of exactly 1.0 and lose `<` against the cleared buffer.
-            # That is what was eating the atmospheric limb at small near
-            # planes. `<=` is the whole fix: a saturated fragment still draws
-            # where nothing occludes it, while the globe -- whose depth is
-            # comfortably under 1.0 -- still hides the far-side shells behind
-            # it. Dropping the depth test instead would let those far-side
-            # back faces add over the planet, and it is precisely their being
-            # hidden there that makes this a limb and not a wash.
-            mat.render_queue = _GLOW_QUEUE
-            mat.depth_compare = "<="
-            shell = gfx.Mesh(geom, mat)
-            shell.local.rotation = surface_rotation
-            radius = cfg.earth_radius_m * float(scale)
-            shell.local.scale = (radius, radius, radius)
-            earth_group.add(shell)
+        self._earth_glow = atmosphere_shell(
+            surface_radius=cfg.earth_radius_m,
+            outer_radius=cfg.earth_radius_m * cfg.earth_atmosphere_scale,
+            color=EARTH_GLOW_COLOR,
+            strength=cfg.earth_glow_strength,
+            falloff=cfg.earth_glow_falloff,
+            render_queue=_GLOW_QUEUE,
+        )
+        self._earth_glow.material.depth_compare = "<="
+        earth_group.add(self._earth_glow)
 
     def _apply_earth_surface_rotation(self, earth_rotation_world: np.ndarray | None) -> None:
         """Point the globe at `earth_rotation_world` (ECEF axes -> world), or
