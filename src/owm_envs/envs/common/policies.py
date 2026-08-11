@@ -208,7 +208,9 @@ def _build_random(cfg: BaseTaskConfig) -> PolicyFn:
 
     def policy_fn(state, key, extras):
         del state, extras
-        return jax.random.uniform(key, shape=(6,), minval=low, maxval=high)
+        return jax.random.uniform(
+            key, shape=(6,), minval=low, maxval=high, dtype=jnp.float32
+        )
 
     return policy_fn
 
