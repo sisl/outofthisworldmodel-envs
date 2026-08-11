@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import deque
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -656,6 +657,16 @@ def rollout(
             f"the requested number of episodes cannot be reached however they "
             f"turn out; raise it to at least {episodes}."
         )
+    # Created up front rather than at write time: an unwritable path, or one
+    # that is already a file, is the caller naming the wrong directory, and
+    # under --require-dock the first write comes an hour of retries later --
+    # taking every episode rolled in the meantime with it.
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"cannot write --out {out}: {exc}", param_hint="--out"
+        ) from exc
 
     env_spec = ENV_REGISTRY[env]
     try:
@@ -715,7 +726,7 @@ def rollout(
                 break
             if require_dock and not outcome.docked:
                 continue
-            kept.append((driver_seed, index, batch, outcome))
+            kept.append((driver_seed, wanted, index, batch, outcome))
         attempted += batch.num_episodes
         typer.echo(
             f"[rollout] seed={driver_seed}: {batch.num_episodes} episode(s), "
@@ -732,9 +743,9 @@ def rollout(
             f"this config's sensor noise."
         )
 
-    source = kept[0][2]
+    source = kept[0][3]
     kept_batch = pack_episodes(
-        [_episode_row(batch, index) for _, index, batch, _ in kept],
+        [_episode_row(batch, index) for _, _, index, batch, _ in kept],
         obs_dim=source.observations.shape[2],
         act_dim=source.actions.shape[2],
         records_policy_ids=source.policy_ids is not None,
@@ -743,7 +754,6 @@ def rollout(
         state_dim=env_spec.layout.state_dim,
     )
 
-    out.mkdir(parents=True, exist_ok=True)
     # The config as run, not the file that was passed: --env-config is
     # optional and the defaults it falls back to move with the package, so a
     # clip is only reproducible from the config it was actually flown under.
@@ -755,13 +765,31 @@ def rollout(
                 "policy": policy,
                 "port": port,
                 "require_dock": require_dock,
-                # Which attempt each kept episode came from -- that attempt's
-                # seed, and the episode's index within the batch it rolled --
-                # since a retrying rollout draws its clips from several seeds
-                # and the manifest is the only record of which.
+                # The horizon flown, which the env config cannot supply: an
+                # episode ends at min(--steps, cfg.max_steps), so a lowered
+                # --steps is only recoverable from here.
+                "steps": steps,
+                # Enough to re-roll any one clip on its own:
+                #   rollout --seed SEED --episodes WANTED --steps STEPS \
+                #           --no-require-dock --env-config env_config.toml
+                # and take BATCH_INDEX out of it. `wanted` is part of that and
+                # not decoration -- the driver is built with num_envs=wanted,
+                # so the attempt's size sets lane count, lane assignment and
+                # how much of the seed's stream each lane consumes. `episode`
+                # is the position in this rollout, which is the number its
+                # clip and its stills directory carry; `batch_index` is the
+                # position within the attempt that rolled it, and the two
+                # differ whenever an attempt's earlier episodes were dropped.
                 "episodes": [
-                    {"seed": episode_seed, "index": index, **asdict(outcome)}
-                    for episode_seed, index, _, outcome in kept
+                    {
+                        "episode": position,
+                        "seed": episode_seed,
+                        "wanted": wanted,
+                        "batch_index": index,
+                        **asdict(outcome),
+                    }
+                    for position, (episode_seed, wanted, index, _, outcome)
+                    in enumerate(kept)
                 ],
             },
             indent=2,
@@ -801,9 +829,12 @@ def rollout(
             frames = tee_episode_stills(frames, out / "frames", frame_stride)
         # Both tees are pass-through generators, and unlike generate there is
         # no dataset writer downstream to pull them, so nothing renders unless
-        # this drains the stream itself.
-        for _ in frames:
-            pass
+        # this drains the stream itself. Drained through a zero-length deque
+        # rather than a `for` loop: a loop variable is bound until the NEXT
+        # next() returns, holding the episode just written while the pool
+        # renders the one after it -- two episodes of every view at once,
+        # which is the one-episode bound both tees are built to keep.
+        deque(frames, maxlen=0)
 
     typer.echo(f"[done] {out}")
 
