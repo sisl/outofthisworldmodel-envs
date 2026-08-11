@@ -26,11 +26,13 @@ all three envs, though, and `PhysicsConfig.start_radius_range_m` goes out to
 ~1.33 and ~1.89, ~-9,607 and ~-13,604 over a full rollout, still a 104x and
 73x margin. Those are envelope figures and not bounds -- full actuator
 authority reaches past every scale, and `RewardWeights` carries what the worst
-step and rollout an episode can actually reach cost. Under the previous
-summed-square terms a 225 m error cost -50,625
-per step and a rollout integrated to ~-3.6e8, leaving the collision penalty
-at 0.3% of the trajectory -- an agent could fly into the station and barely
-feel it.
+step and rollout an episode can actually reach cost.
+
+Normalising is what keeps that margin. A term growing as the square of its
+error charges a distant chaser thousands per step, so the shaped cost of a
+single episode can run to hundreds of millions and the collision penalty
+becomes a rounding error against it -- an agent could fly into the station and
+barely feel it.
 
 All three events on top of the shaped terms -- collision, dock success and
 domain escape -- are absorbing, and that is what sizes their weights: ending
