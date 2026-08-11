@@ -14,6 +14,7 @@ from owm_envs.datasets.video import (  # noqa: E402
     VIEW_KEYS,
     render_batch_frames,
     render_episode_frames,
+    tee_episode_stills,
 )
 from owm_envs.drivers.types import TrajectoryBatch  # noqa: E402
 from owm_envs.render.inputs import RenderInputs  # noqa: E402
@@ -458,3 +459,58 @@ def test_a_failing_debug_clip_does_not_abort_the_dataset_write(tmp_path, monkeyp
     )
     assert written("fpv") == every_episode, "a sibling view lost a clip to another view's failure"
     assert written("composite") == every_episode, "a sibling view lost a clip"
+
+
+def test_tee_episode_stills_writes_every_stride_frame(tmp_path):
+    clips = [{"observation.images.fpv": np.zeros((10, 4, 4, 3), dtype=np.uint8)}]
+    list(tee_episode_stills(iter(clips), tmp_path, stride=4))
+    written = sorted(p.name for p in (tmp_path / "ep_0000").glob("fpv_*.png"))
+    assert written == ["fpv_000000.png", "fpv_000004.png", "fpv_000008.png"]
+
+
+def test_tee_episode_stills_passes_the_clips_through_unchanged(tmp_path):
+    clips = [{"observation.images.fpv": np.zeros((4, 4, 4, 3), dtype=np.uint8)}]
+    passed = list(tee_episode_stills(iter(clips), tmp_path, stride=2))
+    assert len(passed) == 1
+    assert passed[0]["observation.images.fpv"].shape == (4, 4, 4, 3)
+
+
+def test_tee_episode_stills_writes_nothing_at_stride_zero(tmp_path):
+    clips = [{"observation.images.fpv": np.zeros((4, 4, 4, 3), dtype=np.uint8)}]
+    list(tee_episode_stills(iter(clips), tmp_path, stride=0))
+    assert not tmp_path.exists() or not any(tmp_path.rglob("*.png"))
+
+
+def test_tee_episode_stills_names_each_view_separately(tmp_path):
+    clips = [{
+        "observation.images.fpv": np.zeros((2, 4, 4, 3), dtype=np.uint8),
+        "observation.images.dragon_iso": np.zeros((2, 4, 4, 3), dtype=np.uint8),
+    }]
+    list(tee_episode_stills(iter(clips), tmp_path, stride=1))
+    names = sorted(p.name for p in (tmp_path / "ep_0000").glob("*.png"))
+    assert names == [
+        "dragon_iso_000000.png", "dragon_iso_000001.png",
+        "fpv_000000.png", "fpv_000001.png",
+    ]
+
+
+def test_closing_the_stills_tee_closes_the_iterator_behind_it(tmp_path):
+    """In a rollout this tee wraps `tee_episode_clips` rather than the render
+    pool directly, and the consumer closes whichever tee is outermost. If this
+    one did not pass `close()` on, the tee (and the render pool behind that)
+    would only come down when this one's own frame was collected.
+    """
+    closed: list[bool] = []
+
+    def source():
+        try:
+            for _ in range(3):
+                yield {"observation.images.fpv": np.zeros((4, 4, 4, 3), dtype=np.uint8)}
+        finally:
+            closed.append(True)
+
+    clips = source()
+    tee = tee_episode_stills(clips, tmp_path, stride=1)
+    next(tee)
+    tee.close()
+    assert closed == [True], "the tee did not close the iterator behind it"

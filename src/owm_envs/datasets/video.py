@@ -31,6 +31,7 @@ import os
 import warnings
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
@@ -570,8 +571,9 @@ def tee_episode_clips(
     it must close the pool behind it, since the writer now closes this rather
     than the iterator that owns the workers.
     """
-    from pathlib import Path
-
+    # imageio ships in the `render` extra, and this module is imported at
+    # module level by the CLI, so hoisting this would make a base install
+    # unable to run any command at all.
     import imageio.v3 as iio
 
     media_root = Path(media_root)
@@ -615,6 +617,69 @@ def tee_episode_clips(
             yield clips
             # Before pulling the next episode, not after: `for clips in source`
             # would keep this one bound across that call and hold two at once.
+            del clips
+            episode += 1
+    finally:
+        close = getattr(source, "close", None)
+        if close is not None:
+            close()
+
+
+def tee_episode_stills(
+    frames: Iterator[dict[str, np.ndarray]],
+    stills_root: Any,
+    stride: int,
+) -> Iterator[dict[str, np.ndarray]]:
+    """Write every `stride`-th frame of every view as a PNG, and pass it along.
+
+    A tee like `tee_episode_clips`, for the same reason: the frames are already
+    in hand, and re-rendering an episode to pull stills out of it would double
+    the cost of the run. Written under
+    `stills_root/ep_%04d/<view>_%06d.png`, indexed by the frame's own
+    position in the episode so a still can be located in the clip beside it.
+
+    `stride` of 0 writes nothing and is the default everywhere: stills are for
+    figures, not for review, and a run that did not ask for them should not pay
+    for them.
+
+    In a rollout this wraps `tee_episode_clips` rather than the render pool
+    directly, so it carries the same two obligations that chain already had:
+    it must not hold an episode while the next one is produced, and closing
+    it must close the iterator behind it, since the consumer now closes this
+    rather than the tee underneath it.
+    """
+    if stride < 0:
+        raise ValueError(f"stride must be >= 0, got {stride}")
+
+    # imageio ships in the `render` extra, and this module is imported at
+    # module level by the CLI, so hoisting this would make a base install
+    # unable to run any command at all.
+    import imageio.v3 as iio
+
+    stills_root = Path(stills_root)
+    source = iter(frames)
+    episode = 0
+    try:
+        while True:
+            try:
+                clips = next(source)
+            except StopIteration:
+                return
+            if stride > 0:
+                episode_dir = stills_root / f"ep_{episode:04d}"
+                episode_dir.mkdir(parents=True, exist_ok=True)
+                # Indexed rather than unpacked, as in `tee_episode_clips`: a
+                # `for key, clip in ...` binding would outlive this loop and
+                # survive the `del clips` below, holding one view across the
+                # next `next(source)` on top of the episode itself.
+                for key in clips:
+                    view = key.rsplit(".", 1)[-1]
+                    for frame_index in range(0, int(clips[key].shape[0]), stride):
+                        iio.imwrite(
+                            episode_dir / f"{view}_{frame_index:06d}.png",
+                            clips[key][frame_index],
+                        )
+            yield clips
             del clips
             episode += 1
     finally:
