@@ -172,7 +172,8 @@ def test_classification_matches_the_reward_the_dynamics_paid():
     #
     # iss-numerical specifically, and not iss: this env's state holds absolute
     # ECI positions at ~6.8e6 m, which float32 storage quantizes to a 0.5 m
-    # grid -- five times coarser than the 0.1 m dock gate -- so an outcome
+    # grid per axis, and up to 0.5 * sqrt(3) = 0.87 m on the NORM the dock gate
+    # tests -- five to nearly nine times that 0.1 m gate -- so an outcome
     # recovered from the stored state rather than recorded during the rollout
     # is unreliable in both directions here. iss stores the canonical relative
     # view itself at ~100 m, where the same recovery resolves the gate fine and
@@ -184,8 +185,8 @@ def test_classification_matches_the_reward_the_dynamics_paid():
     # even a quantized position stays inside it, while a policy flying on
     # measurements settles ~0.05-0.1 m out, right where 0.5 m of quantization
     # decides the answer. On this seed the stored terminal position error of
-    # the three docked episodes reads 0.17 m, 0.24 m and 0.34 m against a
-    # 0.1 m gate -- all three of them genuinely inside it.
+    # the two docked episodes reads 0.178 m and 0.366 m against a 0.1 m gate --
+    # both of them genuinely inside it.
     cfg = NUMERICAL.config_cls(sensor_noise=PRESETS["cooperative"])
     batch = ScanDriver(
         cfg=cfg,

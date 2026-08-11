@@ -128,13 +128,15 @@ class TrajectoryBatch:
     #
     # Recorded rather than re-derived from `true_state` because for some envs
     # it cannot be re-derived at all. `true_state` is stored float32, and an
-    # env whose state holds absolute ECI columns carries positions at ~3.6e6 m,
-    # where float32's spacing is 0.25 m; a relative view differences two such
-    # columns and so lands on a ~0.5 m grid. The dock gate is 0.1 m wide, five
-    # times finer than that grid, so whether a stored terminal state is inside
-    # it is not a question the stored numbers can answer. The collision test
-    # sweeps a 2.25 m radius through ~1.25 m clearances and is equally
-    # sensitive at a graze.
+    # env whose state holds absolute ECI columns carries positions at an
+    # orbital radius of ~6.8e6 m, where float32's spacing is 0.5 m. A relative
+    # view differences two such columns, so each of its axes carries up to that
+    # full spacing -- and the quantity the dock gate tests is the NORM of the
+    # three, which therefore reaches 0.5 * sqrt(3) = 0.87 m; over half a metre
+    # is observed in practice. Against a 0.1 m gate, whether a stored terminal
+    # state is inside it is not a question the stored numbers can answer. The
+    # collision test sweeps a 2.25 m radius through ~1.25 m clearances and is
+    # equally sensitive at a graze.
     #
     # None when the source cannot supply them; `envs.common.outcome` then falls
     # back to re-deriving, which is sound only for an env whose state IS the

@@ -14,12 +14,15 @@ through the same `EventChecker` the rollout used, from `batch.true_state`. That
 keeps one definition of each event, but it is sound only where float32 storage
 is fine-grained enough to answer the question being asked. A stored position
 lands on a grid of one float32 ulp of its own magnitude, and a relative view
-differenced from two such columns inherits the whole ulp: at the ~100 m of an
-env that stores the canonical relative view directly that grid is 1.5e-5 m,
-harmless against a 0.1 m dock gate; at the ~3.6e6 m of an env storing absolute
-ECI columns it is 0.25 m, two and a half times the gate, and whether the
-chaser was inside it is then not a question the stored numbers can answer.
-`classify_batch` refuses such a batch rather than answering it wrongly.
+differenced from two such columns inherits that whole ulp on each axis. For an
+env that stores the canonical relative view directly, at ~100 m, the ulp is
+7.6e-6 m and the gate is never in doubt. For one storing absolute ECI columns,
+at an orbital radius of ~6.8e6 m, it is 0.5 m per axis -- and the gate tests
+the NORM of the three axes, which reaches 0.5 * sqrt(3) = 0.87 m, over half a
+metre of it observed in practice. That is five to nearly nine times a 0.1 m
+gate, so whether the chaser was inside it is not a question the stored numbers
+can answer. `classify_batch` refuses such a batch rather than answering it
+wrongly.
 
 Truth, not measurement. The terminal state used by the fallback and by the
 error metrics comes from `batch.true_state`, never from `observations` -- under
@@ -29,8 +32,8 @@ because an env's stored state need not be the canonical relative one
 (iss-numerical stores absolute ECI columns).
 
 The error metrics are diagnostics, not gates, and are read from the stored
-state on every env: half a metre of quantization on a reported terminal
-position error is not material where a boolean gate five times finer is.
+state on every env: up to ~0.87 m of quantization on a reported terminal
+position error is not material where a boolean gate an order finer is.
 """
 
 from __future__ import annotations
