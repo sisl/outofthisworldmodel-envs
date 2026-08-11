@@ -12,7 +12,10 @@ unchanged for a future non-JAX environment.
 
 from __future__ import annotations
 
+import json
 import sys
+from collections import deque
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -28,10 +31,11 @@ from .datasets.video import (
     keys_for_names,
     parse_view_names,
 )
-from .drivers.types import RolloutSpec
+from .drivers.types import RolloutSpec, TrajectoryBatch, pack_episodes
 from .envs import ENV_REGISTRY, EnvSpec
 from .envs.common.config import BaseTaskConfig
 from .envs.common.docking_ports import PORT_NAMES
+from .envs.common.outcome import classify_batch
 from .envs.common.policies import DockParams, PolicyConfig
 from .envs.common.sensing import PRESETS
 
@@ -521,6 +525,317 @@ def generate(
             typer.echo(f"[generate] wrote LeRobot split to {out / name}")
 
     metadata.write(out)
+    typer.echo(f"[done] {out}")
+
+
+def _episode_row(batch: TrajectoryBatch, index: int) -> dict:
+    """One episode of `batch`, sliced to its own length, for `pack_episodes`.
+
+    Every array is cut at `batch.lengths[index]` rather than handed over whole:
+    the rows kept by a retrying rollout come from several batches, each padded
+    to ITS OWN longest episode, and a row carrying another batch's padding
+    would be repacked with that padding inside its length -- zeros that read
+    back as real timesteps rather than as pad.
+
+    The three optional channels are included only when the source batch has
+    them, which is exactly when `pack_episodes` is told to read them.
+    """
+    length = int(batch.lengths[index])
+    row = {
+        "obs": batch.observations[index, :length],
+        "act": batch.actions[index, :length],
+        "rew": batch.rewards[index, :length],
+        "terminated": bool(batch.terminated[index]),
+        "truncated": bool(batch.truncated[index]),
+    }
+    if batch.policy_ids is not None:
+        row["policy_id"] = int(batch.policy_ids[index])
+    if batch.dock_targets is not None:
+        row["dock_target"] = batch.dock_targets[index]
+    if batch.true_state is not None:
+        row["true_state"] = batch.true_state[index, :length]
+    return row
+
+
+@app.command()
+def rollout(
+    out: Path = typer.Option(..., help="Directory to write the rollout into."),
+    env: str = typer.Option("iss-numerical",
+                            help="Environment: " + ", ".join(ENV_REGISTRY) + "."),
+    env_config: Optional[Path] = typer.Option(
+        None, "--env-config",
+        help="Environment config file, YAML or TOML by suffix. Defaults to the "
+             "environment's own defaults."),
+    policy: str = typer.Option("dock", help="dock | orbit | random. 'union' is a "
+                               "training mixture, not a behaviour worth filming."),
+    port: str = typer.Option("", help="Docking port to fly to. Dock policy only; "
+                             f"one of {', '.join(PORT_NAMES)}. Empty keeps the "
+                             "single pose in the env config's dock section."),
+    episodes: int = typer.Option(1, help="Episodes to keep."),
+    seed: int = typer.Option(0, help="Seed for the first attempt; retries advance it."),
+    steps: int = typer.Option(7200, help="Max steps per episode."),
+    require_dock: bool = typer.Option(
+        False, "--require-dock/--no-require-dock",
+        help="Keep only episodes that ended docked, retrying seeds until "
+             "--episodes of them exist. Off by default: a rollout of whatever "
+             "happened is the more common thing to want."),
+    max_attempts: Optional[int] = typer.Option(
+        None, help="Cap on episodes rolled while retrying (default: 20x --episodes). "
+                   "A port that cannot be reached under a given noise preset is a "
+                   "finding, not something to loop on."),
+    render: bool = typer.Option(True, "--render/--no-render",
+                                help="Render video. On by default -- video is the point."),
+    render_views: str = typer.Option(
+        "fpv,dragon_iso",
+        help=f"Views to record: 'all' or a comma-joined list of {', '.join(VIEW_NAMES)}."),
+    frame_stride: int = typer.Option(
+        0, help="Also write every Nth frame as a PNG, for figures. 0 writes none."),
+    render_workers: int = typer.Option(1, help="Parallel render worker processes."),
+    gpu_index: Optional[int] = typer.Option(None, help="GPU adapter index for rendering."),
+) -> None:
+    """Roll out a few episodes and write their video, for review or figures.
+
+    Unlike `generate`, which fills a transition budget and writes a LeRobot
+    dataset, this produces a handful of clips and no dataset. It is also the
+    only path that can insist on a particular OUTCOME: `--require-dock` keeps
+    drawing seeds until it has the requested number of successful docks, which
+    is what a port-by-port sweep of docking footage needs.
+    """
+    # Every argument check comes first, before the env config is read, before
+    # the GPU is probed -- which pins a device for the whole process -- and
+    # long before any rollout: `--require-dock` runs can spend an hour before
+    # the first frame, and a usage error must cost a usage error rather than
+    # that. Same discipline generate documents at its own flag checks.
+    if env not in ENV_REGISTRY:
+        raise typer.BadParameter(
+            f"unknown environment '{env}'; available: {', '.join(ENV_REGISTRY)}"
+        )
+    if policy == "union":
+        raise typer.BadParameter(
+            "'union' draws a different sub-policy per episode, so a handful of "
+            "clips filmed under it shows no one behaviour -- it is a training "
+            "mixture, and `generate --policy union` is where it belongs. Film "
+            "dock, orbit or random."
+        )
+    if policy not in ("dock", "orbit", "random"):
+        raise typer.BadParameter(
+            f"unknown policy '{policy}'; use dock, orbit or random"
+        )
+    if episodes < 1:
+        raise typer.BadParameter(f"--episodes must be >= 1, got {episodes}")
+    if steps < 1:
+        raise typer.BadParameter(f"--steps must be >= 1, got {steps}")
+    if render_workers < 1:
+        raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
+    if port and port not in PORT_NAMES:
+        raise typer.BadParameter(
+            f"unknown port '{port}'; one of: {', '.join(PORT_NAMES)}"
+        )
+    if port and policy != "dock":
+        # Refused rather than ignored: the '{policy}' policy never regulates to
+        # a port, so accepting --port here would let a port-by-port sweep
+        # report eight port-targeted rollouts when it produced eight identical
+        # ones that flew nowhere near a port.
+        raise typer.BadParameter(
+            f"--port is inert for the '{policy}' policy, which does not fly to a "
+            f"docking port at all, so this run would not be the port-targeted "
+            f"rollout it reads as. Drop --port, or pass --policy dock."
+        )
+    if frame_stride < 0:
+        raise typer.BadParameter(f"--frame-stride must be >= 0, got {frame_stride}")
+    if frame_stride and not render:
+        raise typer.BadParameter(
+            "--frame-stride taps the rendered frames on their way past, and "
+            "--no-render produces none for it to tap. Drop --frame-stride, or "
+            "drop --no-render."
+        )
+    view_keys = keys_for_names(_parse_render_views(render_views))
+    attempts_cap = max_attempts if max_attempts is not None else 20 * episodes
+    if attempts_cap < episodes:
+        raise typer.BadParameter(
+            f"--max-attempts {attempts_cap} is below --episodes {episodes}, so "
+            f"the requested number of episodes cannot be reached however they "
+            f"turn out; raise it to at least {episodes}."
+        )
+    # Created up front rather than at write time: an unwritable path, or one
+    # that is already a file, is the caller naming the wrong directory, and
+    # under --require-dock the first write comes an hour of retries later --
+    # taking every episode rolled in the meantime with it.
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"cannot write --out {out}: {exc}", param_hint="--out"
+        ) from exc
+
+    env_spec = ENV_REGISTRY[env]
+    try:
+        cfg = env_spec.config_cls.load(env_config) if env_config is not None else env_spec.config_cls()
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise typer.BadParameter(
+            f"cannot read --env-config {env_config}: {exc}", param_hint="--env-config"
+        ) from exc
+
+    if render and not env_spec.renderable:
+        renderable = ", ".join(name for name, spec in ENV_REGISTRY.items() if spec.renderable)
+        raise typer.BadParameter(
+            f"--render does not support the '{env}' environment yet, only "
+            f"{renderable}. Every frame is posed through a render adapter, which "
+            "is what reads an env's rows in that env's own element order, and "
+            f"'{env}' has none registered (EnvSpec.make_render_adapter). "
+            "Rendering it arrives with its adapter, which is what flips "
+            "EnvSpec.renderable; until then, drop --render to roll out without "
+            "video."
+        )
+
+    try:
+        policy_cfg = _policy_config(policy, "measurement", port)
+    except Exception as exc:  # pydantic rejects unknown policies and ports
+        raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
+
+    if render:
+        from .render.device import check_gpu_index, select_gpu
+
+        # Both of these resolve before the rollout, exactly as generate does
+        # them and for the same reason: with --require-dock the clips are not
+        # reached until an hour of retries is already spent, and neither an
+        # unusable --gpu-index nor a dt with no whole frame rate to write the
+        # clips at may be discovered there.
+        resolved_fps = _resolve_fps(None, cfg.dt)
+        try:
+            if render_workers == 1:
+                select_gpu(gpu_index)
+            else:
+                check_gpu_index(gpu_index)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
+
+    # Seeds are retried whole batches at a time: an attempt rolls as many
+    # episodes as are still wanted, keeps whichever qualify, and the next
+    # attempt asks for the shortfall under the next seed.
+    driver_seed, attempted, kept = seed, 0, []
+    while len(kept) < episodes and attempted < attempts_cap:
+        wanted = min(episodes - len(kept), attempts_cap - attempted)
+        chosen = _resolve_driver("auto", cfg, policy_cfg, wanted, env_spec)
+        batch = chosen.driver.generate(
+            RolloutSpec(num_episodes=wanted, max_steps=steps, seed=driver_seed)
+        )
+        outcomes = classify_batch(batch, cfg, env_spec)
+        for index, outcome in enumerate(outcomes):
+            if len(kept) == episodes:
+                break
+            if require_dock and not outcome.docked:
+                continue
+            kept.append((driver_seed, wanted, index, batch, outcome))
+        attempted += batch.num_episodes
+        typer.echo(
+            f"[rollout] seed={driver_seed}: {batch.num_episodes} episode(s), "
+            f"{sum(o.docked for o in outcomes)} docked, "
+            f"{len(kept)}/{episodes} kept ({attempted}/{attempts_cap} rolled)"
+        )
+        driver_seed += 1
+
+    if len(kept) < episodes:
+        raise typer.BadParameter(
+            f"only {len(kept)} of {attempted} episodes docked, short of the "
+            f"{episodes} requested. Raise --max-attempts, or check whether "
+            f"{'port ' + port if port else 'this dock pose'} is reachable under "
+            f"this config's sensor noise."
+        )
+
+    source = kept[0][3]
+    kept_batch = pack_episodes(
+        [_episode_row(batch, index) for _, _, index, batch, _ in kept],
+        obs_dim=source.observations.shape[2],
+        act_dim=source.actions.shape[2],
+        records_policy_ids=source.policy_ids is not None,
+        records_dock_targets=source.dock_targets is not None,
+        records_true_state=source.true_state is not None,
+        state_dim=env_spec.layout.state_dim,
+    )
+
+    # The config as run, not the file that was passed: --env-config is
+    # optional and the defaults it falls back to move with the package, so a
+    # clip is only reproducible from the config it was actually flown under.
+    cfg.to_toml(out / "env_config.toml")
+    (out / "rollout.json").write_text(
+        json.dumps(
+            {
+                "env": env,
+                "policy": policy,
+                "port": port,
+                "require_dock": require_dock,
+                # The horizon flown, which the env config cannot supply: an
+                # episode ends at min(--steps, cfg.max_steps), so a lowered
+                # --steps is only recoverable from here.
+                "steps": steps,
+                # Enough to re-roll any one clip on its own:
+                #   rollout --seed SEED --episodes WANTED --steps STEPS \
+                #           --no-require-dock --env-config env_config.toml
+                # and take BATCH_INDEX out of it. `wanted` is part of that and
+                # not decoration -- the driver is built with num_envs=wanted,
+                # so the attempt's size sets lane count, lane assignment and
+                # how much of the seed's stream each lane consumes. `episode`
+                # is the position in this rollout, which is the number its
+                # clip and its stills directory carry; `batch_index` is the
+                # position within the attempt that rolled it, and the two
+                # differ whenever an attempt's earlier episodes were dropped.
+                "episodes": [
+                    {
+                        "episode": position,
+                        "seed": episode_seed,
+                        "wanted": wanted,
+                        "batch_index": index,
+                        **asdict(outcome),
+                    }
+                    for position, (episode_seed, wanted, index, _, outcome)
+                    in enumerate(kept)
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
+    if render:
+        from .datasets.video import (
+            iter_batch_frames,
+            tee_episode_clips,
+            tee_episode_stills,
+        )
+        from .render.earth import earth_texture_path
+        from .render.iss_scene import RenderConfig
+
+        # Resolved once here rather than inside each render worker, which is
+        # what generate does and for the same reasons: a miss bakes a full map
+        # from a multi-gigabyte source, and N concurrent bakes could exhaust
+        # memory or settle on different tiers.
+        for kind in ("color", "clouds", "bump"):
+            earth_texture_path(kind, allow_download=True)
+
+        render_cfg = RenderConfig(**cfg.render) if cfg.render else RenderConfig()
+        typer.echo(
+            f"[render] {int(kept_batch.lengths.sum())} frames, "
+            f"{len(view_keys)} view(s) "
+            f"({', '.join(key.rsplit('.', 1)[-1] for key in view_keys)}), "
+            f"{render_workers} worker(s)"
+        )
+        frames = iter_batch_frames(
+            kept_batch, render_cfg, keys=view_keys, workers=render_workers,
+            gpu_index=gpu_index, env_name=env, env_cfg=cfg,
+        )
+        frames = tee_episode_clips(frames, out / "media", "rollout", resolved_fps)
+        if frame_stride:
+            frames = tee_episode_stills(frames, out / "frames", frame_stride)
+        # Both tees are pass-through generators, and unlike generate there is
+        # no dataset writer downstream to pull them, so nothing renders unless
+        # this drains the stream itself. Drained through a zero-length deque
+        # rather than a `for` loop: a loop variable is bound until the NEXT
+        # next() returns, holding the episode just written while the pool
+        # renders the one after it -- two episodes of every view at once,
+        # which is the one-episode bound both tees are built to keep.
+        deque(frames, maxlen=0)
+
     typer.echo(f"[done] {out}")
 
 
