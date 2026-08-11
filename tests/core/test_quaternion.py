@@ -5,6 +5,7 @@ import pytest
 from owm_envs.core.integrator import Integrator
 from owm_envs.core.quaternion import (
     BODY_Z,
+    quat_angle_between,
     quat_conjugate,
     quat_derivative_from_omega_body,
     quat_from_body_z_to,
@@ -176,3 +177,36 @@ def test_quat_from_body_z_to_handles_exact_antiparallel_target():
     assert np.isclose(float(jnp.linalg.norm(q)), 1.0, atol=1e-6)
     mapped = rotate_body_to_world(q, BODY_Z)
     np.testing.assert_allclose(np.asarray(mapped), np.asarray(target), atol=1e-5)
+
+
+def test_quat_angle_between_is_zero_for_identical_attitudes():
+    q = quat_normalize(jnp.asarray([0.7071068, -0.7071068, 0.0, 0.0]))
+    assert float(quat_angle_between(q, q)) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_quat_angle_between_recovers_a_known_rotation():
+    # 90 deg about x: w = cos(45 deg), x = sin(45 deg).
+    identity = jnp.asarray([1.0, 0.0, 0.0, 0.0])
+    quarter = jnp.asarray([0.7071068, 0.7071068, 0.0, 0.0])
+    assert float(quat_angle_between(identity, quarter)) == pytest.approx(
+        np.pi / 2.0, abs=1e-5
+    )
+
+
+def test_quat_angle_between_ignores_the_double_cover():
+    # q and -q are the same rotation; without the abs() on the scalar part
+    # their angles come out 2*pi apart.
+    q = jnp.asarray([0.7071068, 0.7071068, 0.0, 0.0])
+    identity = jnp.asarray([1.0, 0.0, 0.0, 0.0])
+    assert float(quat_angle_between(identity, q)) == pytest.approx(
+        float(quat_angle_between(identity, -q)), abs=1e-6
+    )
+
+
+def test_quat_angle_between_is_bounded_by_pi():
+    # A 270 deg rotation is a 90 deg rotation the other way round.
+    identity = jnp.asarray([1.0, 0.0, 0.0, 0.0])
+    three_quarter = jnp.asarray([-0.7071068, 0.7071068, 0.0, 0.0])
+    angle = float(quat_angle_between(identity, three_quarter))
+    assert 0.0 <= angle <= np.pi + 1e-6
+    assert angle == pytest.approx(np.pi / 2.0, abs=1e-5)

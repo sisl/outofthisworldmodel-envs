@@ -179,3 +179,25 @@ def quat_from_body_z_to(target_dir: jnp.ndarray) -> jnp.ndarray:
     antiparallel = dot < -1.0 + 1e-6
     q = jnp.where(antiparallel, jnp.array([0.0, 1.0, 0.0, 0.0], dtype=jnp.float32), q)
     return quat_normalize(q)
+
+
+def quat_angle_between(q_a: jnp.ndarray, q_b: jnp.ndarray) -> jnp.ndarray:
+    """Rotation angle in [0, pi] carrying `q_a` onto `q_b`.
+
+    The magnitude of the attitude error, without the axis `axis_angle_from_quat`
+    also returns -- which is what a scalar penalty term and a scalar success
+    gate both want.
+
+    abs() on the scalar part handles the q/-q double cover: q and -q are the
+    same rotation, but their w components differ in sign and would give angles
+    2*pi apart. It also folds the far half-turn onto the near one, so a 270 deg
+    error reads as the 90 deg rotation it actually is, and bounds the result at
+    pi.
+
+    Neither input is normalised here. Every caller holds an attitude that its
+    own dynamics keep unit-norm, and normalising would hide a state that had
+    stopped being one.
+    """
+    q_err = quat_multiply(quat_conjugate(q_a), q_b)
+    w = jnp.clip(jnp.abs(q_err[0]), -1.0, 1.0)
+    return 2.0 * jnp.arccos(w)
