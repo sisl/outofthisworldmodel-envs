@@ -235,24 +235,25 @@ def test_the_numerical_trial_recipe_is_a_handful_of_episodes():
 
 @pytest.mark.parametrize("name", ["500k", "trial"])
 def test_the_numerical_recipes_keep_train_and_val_on_different_seeds(name):
-    gen = GenerationConfig.from_yaml(ISS / "gen" / f"{name}.yaml")
+    gen = GenerationConfig.from_yaml(NUMERICAL / "gen" / f"{name}.yaml")
+    # Both suites name their recipes 500k and trial, so a path pointing at the
+    # wrong directory loads a real file whose seeds are also (0, 1) and passes.
+    # Pin the env to make that failure loud.
+    assert gen.env == "iss-numerical"
     assert (gen.splits["train"].seed, gen.splits["val"].seed) == (0, 1)
 
 
 @pytest.mark.parametrize("name", ["500k", "trial"])
 def test_the_numerical_recipes_preserve_the_shipped_policy_split(name, default_gen):
-    # Resizing a split must not disturb the held-out-port design, nor the
-    # controller gains -- only the orbit policy's radius range, which the
-    # numerical recipes widen deliberately, is allowed to differ from the
-    # shipped iss recipe.
-    gen = GenerationConfig.from_yaml(ISS / "gen" / f"{name}.yaml")
+    # Resizing a split must not disturb the held-out-port design or the
+    # controller gains. The numerical recipes carry the shipped iss policy
+    # unchanged -- including the orbit radius range, which revolution closure
+    # bounds at the same 80-130 m whatever the dynamics -- so compare it whole
+    # rather than excluding fields that no longer differ.
+    gen = GenerationConfig.from_yaml(NUMERICAL / "gen" / f"{name}.yaml")
+    assert gen.env == "iss-numerical"
     for split in ("train", "val"):
-        assert gen.splits[split].policy.model_dump(exclude={"orbit"}) == (
-            default_gen.splits[split].policy.model_dump(exclude={"orbit"})
-        )
-        assert gen.splits[split].policy.orbit.model_dump(exclude={"radius_range_m"}) == (
-            default_gen.splits[split].policy.orbit.model_dump(exclude={"radius_range_m"})
-        )
+        assert gen.splits[split].policy == default_gen.splits[split].policy
         assert gen.splits[split].max_steps == default_gen.splits[split].max_steps
     assert gen.splits["train"].policy.type == "union"
     assert gen.splits["val"].policy.type == "dock"
