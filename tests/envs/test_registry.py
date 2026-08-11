@@ -4,26 +4,27 @@ import gymnasium as gym
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from owm_envs.envs import ENV_REGISTRY
 
 
 def test_registry_has_iss():
     spec = ENV_REGISTRY["iss"]
-    assert spec.gym_id == "ISS-Docking-v0"
+    assert spec.gym_id == "ISS-Docking-v1"
     assert spec.layout.state_dim == 13
 
 
 def test_registry_has_iss_hcw():
     spec = ENV_REGISTRY["iss-hcw"]
-    assert spec.gym_id == "ISS-HCW-Docking-v0"
+    assert spec.gym_id == "ISS-HCW-Docking-v1"
     assert spec.layout.state_dim == 15
     assert spec.make_dynamics(spec.config_cls()).state_dim == 15
 
 
 def test_registry_has_iss_numerical():
     spec = ENV_REGISTRY["iss-numerical"]
-    assert spec.gym_id == "ISS-Numerical-Docking-v0"
+    assert spec.gym_id == "ISS-Numerical-Docking-v1"
     assert spec.layout.state_dim == 21
     assert spec.make_dynamics(spec.config_cls()).state_dim == 21
     assert spec.make_observe is not None
@@ -133,3 +134,21 @@ def test_gym_ids_make():
     for spec in ENV_REGISTRY.values():
         env = gym.make(spec.gym_id)
         env.close()
+
+
+def test_gym_ids_are_v1():
+    assert {spec.gym_id for spec in ENV_REGISTRY.values()} == {
+        "ISS-Docking-v1",
+        "ISS-HCW-Docking-v1",
+        "ISS-Numerical-Docking-v1",
+    }
+
+
+def test_v0_ids_are_gone():
+    # The reward changed meaning; a v0 that still resolves would be a lie
+    # about what it produces.
+    import gymnasium
+
+    for retired in ("ISS-Docking-v0", "ISS-HCW-Docking-v0", "ISS-Numerical-Docking-v0"):
+        with pytest.raises(gymnasium.error.DeprecatedEnv):
+            gymnasium.make(retired)

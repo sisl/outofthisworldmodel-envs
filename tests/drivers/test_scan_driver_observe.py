@@ -26,7 +26,7 @@ from owm_envs.envs.iss_numerical.observe import make_observe
 
 NUMERICAL_SPEC = EnvSpec(
     name="iss-numerical",
-    gym_id="ISS-Numerical-Docking-v0",
+    gym_id="ISS-Numerical-Docking-v1",
     config_cls=NumericalConfig,
     layout=NUM_LAYOUT,
     make_dynamics=NumericalDynamics,

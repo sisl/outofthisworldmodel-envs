@@ -10,7 +10,7 @@ def test_import_owm_envs_alone_registers_the_env():
     code = (
         "import owm_envs\n"
         "import gymnasium as gym\n"
-        "env = gym.make('ISS-Docking-v0')\n"
+        "env = gym.make('ISS-Docking-v1')\n"
         "env.close()\n"
     )
     result = subprocess.run(
