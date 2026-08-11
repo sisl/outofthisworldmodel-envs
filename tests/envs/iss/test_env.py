@@ -21,7 +21,7 @@ def test_env_checker_accepts_goal_error_observations():
 
 
 def test_registered_id_constructs():
-    env = gym.make("ISS-Docking-v0")
+    env = gym.make("ISS-Docking-v1")
     assert env is not None
     env.close()
 

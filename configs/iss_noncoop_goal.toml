@@ -54,8 +54,21 @@ sigma_rate_rad_s = 1e-05
 goal_error = true
 
 [reward_weights]
-position = -1.0
-velocity = -0.35
-angular_velocity = -0.1
-control_effort = -0.05
+position = -0.5
+velocity = -0.2
+attitude = -0.2
+body_rate = -0.1
 collision = -1000000.0
+dock_success = 10000.0
+
+[reward_shaping]
+position_delta_m = 1.0
+position_scale_m = 225.0
+velocity_delta_m_s = 0.1
+velocity_scale_m_s = 5.0
+attitude_delta_rad = 0.05
+attitude_scale_rad = 3.141592653589793
+rate_delta_rad_s = 0.005
+rate_scale_rad_s = 0.05
+rotation_gate_far = 0.1
+rotation_gate_range_m = 25.0

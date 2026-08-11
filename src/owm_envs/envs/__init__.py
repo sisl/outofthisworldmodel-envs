@@ -101,7 +101,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
     return {
         "iss": EnvSpec(
             name="iss",
-            gym_id="ISS-Docking-v0",
+            gym_id="ISS-Docking-v1",
             config_cls=ISSConfig,
             layout=ISS_LAYOUT,
             make_dynamics=ISSDynamics,
@@ -112,7 +112,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
         ),
         "iss-hcw": EnvSpec(
             name="iss-hcw",
-            gym_id="ISS-HCW-Docking-v0",
+            gym_id="ISS-HCW-Docking-v1",
             config_cls=HCWConfig,
             layout=HCW_LAYOUT,
             make_dynamics=HCWDynamics,
@@ -130,7 +130,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
         ),
         "iss-numerical": EnvSpec(
             name="iss-numerical",
-            gym_id="ISS-Numerical-Docking-v0",
+            gym_id="ISS-Numerical-Docking-v1",
             config_cls=NumericalConfig,
             layout=NUM_LAYOUT,
             make_dynamics=NumericalDynamics,
@@ -168,16 +168,16 @@ def __getattr__(name: str) -> Any:
 
 
 register(
-    id="ISS-Docking-v0",
+    id="ISS-Docking-v1",
     entry_point="owm_envs.envs.iss.env:ISSEnv",
 )
 
 register(
-    id="ISS-HCW-Docking-v0",
+    id="ISS-HCW-Docking-v1",
     entry_point="owm_envs.envs.iss_hcw.env:HCWEnv",
 )
 
 register(
-    id="ISS-Numerical-Docking-v0",
+    id="ISS-Numerical-Docking-v1",
     entry_point="owm_envs.envs.iss_numerical.env:NumericalEnv",
 )

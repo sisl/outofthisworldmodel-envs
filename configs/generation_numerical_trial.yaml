@@ -1,0 +1,198 @@
+env: iss-numerical
+splits:
+  train:
+    num_episodes: 64
+    min_transitions: null
+    max_steps: 7200
+    seed: 0
+    policy:
+      type: union
+      observe: measurement
+      orbit:
+        radius_range_m:
+        - 80.0
+        - 130.0
+        speed_fraction_range:
+        - 0.75
+        - 1.0
+        thrust_utilization: 0.6
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
+      dock:
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
+        ports:
+        - name: harmony_fwd_pma2
+          position:
+          - 0.194
+          - -24.5
+          - -3.336
+          quaternion:
+          - 0.7071067690849304
+          - -0.7071067690849304
+          - -0.0
+          - 0.0
+        - name: harmony_nadir_cbm
+          position:
+          - 0.233
+          - -14.939
+          - -9.985
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+        - name: zvezda_aft
+          position:
+          - 0.233
+          - 38.55
+          - -1.87
+          quaternion:
+          - -0.0
+          - 0.0
+          - 0.7071067690849304
+          - -0.7071067690849304
+        - name: pirs_nadir
+          position:
+          - 0.233
+          - 20.129
+          - -12.79
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+        - name: rassvet_nadir
+          position:
+          - 0.24
+          - 7.161
+          - -14.767
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+      union_weights:
+      - 0.3
+      - 0.35
+      - 0.35
+  val:
+    num_episodes: 2
+    min_transitions: null
+    max_steps: 7200
+    seed: 1
+    policy:
+      type: dock
+      observe: measurement
+      orbit:
+        radius_range_m:
+        - 80.0
+        - 130.0
+        speed_fraction_range:
+        - 0.75
+        - 1.0
+        thrust_utilization: 0.6
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
+      dock:
+        kp_position: 16.0
+        kd_velocity: 880.0
+        kp_attitude: 800.0
+        kd_attitude: 16000.0
+        ports:
+        - name: harmony_fwd_pma2
+          position:
+          - 0.194
+          - -24.5
+          - -3.336
+          quaternion:
+          - 0.7071067690849304
+          - -0.7071067690849304
+          - -0.0
+          - 0.0
+        - name: harmony_zenith_cbm
+          position:
+          - 0.233
+          - -14.939
+          - 4.782
+          quaternion:
+          - 0.0
+          - 1.0
+          - 0.0
+          - -0.0
+        - name: harmony_nadir_cbm
+          position:
+          - 0.233
+          - -14.939
+          - -9.985
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+        - name: zvezda_aft
+          position:
+          - 0.233
+          - 38.55
+          - -1.87
+          quaternion:
+          - -0.0
+          - 0.0
+          - 0.7071067690849304
+          - -0.7071067690849304
+        - name: poisk_zenith
+          position:
+          - 0.233
+          - 20.129
+          - 8.555
+          quaternion:
+          - 0.0
+          - 1.0
+          - 0.0
+          - -0.0
+        - name: pirs_nadir
+          position:
+          - 0.233
+          - 20.129
+          - -12.79
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+        - name: rassvet_nadir
+          position:
+          - 0.24
+          - 7.161
+          - -14.767
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+        - name: unity_nadir_cbm
+          position:
+          - 0.233
+          - 0.166
+          - -11.418
+          quaternion:
+          - -0.0
+          - -0.0
+          - 0.0
+          - 1.0
+      union_weights:
+      - 0.3
+      - 0.35
+      - 0.35
+num_envs: 64
+fps: null
+driver: auto
+render_views:
+- fpv
+- composite
