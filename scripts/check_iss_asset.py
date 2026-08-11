@@ -3,8 +3,11 @@
 The station's world placement is a constant of the environment: the collision
 hull, the dock poses and the recentre offset in `render/iss_frame` are all
 authored against it. A variant asset (other spacecraft berthed at other
-ports) is only usable if every module it shares with the reference sits at
-exactly the same coordinates, so swapping the file cannot move the station.
+ports) is only usable if every module it shares with the reference sits at the
+same coordinates, so swapping the file cannot move the station. Shared modules
+are compared as point sets, to within `--tolerance`: an exporter is free to
+split or merge vertices, so what has to hold is that the surface is in the
+same place, not that the vertex buffer is written the same way.
 
 Works on the glTF document directly -- vertex positions grouped by their
 nearest named ancestor node -- so it needs no render extra and no GPU. The
@@ -15,8 +18,8 @@ by `ISS_RECENTRE_OFFSET`.
 
     uv run scripts/check_iss_asset.py path/to/variant.glb
 
-Exits non-zero if any module shared with the reference moved or changed
-geometry. Modules only in one asset (added or removed visiting vehicles) are
+Exits non-zero if any module shared with the reference moved further than the
+tolerance. Modules only in one asset (added or removed visiting vehicles) are
 reported with their world bounding box but are not failures.
 """
 
@@ -29,6 +32,7 @@ from typing import Optional
 
 import numpy as np
 import typer
+from scipy.spatial import cKDTree
 
 from owm_envs.render import asset_path
 from owm_envs.render.iss_frame import ISS_RECENTRE_OFFSET, UPRIGHT_EULER_XYZ
@@ -61,7 +65,7 @@ def _upright_matrix(euler_xyz: tuple[float, float, float]) -> np.ndarray:
 
 
 # The upright rotation ISSScene applies: asset +Y -> world +Z.
-_UPRIGHT = _upright_matrix(UPRIGHT_EULER_XYZ)
+UPRIGHT = _upright_matrix(UPRIGHT_EULER_XYZ)
 
 
 def read_glb(path: Path) -> tuple[dict, bytes]:
@@ -84,7 +88,7 @@ def read_glb(path: Path) -> tuple[dict, bytes]:
     return document, binary
 
 
-def _node_matrix(node: dict) -> np.ndarray:
+def node_matrix(node: dict) -> np.ndarray:
     if "matrix" in node:
         return np.asarray(node["matrix"], dtype=np.float64).reshape(4, 4).T
     matrix = np.eye(4)
@@ -125,7 +129,7 @@ def module_vertices(path: Path) -> dict[str, np.ndarray]:
 
     def visit(index: int, parent_matrix: np.ndarray, owner: str) -> None:
         node = nodes[index]
-        matrix = parent_matrix @ _node_matrix(node)
+        matrix = parent_matrix @ node_matrix(node)
         name = str(node.get("name", "")).strip()
         if name:
             owner = name
@@ -142,9 +146,25 @@ def module_vertices(path: Path) -> dict[str, np.ndarray]:
 
     offset = np.asarray(ISS_RECENTRE_OFFSET, dtype=np.float64)
     return {
-        name: np.concatenate(chunks) @ _UPRIGHT.T - offset
+        name: np.concatenate(chunks) @ UPRIGHT.T - offset
         for name, chunks in modules.items()
     }
+
+
+def _displacement(reference: np.ndarray, candidate: np.ndarray) -> float:
+    """How far the two vertex sets are from covering each other, in metres.
+
+    The larger of the two one-sided nearest-neighbour distances, so it is zero
+    only when every vertex of each module lies on a vertex of the other, and a
+    module translated by d reports exactly d. Independent of vertex count and
+    ordering, which an exporter may change without moving anything. It does
+    compare vertices rather than surfaces, so a candidate that subdivides a
+    face reports the distance from each new vertex to the nearest reference
+    vertex.
+    """
+    forward = cKDTree(candidate).query(reference, k=1)[0].max()
+    backward = cKDTree(reference).query(candidate, k=1)[0].max()
+    return float(max(forward, backward))
 
 
 def _bbox(points: np.ndarray) -> str:
@@ -163,7 +183,12 @@ def main(
         None, help="Baseline GLB; default is the shipped ISS asset."
     ),
     tolerance: float = typer.Option(
-        1e-6, help="Maximum allowed displacement of a shared module, in metres."
+        1e-3,
+        help=(
+            "Maximum displacement of a shared module, in metres, that still "
+            "counts as the same placement. Above the float32 round-trip noise "
+            "of re-exporting a GLB, far below the 0.1 m dock gate."
+        ),
     ),
 ) -> None:
     baseline = reference or asset_path("international-space-station", "ISS_base.glb")
@@ -180,22 +205,19 @@ def main(
     failures = []
     worst = 0.0
     for name in shared:
-        if ref[name].shape != cand[name].shape:
-            failures.append(f"  changed geometry: {name} "
-                            f"({ref[name].shape[0]} -> {cand[name].shape[0]} verts)")
-            continue
-        displacement = float(np.abs(ref[name] - cand[name]).max())
+        displacement = _displacement(ref[name], cand[name])
         worst = max(worst, displacement)
         if displacement > tolerance:
             failures.append(f"  moved {displacement:.6f} m: {name}")
 
-    typer.echo(f"max displacement over unchanged shared modules: {worst:.9f} m")
+    typer.echo(f"max displacement over shared modules: {worst:.9f} m")
     if failures:
         typer.echo("FAIL: the station would not render where the reference does:")
         for line in failures:
             typer.echo(line)
         raise typer.Exit(1)
-    typer.echo("OK: every shared module is identical; the station renders at the same world location.")
+    typer.echo(f"OK: every shared module is within {tolerance} m; "
+               "the station renders at the same world location.")
 
 
 if __name__ == "__main__":
