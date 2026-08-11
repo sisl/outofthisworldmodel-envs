@@ -283,6 +283,10 @@ _GLOW_QUEUE = 2200  # the atmospheric limb, over the deck
 # which is deliberate rather than an omission here: see `_build_ambient_light`.
 _FILL_INTENSITY_FRACTION = 0.35
 
+# Photosphere map for the sun disc, under resources/sun. Equirectangular, so
+# it lands on `sphere_geometry`'s UVs without reprojection.
+SUN_TEXTURE = "sun_2k.jpg"
+
 
 def _max_texture_size() -> int:
     return int(get_shared().device.limits["max-texture-dimension-2d"])
@@ -723,14 +727,33 @@ class ISSScene:
         return moon_group
 
     def _build_sun_sphere(self) -> gfx.Mesh:
+        """The sun as a textured disc at `sun_visual_distance_m`.
+
+        A proxy at a fictitious distance, not the sun where it really is: the
+        radius is derived from that distance so the disc subtends
+        `sun_angular_diameter_deg`, which is what the frame actually shows.
+        `_apply_lighting` moves it along the sphere of that radius, never off
+        it, so the angular size holds however the ephemeris points it.
+
+        Basic-material, so nothing shades it: the photosphere emits rather than
+        reflects, and a lit material would give it a terminator. The map is
+        left at full white so its own colour comes through -- the texture is
+        already the sun's, and tinting it again would apply that colour twice.
+        """
         cfg = self.cfg
         distance = max(cfg.sun_visual_distance_m, 1.0)
         angular_radius_rad = 0.5 * np.deg2rad(cfg.sun_angular_diameter_deg)
         radius = max(distance * float(np.tan(angular_radius_rad)), 1.0)
-        sun_mat = gfx.MeshBasicMaterial(color=(1.0, 0.96, 0.82, 1.0))
+        sun_mat = gfx.MeshBasicMaterial(
+            map=_texture_map(_load_rgb_texture(asset_path("sun", SUN_TEXTURE))),
+            color=(1.0, 1.0, 1.0, 1.0),
+        )
         sun_mat.render_queue = _DISTANT_QUEUE
+        # 64x32 rather than 32x16: the disc is a few pixels wide in the FPV
+        # view but fills the frame of any narrow-field shot, where a 32-segment
+        # silhouette reads as a polygon rather than a circle.
         sun = gfx.Mesh(
-            gfx.sphere_geometry(radius=radius, width_segments=32, height_segments=16),
+            gfx.sphere_geometry(radius=radius, width_segments=64, height_segments=32),
             sun_mat,
         )
         direction = _unit(np.array(cfg.sun_direction_world, dtype=np.float32))
