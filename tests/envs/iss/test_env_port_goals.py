@@ -222,26 +222,35 @@ def test_dock_success_gates_on_the_drawn_port_not_the_config_pose():
 
 
 def test_reward_position_term_targets_the_drawn_port():
-    # At rest at the origin with no action, every reward term but position is
-    # zero, so the reward is exactly -|goal|^2 for whichever goal is in force.
+    # At rest at the origin with no action the velocity and body-rate terms are
+    # exactly zero, so the reward is the position and attitude pair alone --
+    # and both are measured against whichever goal pose is in force. Seed 0
+    # leaves the chaser 38.596 m and 176.08 deg from zvezda_aft:
+    #     position  -0.5 * (sqrt(38.596**2 + 1**2) - 1) / 225      = -0.0835755
+    #     gate       0.1 + 0.9 / (1 + (38.596 / 25)**2)            =  0.366001
+    #     attitude  -0.2 * (sqrt(3.073179**2 + 0.05**2) - 0.05)/pi = -0.1924874
+    #     total     -0.0835755 + 0.366001 * -0.1924874             = -0.1540261
     ported = ISSEnv(at_origin(ports=("zvezda_aft",), enabled=False))
     ported.reset(seed=0)
     _, reward, _, _, _ = ported.step(ZERO_ACTION)
-    expected = -float(np.sum(port_target("zvezda_aft")[0:3] ** 2))
-    assert reward == pytest.approx(expected, rel=1e-5)
+    assert reward == pytest.approx(-0.1540261, rel=1e-5)
 
+    # The shipped pose is 24.628 m and 161.98 deg from that same state, so the
+    # same three lines give -0.0525523, 0.556741 and -0.1768217.
     plain = ISSEnv(at_origin(enabled=False))
     plain.reset(seed=0)
     _, plain_reward, _, _, _ = plain.step(ZERO_ACTION)
-    assert plain_reward == pytest.approx(
-        -float(np.sum(np.asarray(ISSConfig().dock.position) ** 2)), rel=1e-5
-    )
+    assert plain_reward == pytest.approx(-0.1509963, rel=1e-5)
     assert reward != pytest.approx(plain_reward)
 
 
 def test_reward_goal_position_still_outranks_a_drawn_port():
     # An explicit reward target is an instruction to shape toward some other
-    # point entirely; a per-episode port does not revoke it.
+    # point entirely; a per-episode port does not revoke it. It moves the
+    # POSITION target only, though, so what is left at the origin is the
+    # attitude term against the drawn port's quaternion, ungated because the
+    # range to (0, 0, 0) is zero:
+    #     -0.2 * (sqrt(3.073179**2 + 0.05**2) - 0.05) / pi = -0.1924874
     cfg = ISSConfig(
         max_steps=100,
         physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(0.0, 0.0)),
@@ -251,7 +260,7 @@ def test_reward_goal_position_still_outranks_a_drawn_port():
     env = ISSEnv(cfg)
     env.reset(seed=0)
     _, reward, _, _, _ = env.step(ZERO_ACTION)
-    assert reward == pytest.approx(0.0, abs=1e-6)
+    assert reward == pytest.approx(-0.1924874, rel=1e-5)
 
 
 @pytest.mark.parametrize("suffix", [".yaml", ".toml"])

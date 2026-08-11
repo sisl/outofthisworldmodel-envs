@@ -139,8 +139,7 @@ class ISSEnv(PortGoalMixin, gym.Env):
         next_state, events = self._jit_step(self._state, action_j, self._dock_pose)
         reward = float(
             docking_reward(
-                next_state, action_j, events, self.cfg,
-                None if self._dock_pose is None else self._dock_pose[0:3],
+                next_state, action_j, events, self.cfg, self._dock_pose,
             )
         )
 
