@@ -68,13 +68,17 @@ def _lighting(**overrides):
     return Lighting(**(kwargs | overrides))
 
 
-def test_the_atmosphere_must_stay_below_the_station():
+def test_an_atmosphere_reaching_past_the_station_is_rejected():
     """A shell the camera flies inside stops being a rim at the horizon and
     becomes a wash over the whole sky, because every ray is then inside the
-    air. The default has to leave the station outside it."""
-    cfg = RenderConfig()
-    outer = cfg.earth_radius_m * cfg.earth_atmosphere_scale
-    assert outer < cfg.earth_radius_m + cfg.iss_altitude_m
+    air. That is a property of the config rather than of any one frame, so it
+    is refused where the config is built rather than left to be discovered in
+    the pixels."""
+    assert RenderConfig().earth_atmosphere_scale == pytest.approx(1.020)
+    with pytest.raises(ValueError, match="wash over the whole sky"):
+        RenderConfig(earth_atmosphere_scale=1.09)
+    # The check is about the limb, so it does not fire when there is no limb.
+    RenderConfig(earth_atmosphere_scale=1.09, show_earth_glow=False)
 
 
 def test_the_limb_is_one_shaded_pass_not_a_stack():

@@ -259,8 +259,12 @@ class NumericalEnv(PortGoalMixin, gym.Env):
 
         if self._renderer is None:
             self._renderer = self._make_renderer()
+        # At the state's own width, for the same reason `_true_state` is: the
+        # adapter DIFFERENCES the chaser and chief ECI columns to get the pose
+        # it draws, and at float32 those ~6.8e6 m columns sit on a 0.5 m grid
+        # the difference inherits in full.
         return self._renderer.render(
-            self._render_adapter(np.asarray(self._state, dtype=np.float32)),
+            self._render_adapter(np.asarray(self._state, dtype=np.float64)),
             view=self.cfg.render_view,
         )
 

@@ -323,6 +323,14 @@ def illumination(chief_r_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
     than fades. Nothing in the segment form cancels worse than b - c over a
     range of 2a, so it holds to ~1e-4 even at f32 and to rounding in the f64
     it is evaluated at here.
+
+    The chord is placed at (b**2 - c**2) / 2c from the sun's centre, which is
+    the exact radical-axis distance short of a term in a**2 / 2c. Restoring
+    that term does NOT make this more accurate -- measured over a penumbra
+    crossing it moves the worst case from 5.7e-4 to 8.1e-4 and leaves the mean
+    at 4.8e-4 -- because what is left is the limb's curvature, which is the
+    same size and partly cancels it. The straight chord is the approximation,
+    not the placement of it.
     """
     r = jnp.asarray(chief_r_eci, jnp.float64)[:3]
     to_sun = jnp.asarray(sun_position(epoch), jnp.float64) - r
@@ -331,7 +339,11 @@ def illumination(chief_r_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
 
     sun_radius_rad = jnp.arcsin(R_SUN / to_sun_norm)
     earth_radius_rad = jnp.arcsin(R_EARTH / r_norm)
-    separation_rad = jnp.arccos(-jnp.dot(r, to_sun) / (r_norm * to_sun_norm))
+    # Clipped because the quotient is only mathematically in [-1, 1]: a last
+    # rounding past it takes arccos to NaN, and a NaN illumination blacks out
+    # a frame rather than degrading it.
+    cos_separation = jnp.clip(-jnp.dot(r, to_sun) / (r_norm * to_sun_norm), -1.0, 1.0)
+    separation_rad = jnp.arccos(cos_separation)
 
     chord = jnp.clip(
         (earth_radius_rad**2 - separation_rad**2)

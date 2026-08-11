@@ -28,6 +28,7 @@ import numpy as np
 import pygfx as gfx
 import pylinalg as la
 from PIL import Image
+from pydantic import model_validator
 from pygfx.renderers.wgpu import get_shared
 
 from owm_envs.core.models import ConfigModel
@@ -154,6 +155,22 @@ class RenderConfig(ConfigModel):
     iss_fpv_up_iss: tuple[float, float, float] = (0.0, 1.0, 0.0)
     iss_fpv_target_distance_m: float = 500.0
     iss_fpv_fov_y_deg: float = 82.0
+
+    @model_validator(mode="after")
+    def _atmosphere_stays_below_the_station(self) -> RenderConfig:
+        """The limb shader shades the air still in front of the camera, so a
+        camera inside the shell sees a wash over the whole sky instead of a rim
+        at the horizon. The scene only ever puts a camera at the station's own
+        radius, so the shell has to end below it."""
+        outer = self.earth_atmosphere_scale * self.earth_radius_m
+        station = self.earth_radius_m + self.iss_altitude_m
+        if self.show_earth_glow and outer >= station:
+            raise ValueError(
+                f"earth_atmosphere_scale {self.earth_atmosphere_scale} puts the top "
+                f"of the atmosphere at {outer:.4g} m, at or above the station's "
+                f"{station:.4g} m; the limb would wash over the whole sky"
+            )
+        return self
 
 
 def _unit(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:

@@ -200,7 +200,7 @@ class ISSEnv(PortGoalMixin, gym.Env):
         if self._renderer is None:
             self._renderer = self._make_renderer()
         return self._renderer.render(
-            self._render_adapter(np.asarray(self._state, dtype=np.float32)),
+            self._render_adapter(np.asarray(self._state, dtype=np.float64)),
             view=self.cfg.render_view,
         )
 

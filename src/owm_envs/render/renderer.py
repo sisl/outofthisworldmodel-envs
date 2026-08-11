@@ -170,11 +170,10 @@ def _far_covering_the_scene(cfg: RenderConfig) -> float:
     precisely because no near plane close enough to render a dock could reach
     it.
     """
-    outermost_glow = 1.09  # `ISSScene._add_earth_glow`'s outer shell scale
     return (
         cfg.earth_radius_m
         + cfg.iss_altitude_m
-        + outermost_glow * cfg.earth_radius_m
+        + cfg.earth_atmosphere_scale * cfg.earth_radius_m
         + cfg.sun_visual_distance_m
     )
 

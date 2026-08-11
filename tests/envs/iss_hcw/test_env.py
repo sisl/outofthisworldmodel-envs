@@ -94,7 +94,11 @@ def test_noiseless_env_info_state_equals_observation():
     env = HCWEnv()
     obs, info = env.reset(seed=3)
     assert info["state"].shape == (15,)
-    np.testing.assert_array_equal(obs, info["state"])
+    # The truth channel carries the dynamics' own float64; the observation is
+    # that same value narrowed to what a sensor reports, so the comparison is
+    # exact once narrowed rather than approximate.
+    assert info["state"].dtype == np.float64
+    np.testing.assert_array_equal(obs, info["state"].astype(np.float32))
 
 
 def test_noise_leaves_the_epoch_exact_while_position_differs():
@@ -104,11 +108,11 @@ def test_noise_leaves_the_epoch_exact_while_position_differs():
     cfg = HCWConfig(sensor_noise=PRESETS["cooperative"])
     env = HCWEnv(cfg)
     obs, info = env.reset(seed=3)
-    np.testing.assert_array_equal(obs[0:2], info["state"][0:2])
+    np.testing.assert_array_equal(obs[0:2], info["state"][0:2].astype(np.float32))
     assert not np.allclose(obs[2:5], info["state"][2:5])
 
     obs2, _, _, _, info2 = env.step(np.zeros(6, dtype=np.float32))
-    np.testing.assert_array_equal(obs2[0:2], info2["state"][0:2])
+    np.testing.assert_array_equal(obs2[0:2], info2["state"][0:2].astype(np.float32))
     assert not np.allclose(obs2[2:5], info2["state"][2:5])
 
 

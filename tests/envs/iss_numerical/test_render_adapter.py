@@ -212,3 +212,29 @@ def test_the_posed_track_is_smooth_at_the_width_the_truth_channel_records():
     narrowed_jerk = np.linalg.norm(np.diff(narrowed, n=2, axis=0), axis=1)
     assert jerk.max() < 1e-3
     assert narrowed_jerk.max() > 0.1
+
+
+def test_the_live_render_path_poses_at_the_same_width_as_the_recorded_one():
+    """`env.render()` and the dataset video have to draw the same pose.
+
+    The truth channel is recorded at the state's own width because the adapter
+    DIFFERENCES the chaser and chief ECI columns; narrowing on the way into
+    `render()` instead would put the live view back on the 0.5 m grid the
+    recorded one no longer uses, so the two would disagree by decimetres at
+    exactly the range where the approach is most visible.
+    """
+    from owm_envs.envs.iss_numerical.env import NumericalEnv
+
+    cfg = NumericalConfig(dock={"enabled": False}, physics={"collision_boxes_path": []})
+    env = NumericalEnv(cfg)
+    _, info = env.reset(seed=1)
+
+    adapter = make_render_adapter(cfg)
+    recorded = adapter(info["state"]).position_world
+    live = adapter(np.asarray(env._state, dtype=np.float64)).position_world
+    np.testing.assert_allclose(live, recorded, atol=1e-9)
+
+    narrowed = adapter(np.asarray(env._state, dtype=np.float32)).position_world
+    assert np.linalg.norm(np.asarray(narrowed) - np.asarray(recorded)) > 0.01, (
+        "the float32 counterfactual should differ, or this test proves nothing"
+    )

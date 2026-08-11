@@ -91,7 +91,10 @@ def test_info_carries_true_and_measured_state_both_21d():
     env = NumericalEnv()
     obs, info = env.reset(seed=3)
     assert info["state"].shape == (21,)
-    assert info["state"].dtype == np.float32
+    # Truth at the dynamics' own width, measurement at the width a sensor
+    # reports: the truth channel is the one whose columns get DIFFERENCED
+    # downstream, and at float32 its ~6.8e6 m ECI slices sit on a 0.5 m grid.
+    assert info["state"].dtype == np.float64
     assert info["measured_state"].shape == (21,)
     assert info["measured_state"].dtype == np.float32
 
@@ -102,7 +105,9 @@ def test_noiseless_env_observation_in_absolute_mode_equals_state():
     cfg = NumericalConfig(observation={"mode": "absolute"})
     env = NumericalEnv(cfg)
     obs, info = env.reset(seed=3)
-    np.testing.assert_array_equal(obs, info["state"])
+    # Exactly, against the truth narrowed the way the observation is: the two
+    # carry the same value at different widths, not two different values.
+    np.testing.assert_array_equal(obs, info["state"].astype(np.float32))
     np.testing.assert_array_equal(obs, info["measured_state"])
 
 
@@ -115,14 +120,14 @@ def test_noise_leaves_epoch_and_chief_untouched_while_chaser_slices_differ():
     cfg = NumericalConfig(sensor_noise=PRESETS["cooperative"])
     env = NumericalEnv(cfg)
     obs, info = env.reset(seed=3)
-    measured, true = info["measured_state"], info["state"]
+    measured, true = info["measured_state"], info["state"].astype(np.float32)
 
     np.testing.assert_array_equal(measured[0:2], true[0:2])  # epoch
     np.testing.assert_array_equal(measured[2:8], true[2:8])  # chief
     assert not np.allclose(measured[8:11], true[8:11])  # chaser position
 
     obs2, _, _, _, info2 = env.step(np.zeros(6, dtype=np.float32))
-    measured2, true2 = info2["measured_state"], info2["state"]
+    measured2, true2 = info2["measured_state"], info2["state"].astype(np.float32)
     np.testing.assert_array_equal(measured2[0:2], true2[0:2])
     np.testing.assert_array_equal(measured2[2:8], true2[2:8])
     assert not np.allclose(measured2[8:11], true2[8:11])

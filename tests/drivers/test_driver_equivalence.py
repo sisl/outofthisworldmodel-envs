@@ -278,8 +278,17 @@ def test_both_drivers_reset_iss_numerical_lanes_to_the_same_state():
         ("chaser ECI position", NUM_LAYOUT.pos),
         ("chaser ECI velocity", NUM_LAYOUT.vel),
     ):
-        np.testing.assert_array_equal(
-            state_a[..., columns], state_b[..., columns], err_msg=f"initial {name}"
+        # To float64 rounding rather than bit-for-bit. The two paths build the
+        # same initial state through different orderings of the same
+        # arithmetic, and differ by ~4e-15 m on the chaser offset; storing the
+        # truth channel at float32 used to round both onto the same value and
+        # hide that, which made this look exact when it never was.
+        np.testing.assert_allclose(
+            state_a[..., columns],
+            state_b[..., columns],
+            rtol=1e-13,
+            atol=0.0,
+            err_msg=f"initial {name}",
         )
     # 2.4e-7 is four float32 ulps of a unit quaternion (2**-24 = 6.0e-8);
     # measured 6.0e-8, i.e. exactly one. The rate channel's measured 2.3e-10
@@ -625,8 +634,12 @@ def _assert_truth_recorded(batch, env_spec):
         return
 
     epoch = env_spec.layout.epoch
+    # The truth channel keeps the dynamics' float64 and the observation is
+    # narrowed to float32, so the epoch matches exactly only once the same
+    # narrowing is applied to both.
     np.testing.assert_array_equal(
-        batch.true_state[..., epoch], batch.observations[..., epoch]
+        batch.true_state[..., epoch].astype(batch.observations.dtype),
+        batch.observations[..., epoch],
     )
     recovered = np.asarray(
         jax.vmap(env_spec.view)(jnp.asarray(batch.true_state.reshape(-1, state_dim))),
