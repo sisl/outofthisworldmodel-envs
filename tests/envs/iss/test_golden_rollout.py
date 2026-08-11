@@ -10,12 +10,21 @@ fixtures, covering disjoint code paths:
   reassembly and observation-augment code the nominal case never touches.
 
 Provenance. The files were first generated from commit ef78210, the
-pre-refactor state the env-suite refactor was measured against, and were
-re-pinned once since, at commit 772e827, when ``docking_reward`` was
-rewritten from a sum of squared errors onto normalised Huber terms. That
-rewrite changed the reward's scale by six orders of magnitude -- the
-first step of episode 0 went from -504320.75 to -0.9927034, and the whole
-fixture from ``|r| <= 792241`` to ``|r| <= 1.14141``.
+pre-refactor state the env-suite refactor was measured against, and have
+been re-pinned once since. Two separate commits matter to that re-pin and
+they are not the same one:
+
+- What INVALIDATED the previous files: the docking-reward rewrite, landed
+  across 07a8ec2 (the weights and ``RewardShapingConfig`` the reward
+  reads) and 94ac4ed (``docking_reward`` itself, from a sum of squared
+  errors onto normalised Huber terms). That rewrite changed the reward's
+  scale by six orders of magnitude -- the first step of episode 0 went
+  from -504320.75 to -0.9927034, and the whole fixture from
+  ``|r| <= 792241`` to ``|r| <= 1.14141``.
+- What PRODUCED the bytes now in these files: the working tree at
+  772e827, which was HEAD when they were regenerated. That commit is a
+  config revert and contains no reward change of its own; it is named
+  here only to identify the source tree.
 
 Only ``rewards`` changed at that re-pin. ``observations``, ``actions``,
 ``lengths`` and ``true_state`` all carried over BIT-IDENTICALLY from the
@@ -30,7 +39,9 @@ overwriting them, because overwriting destroys the evidence.
 Regenerating. Run against the CURRENT working tree, from the repository
 root. Do not replay an archived commit's ``src`` -- an older tree would
 reproduce that tree's reward, which is the thing a re-pin exists to move
-away from -- and record the new ``git rev-parse HEAD`` above.
+away from. Then update the provenance above with BOTH: the new
+``git rev-parse HEAD`` as the tree that produced the bytes, and,
+separately, the commit whose behaviour change made the re-pin necessary.
 
     uv run python -c "
 import numpy as np
