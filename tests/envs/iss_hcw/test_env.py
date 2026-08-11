@@ -1,4 +1,5 @@
 import gymnasium as gym
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -263,6 +264,60 @@ def test_vector_env_draws_ports_per_lane_and_takes_options():
     _, info = venv.reset(seed=2, options={"dock_pose": pose})
     np.testing.assert_array_equal(info["goal_pose"], np.tile(pose, (8, 1)))
     assert "dock_port" not in info
+
+
+def test_vector_lane_goal_blocks_and_step_follow_the_lanes_own_ports():
+    cfg = HCWConfig(observation={"goal_error": True}, dock=DockConfig(ports=("all",)))
+    venv = HCWVectorEnv(4, cfg)
+    obs, info = venv.reset(seed=2)
+    # And through the per-lane step path, not only at reset.
+    obs, rewards, _, _, info = venv.step(np.zeros((4, 6), dtype=np.float32))
+    assert np.all(np.isfinite(rewards))
+    for lane in range(4):
+        view = HCW_LAYOUT.slice_view(jnp.asarray(obs[lane, :15]))
+        expected = dock_goal_error(view, jnp.asarray(info["goal_pose"][lane]))
+        np.testing.assert_allclose(obs[lane, 15:], np.asarray(expected), atol=1e-6)
+
+
+def test_vector_no_ports_reset_consumes_exactly_the_documented_key_stream():
+    # The executable spec of the no-ports RNG discipline (see the iss vector
+    # test of the same name): PRNGKey(seed), the NOISE_STREAM fold_in, ONE
+    # split for the reset keys, nothing else -- port support must not add a
+    # single draw to a no-ports run.
+    seed, n = 11, 4
+    venv = HCWVectorEnv(n, HCWConfig())
+    obs, _ = venv.reset(seed=seed)
+    key = jax.random.PRNGKey(seed)
+    key, subkey = jax.random.split(key)
+    expected = venv._batched_reset(jax.random.split(subkey, n))
+    np.testing.assert_array_equal(obs, np.asarray(expected, dtype=np.float32))
+    np.testing.assert_array_equal(np.asarray(venv._key), np.asarray(key))
+
+
+def test_vector_autoreset_redraws_only_the_lane_that_reset():
+    cfg = HCWConfig(
+        max_steps=10_000,
+        max_range_m=200.0,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        orbit={"start_radius_range_m": (100.0, 100.0)},
+        dock=DockConfig(ports=("all",)),
+    )
+    venv = HCWVectorEnv(2, cfg)
+    _, info = venv.reset(seed=5)
+    lane1_port = info["dock_port_index"][1]
+    zero = np.zeros((2, 6), dtype=np.float32)
+
+    lane0_history = [info["dock_port_index"][0]]
+    for _ in range(8):
+        states = np.array(venv._states)
+        states[0, HCW_LAYOUT.pos] = (500.0, 0.0, 0.0)
+        venv._states = jnp.asarray(states, dtype=jnp.float64)
+        _, _, terminations, _, _ = venv.step(zero)
+        assert bool(terminations[0]) and not bool(terminations[1])
+        _, _, _, _, info = venv.step(zero)  # lane 0 autoresets here
+        assert info["dock_port_index"][1] == lane1_port
+        lane0_history.append(info["dock_port_index"][0])
+    assert len(set(lane0_history)) > 1
 
 
 def test_a_port_set_leaves_the_seeded_initial_state_alone():

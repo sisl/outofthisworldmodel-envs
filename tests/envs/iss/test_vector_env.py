@@ -387,3 +387,67 @@ def test_lane_goal_blocks_measure_against_the_lanes_own_ports():
             jnp.asarray(obs[lane, :13]), jnp.asarray(info["goal_pose"][lane])
         )
         np.testing.assert_allclose(obs[lane, 13:], np.asarray(expected), atol=1e-6)
+    # And the per-lane step path: rewards and flags come from each lane's own
+    # target, exercised end to end rather than only at reset.
+    obs, rewards, _, _, info = venv.step(np.zeros((6, 6), dtype=np.float32))
+    assert np.all(np.isfinite(rewards))
+    for lane in range(6):
+        expected = dock_goal_error(
+            jnp.asarray(obs[lane, :13]), jnp.asarray(info["goal_pose"][lane])
+        )
+        np.testing.assert_allclose(obs[lane, 13:], np.asarray(expected), atol=1e-6)
+
+
+def test_a_no_ports_reset_consumes_exactly_the_documented_key_stream():
+    """The executable spec of the no-ports RNG discipline.
+
+    Published no-ports datasets are byte-identical replays of this exact
+    sequence: PRNGKey(seed), a NOISE_STREAM fold_in, ONE split for the reset
+    keys, and nothing else. Port support must not add so much as one split to
+    a run that configures no ports -- this pins both the produced states and
+    the carried key, so any unconditional extra draw fails loudly.
+    """
+    seed, n = 11, 4
+    venv = ISSVectorEnv(n, ISSConfig())
+    obs, _ = venv.reset(seed=seed)
+
+    key = jax.random.PRNGKey(seed)
+    key, subkey = jax.random.split(key)
+    # The env's own compiled reset, driven by independently derived keys:
+    # what is pinned is the KEY SEQUENCE, not the reset arithmetic.
+    expected_states = venv._batched_reset(jax.random.split(subkey, n))
+    np.testing.assert_array_equal(obs, np.asarray(expected_states, dtype=np.float32))
+    np.testing.assert_array_equal(np.asarray(venv._key), np.asarray(key))
+
+
+def test_autoreset_redraws_only_the_lane_that_reset():
+    # Lane 0 is pushed out of the domain by hand; lane 1 flies on. The
+    # autoreset must redraw lane 0's port from the menu while lane 1 keeps
+    # the one it drew at reset -- the masking that keeps a lane's goal its
+    # own for the length of its episode.
+    cfg = ISSConfig(
+        max_steps=10_000,
+        max_range_m=200.0,
+        physics=PhysicsConfig(collision_boxes_path=None, start_radius_range_m=(100.0, 100.0)),
+        dock=DockConfig(ports=("all",)),
+    )
+    venv = ISSVectorEnv(2, cfg)
+    _, info = venv.reset(seed=5)
+    lane1_port = info["dock_port_index"][1]
+    zero = np.zeros((2, 6), dtype=np.float32)
+
+    lane0_history = [info["dock_port_index"][0]]
+    for _ in range(8):
+        # Escape lane 0 only: place it outside max_range_m.
+        states = np.array(venv._states)
+        states[0, 0:3] = (500.0, 0.0, 0.0)
+        venv._states = jnp.asarray(states)
+        _, _, terminations, _, _ = venv.step(zero)
+        assert bool(terminations[0]) and not bool(terminations[1])
+        _, _, _, _, info = venv.step(zero)  # lane 0 autoresets here
+        assert info["dock_port_index"][1] == lane1_port
+        lane0_history.append(info["dock_port_index"][0])
+
+    # Eight redraws over eight ports: a frozen lane-0 assignment would mean
+    # the redraw is not happening at all.
+    assert len(set(lane0_history)) > 1

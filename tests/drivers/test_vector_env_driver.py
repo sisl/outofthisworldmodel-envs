@@ -775,9 +775,18 @@ def test_env_side_ports_are_refused_until_the_draws_can_align():
     # let an episode be flown to one port and gated against another, so the
     # combination is refused rather than mis-scored.
     cfg = ISSConfig(dock=DockConfig(ports=("all",)))
+    closed = []
+
+    def factory():
+        venv = ISSVectorEnv(num_envs=2, cfg=cfg)
+        original_close = venv.close
+        venv.close = lambda: (closed.append(True), original_close())[-1]
+        return venv
+
     driver = VectorEnvDriver(
-        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+        env_factory=factory,
         policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock")),
     )
     with pytest.raises(ValueError, match="cannot yet align"):
         driver.generate(RolloutSpec(num_episodes=2, max_steps=5, seed=0))
+    assert closed  # the refused env was closed, not leaked
