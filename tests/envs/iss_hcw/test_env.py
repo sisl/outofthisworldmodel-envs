@@ -6,10 +6,12 @@ from gymnasium.utils.env_checker import check_env
 
 import owm_envs.envs  # noqa: F401  -- triggers registration
 from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
+from owm_envs.envs.common.docking_ports import PORTS_BY_NAME, port_pose
 from owm_envs.envs.common.goal import dock_goal_error
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss_hcw.config import HCW_LAYOUT, HCWConfig
 from owm_envs.envs.iss_hcw.env import HCWEnv
+from owm_envs.envs.iss_hcw.vector_env import HCWVectorEnv
 
 FREE_FLIGHT = dict(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
 
@@ -180,3 +182,68 @@ def test_render_before_reset_raises():
 def test_unknown_render_mode_raises():
     with pytest.raises(ValueError, match="render_mode"):
         HCWEnv(render_mode="ascii")
+
+
+def _port_row(name: str) -> np.ndarray:
+    position, quaternion = port_pose(PORTS_BY_NAME[name])
+    return np.concatenate([position, quaternion]).astype(np.float32)
+
+
+def test_a_port_set_draws_per_episode_and_governs_the_goal():
+    cfg = HCWConfig(dock=DockConfig(ports=("all",)))
+    env = HCWEnv(cfg)
+    seen = set()
+    for seed in range(16):
+        _, info = env.reset(seed=seed)
+        seen.add(info["dock_port"])
+        np.testing.assert_allclose(
+            info["goal_pose"], _port_row(info["dock_port"]), atol=1e-6
+        )
+    assert len(seen) > 1  # a draw, not a constant
+
+
+def test_reset_options_target_a_named_port_like_iss():
+    cfg = HCWConfig(dock=DockConfig(ports=("harmony_fwd_pma2", "zvezda_aft")))
+    env = HCWEnv(cfg)
+    _, info = env.reset(seed=0, options={"dock_port": "zvezda_aft"})
+    assert info["dock_port"] == "zvezda_aft" and info["dock_port_index"] == 1
+    with pytest.raises(ValueError, match="unknown reset option"):
+        env.reset(seed=0, options={"dock_prt": "zvezda_aft"})
+
+
+def test_reset_options_pose_override_reaches_gate_reward_and_telemetry():
+    # Zero-radius start puts the chaser at the origin; drive the true state
+    # onto the override pose and every consumer must agree it arrived.
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    cfg = HCWConfig(
+        max_steps=100,
+        physics=PhysicsConfig(collision_boxes_path=None),
+        orbit={"start_radius_range_m": (0.0, 0.0)},
+    )
+    env = HCWEnv(cfg)
+    _, info = env.reset(seed=0, options={"dock_pose": pose})
+    np.testing.assert_allclose(info["goal_pose"], pose, atol=1e-6)
+    assert "dock_port" not in info
+    state = np.array(env._state)
+    state[HCW_LAYOUT.pos] = pose[0:3]
+    state[HCW_LAYOUT.vel] = 0.0
+    state[HCW_LAYOUT.quat] = pose[3:7]
+    state[HCW_LAYOUT.omega] = 0.0
+    env._state = jnp.asarray(state, dtype=jnp.float64)
+    for label, value in env._goal_error_true().items():
+        assert value == pytest.approx(0.0, abs=1e-5), label
+
+
+def test_a_naked_reset_forgets_the_previous_override():
+    cfg = HCWConfig(dock=DockConfig(ports=("all",)))
+    env = HCWEnv(cfg)
+    env.reset(seed=11, options={"dock_port": "rassvet_nadir"})
+    _, after = env.reset(seed=11)
+    _, fresh = HCWEnv(cfg).reset(seed=11)
+    assert after["dock_port"] == fresh["dock_port"]
+    np.testing.assert_array_equal(after["goal_pose"], fresh["goal_pose"])
+
+
+def test_vector_env_refuses_a_port_set_rather_than_ignoring_it():
+    with pytest.raises(ValueError, match="does not support per-episode dock ports"):
+        HCWVectorEnv(2, HCWConfig(dock=DockConfig(ports=("all",))))

@@ -22,8 +22,8 @@ import numpy as np
 from gymnasium import spaces
 
 from ..common.adapter import action_space, render_fps
-from ..common.config import dock_target
-from ..common.goal import GOAL_ERROR_DIM, dock_goal_error
+from ..common.goal import GOAL_ERROR_DIM
+from ..common.port_goals import PortGoalMixin
 from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
 from .config import HCW_LAYOUT, HCWConfig
@@ -44,7 +44,7 @@ def _observation_space(cfg: HCWConfig) -> spaces.Box:
     return spaces.Box(low=low, high=high, dtype=np.float32)
 
 
-class HCWEnv(gym.Env):
+class HCWEnv(PortGoalMixin, gym.Env):
     # render_fps is overridden per instance in __init__; the class-level value
     # is the rate implied by HCWConfig's own default dt.
     metadata = {"render_modes": ["rgb_array"], "render_fps": 20}
@@ -73,22 +73,24 @@ class HCWEnv(gym.Env):
         # noisy observations the previous episode drew.
         self._noise_key: jax.Array | None = None
 
-        # jit once at construction; both are pure functions of (state, action).
+        # jit once at construction; all are pure functions of their arguments.
+        # A drawn port reaches `step` as an argument, so a new draw each
+        # episode costs no recompilation.
         self._jit_step = jax.jit(self.dynamics.step)
         self._jit_reset = jax.jit(self.dynamics.reset)
-        self._jit_dock_goal_error = (
-            jax.jit(
-                lambda measured: dock_goal_error(
-                    HCW_LAYOUT.slice_view(measured), jnp.asarray(dock_target(self.cfg))
-                )
-            )
-            if self.cfg.observation.goal_error
-            else None
-        )
+        # This env's state is [epoch | task view]; the port machinery reads
+        # the view through the layout.
+        self._init_port_goals(view=HCW_LAYOUT.slice_view)
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Start an episode; `options` may target a port or pose.
+
+        See `PortGoalMixin` for the options contract -- the same one `ISSEnv`
+        honours: "dock_port" names one or several of this env's configured
+        ports, "dock_pose" is an explicit (7,) [position, quaternion] goal.
+        """
         super().reset(seed=seed)
         # Gymnasium seeds self.np_random; derive a JAX key from it so that a given
         # Gymnasium seed reproduces exactly one initial state.
@@ -97,12 +99,19 @@ class HCWEnv(gym.Env):
         if self.cfg.sensor_noise.enabled:
             self._noise_key = jax.random.fold_in(dynamics_key, NOISE_STREAM)
         self._state = self._jit_reset(dynamics_key)
+        # Drawn after the dynamics seed, never before: the port is an extra
+        # draw on the end of np_random's stream, so a given seed reproduces
+        # the same initial state whether or not ports are configured.
+        self._begin_episode_goal(options)
         self._step_index = 0
         return self._obs(), {
             "success": False,
             "collision": False,
             "escaped": False,
             "state": self._true_state(),
+            "goal_pose": self._goal_pose(),
+            "goal_error_true": self._goal_error_true(),
+            **self._port_info(),
         }
 
     def step(
@@ -118,9 +127,12 @@ class HCWEnv(gym.Env):
         )
         action_j = jnp.asarray(clipped)
 
-        next_state, events = self._jit_step(self._state, action_j)
+        next_state, events = self._jit_step(self._state, action_j, self._dock_pose)
         reward = float(
-            docking_reward(HCW_LAYOUT.slice_view(next_state), action_j, events, self.cfg)
+            docking_reward(
+                HCW_LAYOUT.slice_view(next_state), action_j, events, self.cfg,
+                None if self._dock_pose is None else self._dock_pose[0:3],
+            )
         )
 
         self._state = next_state
@@ -142,6 +154,9 @@ class HCWEnv(gym.Env):
                 "collision": collision,
                 "escaped": escaped,
                 "state": self._true_state(),
+                "goal_pose": self._goal_pose(),
+                "goal_error_true": self._goal_error_true(),
+                **self._port_info(),
             },
         )
 
