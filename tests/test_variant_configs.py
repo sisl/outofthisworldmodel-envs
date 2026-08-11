@@ -270,7 +270,7 @@ def test_numerical_recipes_target_the_numerical_env():
         gen = GenerationConfig.from_yaml(CONFIGS / f"{name}.yaml")
         assert gen.env == "iss-numerical"
         for split in gen.splits.values():
-            assert split.policy.orbit.radius_range_m == (100.0, 200.0)
+            assert split.policy.orbit.radius_range_m == (80.0, 130.0)
 
 
 def test_numerical_recipes_keep_ports_held_out_of_training():

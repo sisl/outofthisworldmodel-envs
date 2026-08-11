@@ -43,11 +43,13 @@ GOAL_TAGS = {"nogoal": False, "goal": True}
 # with no goal in its observation cannot be told which port it is flying to.
 NUMERICAL_NOISE_TAGS = NOISE_TAGS
 
-# The orbit policy's commanded circle. Sized against the 100-225 m start shell:
-# the fly-in has to be short enough that the slowest circle still closes a full
-# revolution inside the 360 s horizon, which the old 80-130 m range no longer
-# guaranteed from a 225 m start.
-NUMERICAL_ORBIT_RADIUS_RANGE = (100.0, 200.0)
+# The orbit policy's commanded circle, unchanged from the iss recipe.
+# Revolution closure is bounded by period, which grows with radius: at the
+# 0.75 speed-fraction floor, the largest radius that still closes one
+# revolution inside the 360 s horizon is ~148 m, so 130 m is already near
+# that ceiling and widening the range would break the guarantee rather than
+# protect it.
+NUMERICAL_ORBIT_RADIUS_RANGE = (80.0, 130.0)
 
 # One lane per episode is wasteful and one lane for 500k transitions is slow;
 # 64 is the width both recipes roll out at.
