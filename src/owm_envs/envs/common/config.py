@@ -202,14 +202,17 @@ class RewardWeights(ConfigModel):
     the worst attitude on the point of the 500 m shell diametrically opposite
     the port, 524.6 m from it rather than 500 because the shell is centred on
     the ISS while the reward is shaped toward a port ~24.6 m off that centre
-    -- so from any start the exit costs more than staying can ever save. The
-    margin there is 1.17x, not orders: a start shell reaching much past 500 m
-    would need this weight raised with it. It is also symmetric with
+    -- so an exit costs more than standing still anywhere an episode can begin
+    would save. That is the comparison an early policy faces, not a bound over
+    every reachable behaviour; the paragraph below gives the ones that cost
+    more. The margin there is 1.17x, not orders: a start shell reaching much
+    past 500 m would need this weight raised with it. It is also symmetric with
     `dock_success`, leaving being exactly as bad as arriving is good.
 
     It is not a bound on shaped cost. The full-authority worst rollout above
     is 22x the weight, and station-keeping just inside the boundary costs
-    -12,378 over a horizon, past the escape return. Neither is reached by
+    -12,378 over a horizon on position error alone, or -12,521 at the worst
+    attitude, past the escape return. Neither is reached by
     drifting: one is a horizon spent at full thrust, and the other means
     flying out to 750 m and stopping dead there rather than crossing -- an
     aim, not an accident, since the escape test is a strict inequality and a
