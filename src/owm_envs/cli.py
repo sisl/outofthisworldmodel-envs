@@ -210,14 +210,14 @@ def generate(
     gen_config: Optional[Path] = typer.Option(
         None, help="GenerationConfig YAML; exclusive with "
                    "--env/--split/--steps/--num-envs/--driver/--fps/--render-views. "
-                   "configs/generation_default.yaml is the shipped docking recipe: a union-policy "
+                   "configs/iss/gen/default.yaml is the shipped docking recipe: a union-policy "
                    "train split on five ports and a dock-policy val split on all "
                    "eight, so validation measures the held-out approaches (both zenith "
                    "corridors and Unity nadir)."),
     env_config: Optional[Path] = typer.Option(
         None, "--env-config",
         help="Environment config file to load, YAML or TOML by suffix. The shipped "
-             "iss environments are configs/iss_*.toml: iss_default.toml plus the six "
+             "iss environments are under configs/<env>/env/: default.toml plus the six "
              "noise/goal-error variants the public datasets are generated from."),
     noise: Optional[str] = typer.Option(
         None, help="Sensor-noise preset: off | cooperative | noncooperative. "

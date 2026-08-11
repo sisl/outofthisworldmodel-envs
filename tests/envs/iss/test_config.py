@@ -113,13 +113,13 @@ def test_collision_boxes_path_explicit_none_survives_toml_roundtrip(tmp_path):
 
 
 def test_shipped_default_config_file_matches_code_defaults():
-    # configs/iss_default.toml is the committed, versioned record of the
+    # configs/iss/env/default.toml is the committed, versioned record of the
     # defaults. If someone changes a default in code without regenerating it,
     # this fails -- which is the point.
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[3]
-    assert ISSConfig.from_toml(repo_root / "configs" / "iss_default.toml") == ISSConfig()
+    assert ISSConfig.from_toml(repo_root / "configs" / "iss" / "env" / "default.toml") == ISSConfig()
 
 
 def test_invalid_config_is_rejected_at_load(tmp_path):

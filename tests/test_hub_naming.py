@@ -5,7 +5,7 @@ directory, and `push_run`'s Hub calls are exercised against a stand-in api
 object -- what is being checked there is the call sequence, not the transfer.
 
 The naming tests are load-bearing beyond this module: the six committed
-configs/iss_*.toml must map onto exactly the six published dataset names, so a
+configs/iss/env/*.toml must map onto exactly the six published dataset names, so a
 config edit that changes what a dataset IS cannot leave it published under the
 old name.
 """
@@ -38,18 +38,21 @@ from owm_envs.envs.iss_hcw.config import HCWConfig
 from owm_envs.envs.iss_numerical.config import NumericalConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
+ISS = CONFIGS / "iss"
 
 # The six variants and the dataset each one becomes. Spelled out literally
 # rather than derived: deriving them from the same tag tables the naming code
 # uses would make this test agree with any renaming, which is the one thing it
 # exists to catch.
+# Keyed by the file's stem under configs/iss/env/, which no longer repeats the
+# env: the directory carries it.
 VARIANT_NAMES = {
-    "iss_nonoise_nogoal": "owm-iss-nonoise-nogoal-dt50ms",
-    "iss_nonoise_goal": "owm-iss-nonoise-goal-dt50ms",
-    "iss_coop_nogoal": "owm-iss-coop-nogoal-dt50ms",
-    "iss_coop_goal": "owm-iss-coop-goal-dt50ms",
-    "iss_noncoop_nogoal": "owm-iss-noncoop-nogoal-dt50ms",
-    "iss_noncoop_goal": "owm-iss-noncoop-goal-dt50ms",
+    "nonoise_nogoal": "owm-iss-nonoise-nogoal-dt50ms",
+    "nonoise_goal": "owm-iss-nonoise-goal-dt50ms",
+    "coop_nogoal": "owm-iss-coop-nogoal-dt50ms",
+    "coop_goal": "owm-iss-coop-goal-dt50ms",
+    "noncoop_nogoal": "owm-iss-noncoop-nogoal-dt50ms",
+    "noncoop_goal": "owm-iss-noncoop-goal-dt50ms",
 }
 
 COMMIT = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
@@ -93,9 +96,9 @@ def _write_run(
     """A run directory holding exactly the artifacts RunMetadata.write leaves."""
     run = tmp_path / "run"
     run.mkdir()
-    env_cfg = env_cfg or ISSConfig.from_toml(CONFIGS / "iss_noncoop_goal.toml")
+    env_cfg = env_cfg or ISSConfig.from_toml(ISS / "env" / "noncoop_goal.toml")
     env_cfg.to_yaml(run / "env_config.yaml")
-    GenerationConfig.from_yaml(CONFIGS / "generation_trial.yaml").to_yaml(
+    GenerationConfig.from_yaml(ISS / "gen" / "trial.yaml").to_yaml(
         run / "generation_config.yaml"
     )
     PolicyConfig().to_yaml(run / "policy_config.yaml")
@@ -177,14 +180,14 @@ def test_the_env_name_is_a_component_not_a_prefix():
 @pytest.mark.parametrize("config_name, expected", sorted(VARIANT_NAMES.items()))
 def test_each_committed_variant_names_its_published_dataset(config_name, expected):
     assert dataset_name(
-        ISSConfig.from_toml(CONFIGS / f"{config_name}.toml"), env="iss"
+        ISSConfig.from_toml(ISS / "env" / f"{config_name}.toml"), env="iss"
     ) == expected
 
 
 def test_the_six_variants_get_six_distinct_names():
     # Two variants collapsing onto one name would publish one over the other.
     names = {
-        dataset_name(ISSConfig.from_toml(CONFIGS / f"{c}.toml"), env="iss")
+        dataset_name(ISSConfig.from_toml(ISS / "env" / f"{c}.toml"), env="iss")
         for c in VARIANT_NAMES
     }
     assert len(names) == len(VARIANT_NAMES)
@@ -315,7 +318,7 @@ def _hcw_run(tmp_path: Path) -> Path:
     iss-hcw dataset would actually be generated from."""
     return _write_run(
         tmp_path,
-        HCWConfig.from_toml(CONFIGS / "iss_hcw_default.toml"),
+        HCWConfig.from_toml(CONFIGS / "iss-hcw" / "env" / "default.toml"),
         env="iss-hcw",
         features=HCW_FEATURES,
     )
@@ -349,7 +352,7 @@ def _numerical_run(tmp_path: Path) -> Path:
     what an iss-numerical dataset would actually be generated from."""
     return _write_run(
         tmp_path,
-        NumericalConfig.from_toml(CONFIGS / "iss_numerical_default.toml"),
+        NumericalConfig.from_toml(CONFIGS / "iss-numerical" / "env" / "default.toml"),
         env="iss-numerical",
         features=NUMERICAL_FEATURES,
     )
@@ -400,7 +403,7 @@ def test_each_observation_mode_gets_its_own_column_description(tmp_path, mode, e
     # raw layout standing in for all four: chaser_absolute and chief_absolute
     # are both 21 wide and both differ from the state, and only the
     # description says how.
-    cfg = NumericalConfig.from_toml(CONFIGS / "iss_numerical_default.toml")
+    cfg = NumericalConfig.from_toml(CONFIGS / "iss-numerical" / "env" / "default.toml")
     cfg = cfg.model_copy(update={"observation": cfg.observation.model_copy(update={"mode": mode})})
     features = {
         **NUMERICAL_FEATURES,
@@ -557,7 +560,7 @@ def test_the_card_carries_the_sensor_noise_block(tmp_path):
 
 
 def test_a_noise_free_run_says_the_channels_agree(tmp_path):
-    cfg = ISSConfig.from_toml(CONFIGS / "iss_nonoise_nogoal.toml")
+    cfg = ISSConfig.from_toml(ISS / "env" / "nonoise_nogoal.toml")
     features = {**FEATURES, "observation_vector": {"dtype": "float32", "shape": [13],
                                                    "names": None}}
     card = _card(_write_run(tmp_path, cfg, features=features))

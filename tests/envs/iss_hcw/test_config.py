@@ -14,7 +14,7 @@ def test_the_shipped_config_disperses_through_the_orbit_section():
     # its start dispersions have to live in `orbit`: `HCWDynamics.reset`
     # never reads the `physics` start radius, so the copy of that field the
     # file inherited from iss_default.toml set nothing at all.
-    cfg = HCWConfig.from_toml(CONFIGS / "iss_hcw_default.toml")
+    cfg = HCWConfig.from_toml(CONFIGS / "iss-hcw" / "env" / "default.toml")
     assert cfg.orbit.start_radius_range_m == (80.0, 120.0)
     assert cfg.physics.start_radius_range_m == PhysicsConfig().start_radius_range_m
 
