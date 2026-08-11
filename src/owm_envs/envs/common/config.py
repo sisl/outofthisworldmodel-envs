@@ -169,9 +169,9 @@ class RewardWeights(ConfigModel):
     inside that envelope costs about 1. The envelope is a normalisation point,
     not a bound: a full-authority chaser (1600 N against 12000 kg, 2000 N*m
     against 50000 kg*m^2, over a 360 s horizon) reaches 48 m/s and 14.4 rad/s,
-    and the Huber is asymptotically linear out there, so the worst step it can
-    actually reach costs -30.9 and a full 7200-step rollout of them -222,500.
-    That is what the normalisation buys: `collision` still leads the worst
+    and the pseudo-Huber is asymptotically linear out there, so the worst step
+    it can actually reach costs -30.9, and a full 7200-step rollout of them
+    -222,500. That is what the normalisation buys: `collision` still leads the worst
     whole rollout by 4.5x, so hitting the station stays strictly the worst
     thing that can happen to an episode instead of being swamped by shaped
     cost. The margin is a factor of a few, not orders of magnitude.
