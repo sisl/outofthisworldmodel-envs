@@ -134,7 +134,10 @@ def test_rotational_gate_floor_is_configurable():
     assert r == pytest.approx(huber(np.pi / 2.0, 0.05, np.pi) / 101.0, rel=1e-4)
 
 
-def test_a_step_of_shaped_cost_is_bounded_at_about_one():
+def test_a_step_of_shaped_cost_is_bounded_at_about_one_at_the_numerical_start_shell_edge():
+    # 225 m is position_scale_m, the outer edge of the start shell the
+    # iss-numerical variants disperse over -- not the domain bound this
+    # module is shared across; see the domain-bound test below for that.
     cfg = ISSConfig(dock=AT_ORIGIN)
     worst = state_at((225.0, 0.0, 0.0), vel=(5.0, 0.0, 0.0),
                      quat=(0.0, 1.0, 0.0, 0.0), omega=(0.05, 0.0, 0.0))
@@ -144,6 +147,18 @@ def test_a_step_of_shaped_cost_is_bounded_at_about_one():
 def test_collision_dominates_a_full_horizon_of_shaped_cost():
     cfg = ISSConfig(dock=AT_ORIGIN)
     worst = state_at((225.0, 0.0, 0.0), vel=(5.0, 0.0, 0.0),
+                     quat=(0.0, 1.0, 0.0, 0.0), omega=(0.05, 0.0, 0.0))
+    per_step = abs(float(docking_reward(worst, ZERO_ACTION, NO_EVENTS, cfg)))
+    assert abs(cfg.reward_weights.collision) > 50.0 * per_step * cfg.max_steps
+
+
+def test_collision_dominates_a_full_horizon_at_the_domain_bound():
+    # PhysicsConfig.start_radius_range_m reaches 500 m and max_range_m sits
+    # at 750 m, well past the 225 m edge position_scale_m is tuned to. The
+    # shaped cost is bigger out there (~1.89/step, ~-13,604/rollout) but
+    # collision -- at -1e6 -- still dominates by ~73x.
+    cfg = ISSConfig(dock=AT_ORIGIN)
+    worst = state_at((cfg.max_range_m, 0.0, 0.0), vel=(5.0, 0.0, 0.0),
                      quat=(0.0, 1.0, 0.0, 0.0), omega=(0.05, 0.0, 0.0))
     per_step = abs(float(docking_reward(worst, ZERO_ACTION, NO_EVENTS, cfg)))
     assert abs(cfg.reward_weights.collision) > 50.0 * per_step * cfg.max_steps
@@ -260,6 +275,22 @@ def test_reward_goal_position_does_not_override_the_attitude_target():
     pose = jnp.asarray([9.0, 0.0, 0.0, *quarter], dtype=jnp.float32)
     aligned = state_at((0.0, 0.0, 0.0), quat=quarter)
     assert float(docking_reward(aligned, ZERO_ACTION, NO_EVENTS, cfg, pose)) == pytest.approx(
+        0.0, abs=1e-6
+    )
+
+
+def test_reward_goal_position_does_not_override_the_attitude_target_with_no_dock_pose():
+    # Same precedence with no per-episode pose in play: the override still
+    # only ever redirects WHERE to fly, so cfg.dock.quaternion supplies the
+    # attitude target even though reward_goal_position has moved the
+    # position target away from cfg.dock.position.
+    cfg = ISSConfig(
+        dock=DockConfig(position=(1.0, 0.0, 0.0), quaternion=(0.7071068, 0.7071068, 0.0, 0.0)),
+        reward_goal_position=(0.0, 0.0, 0.0),
+        reward_weights=only(attitude=-1.0),
+    )
+    aligned = state_at((0.0, 0.0, 0.0), quat=(0.7071068, 0.7071068, 0.0, 0.0))
+    assert float(docking_reward(aligned, ZERO_ACTION, NO_EVENTS, cfg)) == pytest.approx(
         0.0, abs=1e-6
     )
 

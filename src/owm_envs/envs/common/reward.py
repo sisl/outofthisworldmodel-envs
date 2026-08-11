@@ -16,13 +16,18 @@ with zero slope at the origin, so closing the last metre keeps paying. A plain
 squared error gives the opposite of both -- it explodes far out and goes flat
 exactly where precision matters.
 
-That normalisation is also what makes the collision penalty mean anything. The
-weights sum to 1 and each term reaches ~1 at the edge of the envelope, so a
-step costs at most ~1 and a full 7200-step rollout ~-7200, against a -1e6
-collision. Under the previous summed-square terms a 225 m error cost -50,625
-per step and a rollout integrated to ~-3.6e8, leaving the collision penalty at
-0.3% of the trajectory -- an agent could fly into the station and barely feel
-it.
+That normalisation is also what makes the collision penalty mean anything.
+The weights sum to 1 and `position_scale_m` is set to 225 m, the outer edge
+of the start shell the iss-numerical variants disperse over, so a worst-case
+step there costs ~0.73 and a 7200-step rollout ~-5,225 against a -1e6
+collision -- a 191x margin. This module is shared by all three envs, though,
+and `PhysicsConfig.start_radius_range_m` goes out to 500 m with
+`max_range_m` at 750 m; the same worst-case step at those radii costs ~1.33
+and ~1.89, ~-9,607 and ~-13,604 over a full rollout, still a 104x and 73x
+margin. Under the previous summed-square terms a 225 m error cost -50,625
+per step and a rollout integrated to ~-3.6e8, leaving the collision penalty
+at 0.3% of the trajectory -- an agent could fly into the station and barely
+feel it.
 
 The rotational pair is gated on range to the port. Far out the task is to
 close the distance and pointing hardly matters; at the gate, attitude and body
