@@ -621,3 +621,41 @@ def tee_episode_clips(
         close = getattr(source, "close", None)
         if close is not None:
             close()
+
+
+def tee_episode_stills(
+    frames: Iterator[dict[str, np.ndarray]],
+    stills_root: Any,
+    stride: int,
+) -> Iterator[dict[str, np.ndarray]]:
+    """Write every `stride`-th frame of every view as a PNG, and pass it along.
+
+    A tee like `tee_episode_clips`, for the same reason: the frames are already
+    in hand, and re-rendering an episode to pull stills out of it would double
+    the cost of the run. Written under
+    `stills_root/episode_%03d/<view>_%06d.png`, indexed by the frame's own
+    position in the episode so a still can be located in the clip beside it.
+
+    `stride` of 0 writes nothing and is the default everywhere: stills are for
+    figures, not for review, and a run that did not ask for them should not pay
+    for them.
+    """
+    if stride < 0:
+        raise ValueError(f"stride must be >= 0, got {stride}")
+
+    from pathlib import Path
+
+    import imageio.v3 as iio
+
+    for index, clips in enumerate(frames):
+        if stride > 0:
+            episode_dir = Path(stills_root) / f"ep_{index:04d}"
+            episode_dir.mkdir(parents=True, exist_ok=True)
+            for key, clip in clips.items():
+                view = key.rsplit(".", 1)[-1]
+                for frame_index in range(0, int(clip.shape[0]), stride):
+                    iio.imwrite(
+                        episode_dir / f"{view}_{frame_index:06d}.png",
+                        clip[frame_index],
+                    )
+        yield clips
