@@ -6,11 +6,13 @@ from gymnasium.utils.env_checker import check_env
 
 import owm_envs.envs  # noqa: F401  -- triggers registration
 from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
+from owm_envs.envs.common.docking_ports import PORTS_BY_NAME, port_pose
 from owm_envs.envs.common.goal import dock_goal_error
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss_numerical.config import OBS_MODE_DIM, NumericalConfig
 from owm_envs.envs.iss_numerical.dynamics import relative_view
 from owm_envs.envs.iss_numerical.env import NumericalEnv
+from owm_envs.envs.iss_numerical.vector_env import NumericalVectorEnv
 
 FREE_FLIGHT = dict(physics=PhysicsConfig(collision_boxes_path=None), dock=DockConfig(enabled=False))
 
@@ -234,3 +236,60 @@ def test_unknown_render_mode_raises():
 def test_requires_zero_linear_damping():
     with pytest.raises(ValueError, match="linear_damping"):
         NumericalEnv(NumericalConfig(physics=PhysicsConfig(linear_damping=1.0)))
+
+
+def _port_row(name: str) -> np.ndarray:
+    position, quaternion = port_pose(PORTS_BY_NAME[name])
+    return np.concatenate([position, quaternion]).astype(np.float32)
+
+
+def test_a_port_set_draws_per_episode_and_governs_the_goal():
+    cfg = NumericalConfig(dock=DockConfig(ports=("all",)))
+    env = NumericalEnv(cfg)
+    seen = set()
+    for seed in range(16):
+        _, info = env.reset(seed=seed)
+        seen.add(info["dock_port"])
+        np.testing.assert_allclose(
+            info["goal_pose"], _port_row(info["dock_port"]), atol=1e-6
+        )
+    assert len(seen) > 1  # a draw, not a constant
+
+
+def test_reset_options_target_a_named_port_like_iss():
+    cfg = NumericalConfig(dock=DockConfig(ports=("harmony_fwd_pma2", "zvezda_aft")))
+    env = NumericalEnv(cfg)
+    _, info = env.reset(seed=0, options={"dock_port": "zvezda_aft"})
+    assert info["dock_port"] == "zvezda_aft" and info["dock_port_index"] == 1
+    with pytest.raises(ValueError, match="unknown reset option"):
+        env.reset(seed=0, options={"dock_prt": "zvezda_aft"})
+
+
+def test_reset_options_pose_override_governs_the_true_goal_error():
+    # The goal error reads the chief-relative view; steer the chaser's ECI
+    # position onto (chief + override offset) and the position error must
+    # collapse while the naked-reset goal would not.
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    env = NumericalEnv(NumericalConfig())
+    _, info = env.reset(seed=0, options={"dock_pose": pose})
+    np.testing.assert_allclose(info["goal_pose"], pose, atol=1e-6)
+    assert "dock_port" not in info
+    err = info["goal_error_true"]
+    view = relative_view(env._state)
+    expected = float(np.linalg.norm(np.asarray(view[0:3]) - pose[0:3]))
+    assert err["pos_m"] == pytest.approx(expected, rel=1e-5)
+
+
+def test_a_naked_reset_forgets_the_previous_override():
+    cfg = NumericalConfig(dock=DockConfig(ports=("all",)))
+    env = NumericalEnv(cfg)
+    env.reset(seed=11, options={"dock_port": "rassvet_nadir"})
+    _, after = env.reset(seed=11)
+    _, fresh = NumericalEnv(cfg).reset(seed=11)
+    assert after["dock_port"] == fresh["dock_port"]
+    np.testing.assert_array_equal(after["goal_pose"], fresh["goal_pose"])
+
+
+def test_vector_env_refuses_a_port_set_rather_than_ignoring_it():
+    with pytest.raises(ValueError, match="does not support per-episode dock ports"):
+        NumericalVectorEnv(2, NumericalConfig(dock=DockConfig(ports=("all",))))

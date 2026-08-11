@@ -42,8 +42,8 @@ import numpy as np
 from gymnasium import spaces
 
 from ..common.adapter import action_space, render_fps
-from ..common.config import dock_target
-from ..common.goal import GOAL_ERROR_DIM, dock_goal_error
+from ..common.goal import GOAL_ERROR_DIM
+from ..common.port_goals import PortGoalMixin
 from ..common.reward import docking_reward
 from ..common.sensing import NOISE_STREAM, apply_sensor_noise
 from .config import NUM_LAYOUT, OBS_MODE_DIM, NumericalConfig, ObservationMode
@@ -78,7 +78,7 @@ def _observation_space(cfg: NumericalConfig) -> spaces.Box:
     return spaces.Box(low=low, high=high, dtype=np.float32)
 
 
-class NumericalEnv(gym.Env):
+class NumericalEnv(PortGoalMixin, gym.Env):
     # render_fps is overridden per instance in __init__; the class-level value
     # is the rate implied by NumericalConfig's own default dt.
     metadata = {"render_modes": ["rgb_array"], "render_fps": 20}
@@ -131,19 +131,21 @@ class NumericalEnv(gym.Env):
             if self.cfg.sensor_noise.enabled
             else None
         )
-        self._jit_dock_goal_error = (
-            jax.jit(
-                lambda measured: dock_goal_error(
-                    relative_view(measured), jnp.asarray(dock_target(self.cfg))
-                )
-            )
-            if self.cfg.observation.goal_error
-            else None
-        )
+        # The task layer reads the chief-relative view; the port machinery's
+        # goal error does too. A drawn port reaches `step` as an argument, so
+        # a new draw each episode costs no recompilation.
+        self._init_port_goals(view=relative_view)
 
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[np.ndarray, dict[str, Any]]:
+        """Start an episode; `options` may target a port or pose.
+
+        See `PortGoalMixin` for the options contract -- the same one `ISSEnv`
+        honours: "dock_port" names one or several of this env's configured
+        ports, "dock_pose" is an explicit (7,) [position, quaternion] goal in
+        the world frame (chief-relative, like every dock pose here).
+        """
         super().reset(seed=seed)
         # Gymnasium seeds self.np_random; derive a JAX key from it so that a given
         # Gymnasium seed reproduces exactly one initial state.
@@ -152,6 +154,10 @@ class NumericalEnv(gym.Env):
         if self.cfg.sensor_noise.enabled:
             self._noise_key = jax.random.fold_in(dynamics_key, NOISE_STREAM)
         self._state = self._jit_reset(dynamics_key)
+        # Drawn after the dynamics seed, never before: the port is an extra
+        # draw on the end of np_random's stream, so a given seed reproduces
+        # the same initial state whether or not ports are configured.
+        self._begin_episode_goal(options)
         self._step_index = 0
         obs, measured_state = self._observation_and_measured()
         return obs, {
@@ -160,6 +166,9 @@ class NumericalEnv(gym.Env):
             "escaped": False,
             "state": self._true_state(),
             "measured_state": measured_state,
+            "goal_pose": self._goal_pose(),
+            "goal_error_true": self._goal_error_true(),
+            **self._port_info(),
         }
 
     def step(
@@ -175,9 +184,12 @@ class NumericalEnv(gym.Env):
         )
         action_j = jnp.asarray(clipped)
 
-        next_state, events = self._jit_step(self._state, action_j)
+        next_state, events = self._jit_step(self._state, action_j, self._dock_pose)
         reward = float(
-            docking_reward(relative_view(next_state), action_j, events, self.cfg)
+            docking_reward(
+                relative_view(next_state), action_j, events, self.cfg,
+                None if self._dock_pose is None else self._dock_pose[0:3],
+            )
         )
 
         self._state = next_state
@@ -201,6 +213,9 @@ class NumericalEnv(gym.Env):
                 "escaped": escaped,
                 "state": self._true_state(),
                 "measured_state": measured_state,
+                "goal_pose": self._goal_pose(),
+                "goal_error_true": self._goal_error_true(),
+                **self._port_info(),
             },
         )
 

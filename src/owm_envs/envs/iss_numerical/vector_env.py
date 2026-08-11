@@ -45,6 +45,18 @@ class NumericalVectorEnv(VectorEnv):
 
     def __init__(self, num_envs: int = 1, cfg: NumericalConfig | None = None):
         self.cfg = cfg or NumericalConfig()
+        if self.cfg.dock.ports:
+            # Every lane here shares one target, so honouring a port set would
+            # mean a per-lane draw threaded through the batched step, the
+            # batched reward and every autoreset. Refused rather than ignored:
+            # silently flying all lanes to cfg.dock would make the goal block
+            # and the success gate disagree with the config that was written.
+            raise ValueError(
+                "NumericalVectorEnv does not support per-episode dock ports; "
+                f"dock.ports names {[p.name for p in self.cfg.dock.ports]}. "
+                "Use NumericalEnv (which SB3 vectorises itself) for a port set, "
+                "or clear dock.ports to fly the single cfg.dock pose."
+            )
         # Per-instance because it depends on cfg.dt, which the class does not know.
         self.metadata = {**self.metadata, "render_fps": render_fps(self.cfg)}
         self.num_envs = int(num_envs)
