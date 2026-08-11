@@ -5,12 +5,17 @@ per-episode sampling ranges consumed by later tasks (epoch offsets, start
 state). `ReferenceOrbit` wraps astrojax to turn those elements into the
 chief's ECI state and the world<->ECI rotation at a given time offset from
 the epoch, drifting the elements at their first-order J2 secular rates on the
-way. That drift is an initial condition only: it puts the chief in the orbit
-plane it would actually occupy an offset of hours or days later, and once an
-episode runs the chief is numerically propagated through the full perturbed
-force model instead. The module-level sun/moon/eclipse helpers take a chief
-ECI state and an `Epoch` directly, so they compose with `ReferenceOrbit`
-without depending on its instance.
+way. What that drift does depends on the consumer. iss-numerical calls
+`chief_state_eci` once, at reset, and integrates the chief through the full
+perturbed force model from there, so the drift decides only which orbit plane
+an episode starts in. iss-hcw integrates no chief at all: it evaluates this
+analytically every step, for the |r_chief| in the gravity-gradient term, and
+every rendered frame, for the sun direction, eclipse and moon vector. Its
+chief therefore does precess -- across a 360 s episode by 0.02 deg of RAAN,
+but at an epoch offset days into the window by tens of degrees, which is what
+puts its lighting on the plane the ISS would really be in. The module-level
+sun/moon/eclipse helpers take a chief ECI state and an `Epoch` directly, so
+they compose with `ReferenceOrbit` without depending on its instance.
 
 Dtype policy: astrojax's own float dtype config (`astrojax.config`) defaults
 to f32 and is deliberately NOT flipped here. `state_koe_to_eci`,
@@ -168,7 +173,11 @@ class ReferenceOrbit:
         # window spans a week. Advancing only the mean anomaly across that
         # window would start every episode in the SAME orbital plane, and the
         # lighting diversity the window exists for would come from solar and
-        # lunar motion alone (~7 deg of beta angle instead of ~35).
+        # lunar motion alone. Measured across the seven-day window from four
+        # starting epochs, the beta angle spans 16-27 deg with the drift and
+        # 2.2-2.6 deg without it -- an order of magnitude, and a span that
+        # itself varies with where the window starts, which is part of why
+        # sampling within it helps.
         #
         # First-order secular theory, from the same J2 as
         # `envs/common/zonal_gravity`, so the initial condition and the force
