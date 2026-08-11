@@ -494,7 +494,7 @@ def test_the_iss_card_still_reads_as_it_did(tmp_path):
     assert "`observation_vector[10:13] - state_vector[10:13]`" in card
     assert (
         "manoeuvring from starts between 100 m and 500 m out to a station docking port,\n"
-        "under rigid-body free-flyer dynamics and against the station's 318-box "
+        "under rigid-body free-flyer dynamics and against the station's 313-box "
         "collision hull."
     ) in card
 
