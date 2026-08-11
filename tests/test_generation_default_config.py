@@ -1,4 +1,4 @@
-"""The shipped docking recipe, configs/generation_default.yaml.
+"""The shipped docking recipe, configs/iss/gen/default.yaml.
 
 This file is maintained alongside the PORTS table -- the pinned-pose escape
 hatch for an unknown port name exists for users' own configs, not for this
@@ -15,7 +15,7 @@ import pytest
 from owm_envs.datasets.stats import GenerationConfig
 from owm_envs.envs.common.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "generation_default.yaml"
+CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "iss" / "gen" / "default.yaml"
 
 # Approaches held out of training so validation measures them: the two
 # zenith-facing corridors, and the Unity nadir berth ISS_base.glb freed.

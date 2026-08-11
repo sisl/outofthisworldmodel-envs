@@ -34,8 +34,9 @@ _RESOURCES_DIR = Path(__file__).resolve().parent / "resources"
 # Filename, within _RESOURCES_DIR, of the 313-box ISS geometry shipped with
 # this package. This is the default for PhysicsConfig.collision_boxes_path:
 # a real, relative path rather than a magic sentinel, so it stays portable
-# across machines/installs (an absolute path would make configs/iss_default
-# .toml install-location-dependent) while still naming an actual file.
+# across machines/installs (an absolute path would make
+# configs/iss/env/default.toml install-location-dependent) while still
+# naming an actual file.
 DEFAULT_COLLISION_BOXES_FILENAME = "collision_boxes.yaml"
 
 

@@ -53,8 +53,8 @@ Trial run, one call per noise variant:
 
     for v in nonoise coop noncoop; do
       uv run owm-envs generate --out outputs/trial_num_${v}_goal \
-        --env-config configs/iss_numerical_${v}_goal.toml \
-        --gen-config configs/generation_numerical_trial.yaml \
+        --env-config configs/iss-numerical/env/${v}_goal.toml \
+        --gen-config configs/iss-numerical/gen/trial.yaml \
         --render --render-workers 16 --gpu-index 1
     done
 
@@ -62,8 +62,8 @@ Full 500k run: same, with the 500k gen-config and output directory:
 
     for v in nonoise coop noncoop; do
       uv run owm-envs generate --out outputs/full_num_${v}_goal \
-        --env-config configs/iss_numerical_${v}_goal.toml \
-        --gen-config configs/generation_numerical_500k.yaml \
+        --env-config configs/iss-numerical/env/${v}_goal.toml \
+        --gen-config configs/iss-numerical/gen/500k.yaml \
         --render --render-workers 16 --gpu-index 1
     done
 
@@ -78,7 +78,7 @@ three held out of it (`harmony_zenith_cbm`, `poisk_zenith`,
     for v in nonoise coop noncoop; do
       for p in $PORTS; do
         uv run owm-envs rollout --out outputs/rollouts/${v}/${p} \
-          --env iss-numerical --env-config configs/iss_numerical_${v}_goal.toml \
+          --env iss-numerical --env-config configs/iss-numerical/env/${v}_goal.toml \
           --policy dock --port ${p} --episodes 3 --require-dock \
           --render-views fpv,dragon_iso --render-workers 3 --gpu-index 1
       done
@@ -100,7 +100,7 @@ Still sequence -- a single docked episode at `harmony_fwd_pma2`, with a
 frame written every 6 s (`--frame-stride 120` at dt=0.05):
 
     uv run owm-envs rollout --out outputs/stills/dock_sequence \
-      --env iss-numerical --env-config configs/iss_numerical_coop_goal.toml \
+      --env iss-numerical --env-config configs/iss-numerical/env/coop_goal.toml \
       --policy dock --port harmony_fwd_pma2 --episodes 1 --require-dock \
       --render-views fpv,dragon_iso --frame-stride 120 --gpu-index 1
 

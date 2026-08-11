@@ -2,14 +2,14 @@
 
 Writes the six iss variants (the cross product of the sensor-noise presets --
 off / cooperative / noncooperative -- and goal-error observation -- off / on
--- every one derived from configs/iss_default.toml so the physics stays
+-- every one derived from configs/iss/env/default.toml so the physics stays
 identical across all six and a comparison between two published datasets
 isolates the axis their names differ on) and their two generation recipes,
 plus the three iss-numerical variants (the same noise presets with goal-error
-always on, derived from configs/iss_numerical_default.toml) and their two
+always on, derived from configs/iss-numerical/env/default.toml) and their two
 generation recipes.
 
-The generation recipes are configs/generation_default.yaml resized: the
+The generation recipes are configs/iss/gen/default.yaml resized: the
 shipped held-out-port design (a union-policy train split over the five
 non-zenith ports, a dock-policy val split over all eight) is carried through
 untouched, only the env, the split sizes and the lane count change -- and,
@@ -32,6 +32,8 @@ from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss_numerical.config import NumericalConfig
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
+ISS = CONFIGS / "iss"
+NUMERICAL = CONFIGS / "iss-numerical"
 
 # Filename tag -> the thing it names. These tags become the published dataset
 # names, so they are part of the interface, not an abbreviation scheme.
@@ -84,7 +86,7 @@ def generation_config(
     train_field: str, train_value: int, val_field: str, val_value: int
 ) -> GenerationConfig:
     """The shipped recipe with both splits resized and widened to NUM_ENVS."""
-    default = GenerationConfig.from_yaml(CONFIGS / "generation_default.yaml")
+    default = GenerationConfig.from_yaml(ISS / "gen" / "default.yaml")
     return GenerationConfig(
         **{
             **default.model_dump(),
@@ -121,7 +123,7 @@ def numerical_generation_config(
     the held-out approaches. Only the env, the split sizes, the lane count and
     the orbit policy's radius range change.
     """
-    default = GenerationConfig.from_yaml(CONFIGS / "generation_default.yaml")
+    default = GenerationConfig.from_yaml(ISS / "gen" / "default.yaml")
     splits = {}
     for name, field, value in (
         ("train", train_field, train_value),
@@ -147,39 +149,39 @@ def numerical_generation_config(
 
 
 def main() -> None:
-    base = ISSConfig.from_toml(CONFIGS / "iss_default.toml")
+    base = ISSConfig.from_toml(ISS / "env" / "default.toml")
     for noise_tag in NOISE_TAGS:
         for goal_tag in GOAL_TAGS:
-            path = CONFIGS / f"iss_{noise_tag}_{goal_tag}.toml"
+            path = ISS / "env" / f"{noise_tag}_{goal_tag}.toml"
             variant_config(base, noise_tag, goal_tag).to_toml(path)
             print(f"wrote {path}")
 
     for path, gen in (
         (
-            CONFIGS / "generation_500k.yaml",
+            ISS / "gen" / "500k.yaml",
             generation_config("min_transitions", 500_000, "min_transitions", 50_000),
         ),
         (
-            CONFIGS / "generation_trial.yaml",
+            ISS / "gen" / "trial.yaml",
             generation_config("num_episodes", 64, "num_episodes", 2),
         ),
     ):
         gen.to_yaml(path)
         print(f"wrote {path}")
 
-    numerical_base = NumericalConfig.from_toml(CONFIGS / "iss_numerical_default.toml")
+    numerical_base = NumericalConfig.from_toml(NUMERICAL / "env" / "default.toml")
     for noise_tag in NUMERICAL_NOISE_TAGS:
-        path = CONFIGS / f"iss_numerical_{noise_tag}_goal.toml"
+        path = NUMERICAL / "env" / f"{noise_tag}_goal.toml"
         numerical_variant_config(numerical_base, noise_tag).to_toml(path)
         print(f"wrote {path}")
 
     for path, gen in (
         (
-            CONFIGS / "generation_numerical_500k.yaml",
+            NUMERICAL / "gen" / "500k.yaml",
             numerical_generation_config("min_transitions", 500_000, "min_transitions", 50_000),
         ),
         (
-            CONFIGS / "generation_numerical_trial.yaml",
+            NUMERICAL / "gen" / "trial.yaml",
             numerical_generation_config("num_episodes", 64, "num_episodes", 2),
         ),
     ):
