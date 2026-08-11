@@ -176,3 +176,65 @@ def test_adapter_accepts_a_plain_numpy_input():
     assert isinstance(state, np.ndarray)
     inputs = adapter(state, None)
     assert inputs.lighting is not None
+
+
+def test_the_posed_track_is_smooth_at_the_width_the_truth_channel_records():
+    """The rendered pose is a DIFFERENCE of two ~6.8e6 m ECI columns, so the
+    width the truth channel is stored at decides how smooth the video is. At
+    float32 those columns sit on a 0.5 m grid the difference inherits in full,
+    and it moves between frames as the mantissa bits flip -- the station
+    appears to bounce. At the width the drivers record, the posed track is as
+    smooth as the motion behind it."""
+    from owm_envs.envs.iss_numerical.env import NumericalEnv
+
+    cfg = NumericalConfig(
+        dt=0.05, dock={"enabled": False}, physics={"collision_boxes_path": []}
+    )
+    env = NumericalEnv(cfg)
+    _, info = env.reset(seed=0)
+
+    recorded = [info["state"]]
+    for _ in range(60):
+        _, _, _, _, info = env.step(np.zeros(6, dtype=np.float32))
+        recorded.append(info["state"])
+    recorded = np.stack(recorded)
+    assert recorded.dtype == np.float64
+
+    adapter = make_render_adapter(cfg)
+    posed = np.stack([adapter(row).position_world for row in recorded])
+    narrowed = np.stack([adapter(row.astype(np.float32)).position_world for row in recorded])
+
+    # Free drift over three seconds: the second difference of the track is the
+    # relative acceleration, microns per step, and nothing else may show up in
+    # it. Measured against the same states narrowed to float32, which is where
+    # the bounce came from.
+    jerk = np.linalg.norm(np.diff(posed, n=2, axis=0), axis=1)
+    narrowed_jerk = np.linalg.norm(np.diff(narrowed, n=2, axis=0), axis=1)
+    assert jerk.max() < 1e-3
+    assert narrowed_jerk.max() > 0.1
+
+
+def test_the_live_render_path_poses_at_the_same_width_as_the_recorded_one():
+    """`env.render()` and the dataset video have to draw the same pose.
+
+    The truth channel is recorded at the state's own width because the adapter
+    DIFFERENCES the chaser and chief ECI columns; narrowing on the way into
+    `render()` instead would put the live view back on the 0.5 m grid the
+    recorded one no longer uses, so the two would disagree by decimetres at
+    exactly the range where the approach is most visible.
+    """
+    from owm_envs.envs.iss_numerical.env import NumericalEnv
+
+    cfg = NumericalConfig(dock={"enabled": False}, physics={"collision_boxes_path": []})
+    env = NumericalEnv(cfg)
+    _, info = env.reset(seed=1)
+
+    adapter = make_render_adapter(cfg)
+    recorded = adapter(info["state"]).position_world
+    live = adapter(np.asarray(env._state, dtype=np.float64)).position_world
+    np.testing.assert_allclose(live, recorded, atol=1e-9)
+
+    narrowed = adapter(np.asarray(env._state, dtype=np.float32)).position_world
+    assert np.linalg.norm(np.asarray(narrowed) - np.asarray(recorded)) > 0.01, (
+        "the float32 counterfactual should differ, or this test proves nothing"
+    )

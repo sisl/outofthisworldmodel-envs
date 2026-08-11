@@ -124,4 +124,9 @@ def test_an_env_without_the_hook_records_its_state_unchanged():
     already in the suite see no new step between state and observation."""
     batch = _rollout("relative", env_spec=replace(NUMERICAL_SPEC, make_observe=None))
     assert batch.observations.shape[2] == NUM_LAYOUT.state_dim
-    np.testing.assert_array_equal(batch.observations, batch.true_state)
+    # The truth channel is stored at the dynamics' own float64 and the
+    # observation at float32, so "unchanged" means unchanged up to that
+    # narrowing -- exactly, once the narrowing is applied to both sides.
+    np.testing.assert_array_equal(
+        batch.observations, batch.true_state.astype(batch.observations.dtype)
+    )

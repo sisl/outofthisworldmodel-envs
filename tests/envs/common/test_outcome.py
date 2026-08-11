@@ -1,3 +1,5 @@
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -210,12 +212,30 @@ def test_classification_matches_the_reward_the_dynamics_paid():
     assert any(o.collided for o in outcomes)
 
 
+def narrowed_to_float32(batch):
+    """The same batch with a float32 truth channel: what a dataset generated
+    before the drivers recorded truth at the dynamics' own width carries, and
+    the case the fallback guard exists for."""
+    return dataclasses.replace(batch, true_state=batch.true_state.astype(np.float32))
+
+
 def test_an_absolute_state_batch_without_recorded_events_is_refused():
     # Re-derivation cannot answer the dock gate from a float32 ECI position,
     # so classifying such a batch is refused rather than answered wrongly.
     row = numerical_state((6.8e6, 0.0, 0.0), chief_position=(6.8e6, 0.0, 0.0))
+    batch = narrowed_to_float32(numerical_batch_of(np.stack([row, row])))
     with pytest.raises(ValueError, match="no terminal_events"):
-        classify_batch(numerical_batch_of(np.stack([row, row])), NUMERICAL.config_cls(), NUMERICAL)
+        classify_batch(batch, NUMERICAL.config_cls(), NUMERICAL)
+
+
+def test_an_absolute_state_batch_recorded_at_full_width_is_resolvable():
+    # The other side of the same guard: at the width the drivers record, an ECI
+    # radius leaves a 9.3e-10 m grain and the fallback can answer.
+    row = numerical_state((6.8e6, 0.0, 0.0), chief_position=(6.8e6, 0.0, 0.0))
+    batch = numerical_batch_of(np.stack([row, row]))
+    assert batch.true_state.dtype == np.float64
+    [outcome] = classify_batch(batch, NUMERICAL.config_cls(), NUMERICAL)
+    assert outcome.docked is False
 
 
 def test_the_refusal_measures_the_chief_block_too():
@@ -224,8 +244,9 @@ def test_the_refusal_measures_the_chief_block_too():
     # origin says nothing on its own: with the chief out at an ECI radius, the
     # difference still lands on that block's 0.5 m grid.
     row = numerical_state((100.0, 0.0, 0.0), chief_position=(6.8e6, 0.0, 0.0))
+    batch = narrowed_to_float32(numerical_batch_of(np.stack([row, row])))
     with pytest.raises(ValueError, match="no terminal_events"):
-        classify_batch(numerical_batch_of(np.stack([row, row])), NUMERICAL.config_cls(), NUMERICAL)
+        classify_batch(batch, NUMERICAL.config_cls(), NUMERICAL)
 
 
 def test_a_grid_only_the_three_axis_norm_outgrows_is_refused_too():
@@ -235,8 +256,9 @@ def test_a_grid_only_the_three_axis_norm_outgrows_is_refused_too():
     # one range where the two comparisons disagree.
     assert float(np.spacing(np.float32(6.0e5))) == pytest.approx(0.0625)
     row = numerical_state((6.0e5, 0.0, 0.0))
+    batch = narrowed_to_float32(numerical_batch_of(np.stack([row, row])))
     with pytest.raises(ValueError, match="no terminal_events"):
-        classify_batch(numerical_batch_of(np.stack([row, row])), NUMERICAL.config_cls(), NUMERICAL)
+        classify_batch(batch, NUMERICAL.config_cls(), NUMERICAL)
 
 
 def test_recorded_events_are_preferred_to_re_deriving_them():

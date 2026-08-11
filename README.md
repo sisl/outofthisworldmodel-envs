@@ -117,6 +117,7 @@ below reflects what is actually documented rather than an assertion of terms.
 | `spacex_dragon_2_exterior.glb` | Sketchfab — "SpaceX Dragon 2 Exterior" | not recorded |
 | `nasa_starmap_2020/` | NASA SVS #4851, cubemapped via jaxry/panorama-to-cubemap | not recorded |
 | `moon/moon_small.glb` | Texture from NASA SVS #14959 (CGI Moon Kit), https://svs.gsfc.nasa.gov/14959/. **Mesh geometry source not recorded.** | not recorded |
+| `sun/sun_2k.jpg` (2048×1024) | Solar System Scope, https://www.solarsystemscope.com/textures/ | CC BY 4.0 |
 | `earth/maps/earth_color_fallback.jpg` (8192×4096), `earth_clouds_fallback.jpg` (4096×2048), `earth_bump_fallback.png` (2048×1024) | Downsampled from high-resolution equirectangular imagery collected from the Earth sources listed below | not recorded |
 
 **Earth imagery sources.** The high-resolution equirectangular imagery the

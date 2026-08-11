@@ -11,29 +11,24 @@ moment the final step happened, at the precision the rollout ran at.
 
 FALLBACK. A batch that carries no recorded events has its final step re-run
 through the same `EventChecker` the rollout used, from `batch.true_state`. That
-keeps one definition of each event, but it is sound only where float32 storage
-is fine-grained enough to answer the question being asked. A stored position
-lands on a grid of one float32 ulp of its own magnitude, and a relative view
-differenced from two such columns inherits that whole ulp on each axis. For an
-env that stores the canonical relative view directly, at ~100 m, the ulp is
-7.6e-6 m and the gate is never in doubt. For one storing absolute ECI columns,
-at an orbital radius of ~6.8e6 m, it is 0.5 m per axis -- and the gate tests
-the NORM of the three axes, which reaches 0.5 * sqrt(3) = 0.87 m, over half a
-metre of it observed in practice. That is five to nearly nine times a 0.1 m
-gate, so whether the chaser was inside it is not a question the stored numbers
-can answer. `classify_batch` refuses such a batch rather than answering it
-wrongly.
+keeps one definition of each event, but it is sound only where the stored
+width is fine-grained enough to answer the question being asked. A stored
+position lands on a grid of one ulp of its own magnitude, a relative view
+differenced from two such columns inherits that whole ulp on each axis, and
+the gate tests the NORM of three of them. For an env storing absolute ECI
+columns at an orbital radius of ~6.8e6 m, that is 9.3e-10 m per axis at the
+float64 the drivers record, far inside a 0.1 m dock gate -- and 0.5 m per
+axis, 0.87 m across the norm, at float32, which is five to nearly nine times
+the gate. `classify_batch` measures the grain of the batch in front of it and
+refuses one it cannot resolve rather than answering wrongly.
 
 Truth, not measurement. The terminal state used by the fallback and by the
 error metrics comes from `batch.true_state`, never from `observations` -- under
 sensor noise an observation is what the chaser believed, and whether it docked
 is a fact about where it actually was. It goes through the env's own `view`
 because an env's stored state need not be the canonical relative one
-(iss-numerical stores absolute ECI columns).
-
-The error metrics are diagnostics, not gates, and are read from the stored
-state on every env: up to ~0.87 m of quantization on a reported terminal
-position error is not material where a boolean gate an order finer is.
+(iss-numerical stores absolute ECI columns), and at the width the batch
+stores, because that view is a difference of the state's own columns.
 """
 
 from __future__ import annotations
@@ -91,8 +86,8 @@ def classify_episode(
         )
 
     length = int(batch.lengths[index])
-    target = jnp.asarray(batch.dock_targets[index], dtype=jnp.float32)
-    final = view(jnp.asarray(batch.true_state[index, length - 1], dtype=jnp.float32))
+    target = jnp.asarray(batch.dock_targets[index], dtype=jnp.float64)
+    final = view(jnp.asarray(batch.true_state[index, length - 1]))
 
     if batch.terminal_events is not None:
         collided, docked, escaped = (bool(flag) for flag in batch.terminal_events[index])
@@ -101,7 +96,7 @@ def classify_episode(
         # collision against, and no motion to have left the domain during.
         docked = collided = escaped = False
     else:
-        previous = view(jnp.asarray(batch.true_state[index, length - 2], dtype=jnp.float32))
+        previous = view(jnp.asarray(batch.true_state[index, length - 2]))
         events = checker.events(previous, final, target)
         docked = bool(events.docked)
         collided = bool(events.collision)
@@ -126,12 +121,14 @@ def _refuse_unresolvable_fallback(
     """Raise if re-deriving events from `batch.true_state` cannot resolve the
     dock gate for this env.
 
-    `true_state` is stored float32, so each stored column sits on a grid of one
-    float32 ulp of its own magnitude, and the canonical view -- a difference of
-    the chaser and chief blocks for an env storing absolute positions --
-    inherits the ulp of the LARGER of the two. Both blocks are therefore
-    measured, not just the chaser's: they are the operands the view
-    differences, and either one being large is enough to coarsen the result.
+    Each stored column sits on a grid of one ulp of its own magnitude at the
+    width the batch carries, and the canonical view -- a difference of the
+    chaser and chief blocks for an env storing absolute positions -- inherits
+    the ulp of the LARGER of the two. Both blocks are therefore measured, not
+    just the chaser's: they are the operands the view differences, and either
+    one being large is enough to coarsen the result. The grain is read off the
+    batch rather than assumed, so a batch stored narrower than the drivers
+    write today is still caught.
 
     The grain is per axis, but the gate tests the NORM of three of them, so the
     error the gate actually has to survive reaches `grain * sqrt(3)` -- the
@@ -143,7 +140,7 @@ def _refuse_unresolvable_fallback(
     if layout.chief is not None:
         blocks.append(batch.true_state[..., layout.chief])
     largest = max(float(np.abs(block).max()) for block in blocks)
-    grain = float(np.spacing(np.float32(largest)))
+    grain = float(np.spacing(batch.true_state.dtype.type(largest)))
     reachable = grain * math.sqrt(3.0)
     if reachable < cfg.dock.max_distance_m:
         return
@@ -151,7 +148,7 @@ def _refuse_unresolvable_fallback(
         f"cannot classify this batch: it carries no terminal_events, and "
         f"re-deriving them is not possible for a state whose view is "
         f"differenced from coordinates as large as {largest:.3g} m, where "
-        f"float32 storage lands on a {grain:.3g} m per-axis grid -- "
+        f"{batch.true_state.dtype} storage lands on a {grain:.3g} m per-axis grid -- "
         f"{reachable:.3g} m across the three-axis norm the gate tests -- "
         f"against a {cfg.dock.max_distance_m} m dock gate. Generate it with a "
         f"driver that records terminal_events"

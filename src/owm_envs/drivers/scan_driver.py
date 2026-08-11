@@ -328,8 +328,8 @@ class ScanDriver:
             # pre-step/terminal layout so the segmenter can cut it identically.
             # `step_events` rides along in Events' own order so the segmenter
             # can take the row of the iteration where `done` fired -- the
-            # events of the step that ended the episode, at the f64 precision
-            # the scan ran at rather than at the f32 the state is stored to.
+            # events of the step that ended the episode, as the step itself
+            # raised them rather than as a later pass would rule on them.
             step_events = jnp.stack(
                 [events.collision, events.docked, events.escaped]
             )

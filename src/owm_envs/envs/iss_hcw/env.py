@@ -7,8 +7,9 @@ alone at float32. `HCWDynamics.step`'s internal accumulation depends on that
 epoch prefix never being rounded to f32 -- `envs/iss_hcw/dynamics.py`
 documents a measured 290 s/orbit drift if it is -- so `self._state` is kept
 at whatever dtype `HCWDynamics` hands back (float64) for its entire life;
-only `_obs()` and `_true_state()` narrow to float32, and only on freshly
-computed copies, never by writing back into `self._state`.
+only `_obs()` narrows to float32, and only on a freshly computed copy, never
+by writing back into `self._state`. `_true_state()` publishes the state at
+its own width, so the truth channel carries what the dynamics integrated.
 """
 
 from __future__ import annotations
@@ -196,7 +197,7 @@ class HCWEnv(PortGoalMixin, gym.Env):
     # does not move at all. What must never narrow is `self._state` itself,
     # which the dynamics accumulate from -- see the module docstring.
     def _true_state(self) -> np.ndarray:
-        return np.asarray(self._state, dtype=np.float32)
+        return np.asarray(self._state, dtype=np.float64)
 
     def render(self) -> np.ndarray | None:
         if self.render_mode is None:
@@ -207,7 +208,7 @@ class HCWEnv(PortGoalMixin, gym.Env):
         if self._renderer is None:
             self._renderer = self._make_renderer()
         return self._renderer.render(
-            self._render_adapter(np.asarray(self._state, dtype=np.float32)),
+            self._render_adapter(np.asarray(self._state, dtype=np.float64)),
             view=self.cfg.render_view,
         )
 

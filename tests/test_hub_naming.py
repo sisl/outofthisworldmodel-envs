@@ -68,7 +68,7 @@ FEATURES = {
     "truncated": {"dtype": "bool", "shape": [1], "names": None},
     "policy_id": {"dtype": "int64", "shape": [1, 1], "names": None},
     "dock_target": {"dtype": "float32", "shape": [1, 7], "names": None},
-    "state_vector": {"dtype": "float32", "shape": [13], "names": None},
+    "state_vector": {"dtype": "float64", "shape": [13], "names": None},
     "timestamp": {"dtype": "float32", "shape": [1], "names": None},
     "frame_index": {"dtype": "int64", "shape": [1], "names": None},
     "episode_index": {"dtype": "int64", "shape": [1], "names": None},
@@ -309,7 +309,7 @@ def test_a_run_with_no_card_at_all_is_refused_by_preview_and_push(tmp_path, api)
 HCW_FEATURES = {
     **FEATURES,
     "observation_vector": {"dtype": "float32", "shape": [15], "names": None},
-    "state_vector": {"dtype": "float32", "shape": [15], "names": None},
+    "state_vector": {"dtype": "float64", "shape": [15], "names": None},
 }
 
 
@@ -343,7 +343,7 @@ def test_the_card_describes_the_state_the_env_actually_carries(tmp_path):
 NUMERICAL_FEATURES = {
     **FEATURES,
     "observation_vector": {"dtype": "float32", "shape": [15], "names": None},
-    "state_vector": {"dtype": "float32", "shape": [21], "names": None},
+    "state_vector": {"dtype": "float64", "shape": [21], "names": None},
 }
 
 

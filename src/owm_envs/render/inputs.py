@@ -25,6 +25,11 @@ class Lighting:
     illumination: float
     chief_distance_m: float  # Earth center sits at -z * this
     moon_vector_world: np.ndarray  # geocentric, meters, (3,)
+    # (3, 3) mapping ECEF axes onto world axes: the globe's attitude, which
+    # decides which terrain lies under the station. A spin angle would not do
+    # -- the world frame is RTN at the chief, so most of what this rotation
+    # does between frames is the chief's own motion around the planet.
+    earth_rotation_world: np.ndarray
 
 
 @dataclass(frozen=True)

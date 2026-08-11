@@ -11,8 +11,11 @@ width depend on `cfg` rather than being a fixed constant.
 `self._state` is kept at whatever dtype `NumericalDynamics` hands back
 (float64) for its entire life, for the same reason `iss_hcw`'s is: the epoch
 prefix and the ~6.8e6 m ECI positions both need it, and `dynamics.py`'s module
-docstring quantifies the cost of narrowing either early. `_obs()` and
-`_true_state()` narrow to float32 only on freshly computed copies.
+docstring quantifies the cost of narrowing either early. `_obs()` narrows to
+float32 only on a freshly computed copy; `_true_state()` publishes the state
+at its own width, because a consumer that DIFFERENCES the ECI columns --
+`relative_view`, and so every rendered frame and every dock gate re-derived
+later -- needs that difference taken before any narrowing, not after.
 
 Sensor noise is applied to the RAW 21D state, through `NUM_LAYOUT`, before
 `make_observe(cfg)` reshapes it -- narrow, mode, then goal, in that order, so
@@ -246,7 +249,7 @@ class NumericalEnv(PortGoalMixin, gym.Env):
     # What must never narrow is `self._state` itself, which the dynamics
     # accumulate from.
     def _true_state(self) -> np.ndarray:
-        return np.asarray(self._state, dtype=np.float32)
+        return np.asarray(self._state, dtype=np.float64)
 
     def render(self) -> np.ndarray | None:
         if self.render_mode is None:
@@ -256,8 +259,12 @@ class NumericalEnv(PortGoalMixin, gym.Env):
 
         if self._renderer is None:
             self._renderer = self._make_renderer()
+        # At the state's own width, for the same reason `_true_state` is: the
+        # adapter DIFFERENCES the chaser and chief ECI columns to get the pose
+        # it draws, and at float32 those ~6.8e6 m columns sit on a 0.5 m grid
+        # the difference inherits in full.
         return self._renderer.render(
-            self._render_adapter(np.asarray(self._state, dtype=np.float32)),
+            self._render_adapter(np.asarray(self._state, dtype=np.float64)),
             view=self.cfg.render_view,
         )
 

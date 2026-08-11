@@ -14,7 +14,7 @@ every rendered frame, for the sun direction, eclipse and moon vector. Its
 chief therefore does precess -- across a 360 s episode by 0.02 deg of RAAN,
 but at an epoch offset days into the window by tens of degrees, which is what
 puts its lighting on the plane the ISS would really be in. The module-level
-sun/moon/eclipse helpers take a chief ECI state and an `Epoch` directly, so
+sun/moon/eclipse helpers take an `Epoch` and a chief ECI state directly, so
 they compose with `ReferenceOrbit` without depending on its instance.
 
 Dtype policy: astrojax's own float dtype config (`astrojax.config`) defaults
@@ -56,10 +56,9 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 from astrojax import config as astrojax_config
-from astrojax.constants import J2_EARTH, R_EARTH
+from astrojax.constants import J2_EARTH, R_EARTH, R_SUN
 from astrojax.coordinates.keplerian import state_koe_to_eci
 from astrojax.epoch import Epoch
-from astrojax.orbit_dynamics.srp import eclipse_conical
 from astrojax.orbit_dynamics.third_body import moon_position, sun_position
 from astrojax.orbits.keplerian import mean_motion as _mean_motion
 from astrojax.relative_motion.eci_rtn import rotation_eci_to_rtn
@@ -231,7 +230,41 @@ def world_from_eci(chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     return jnp.asarray(RTN_FROM_WORLD.T, rtn_from_eci.dtype) @ rtn_from_eci
 
 
-def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+def earth_rotation_world(epoch: Epoch, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
+    """R such that v_world = R @ v_ecef: where the rotating Earth's own axes
+    point in world coordinates at `epoch`.
+
+    The renderer holds the globe as a fixed body and needs its attitude, not a
+    spin angle: the world frame is RTN at the chief, so the planet turns under
+    the scene for two independent reasons -- the Earth's own rotation, and the
+    chief's motion around it, which is much the faster of the two. Handing back
+    the composed rotation covers both, and the sub-satellite point falls out of
+    it rather than having to be tracked: the chief's own ECEF position maps to
+    +z_world by construction, which is exactly where the scene hangs the
+    station over the planet.
+
+    ECEF here is the ECI frame turned by Greenwich mean sidereal time about the
+    pole, with no precession, nutation or polar motion. Those reach ~0.4 deg of
+    surface longitude at present epochs -- tens of km of ground track, which is
+    not resolvable against a globe drawn from a 16k-wide texture, and nothing
+    downstream of this measures a position on the surface. Scalar `Epoch` and a
+    single (6,) chief state -- NOT batched; vmap for batches. Returns a (3, 3)
+    astrojax-dtype (f32 by default) array."""
+    gmst = jnp.asarray(epoch.gmst(), jnp.float64)
+    cos_gmst, sin_gmst = jnp.cos(gmst), jnp.sin(gmst)
+    zero, one = jnp.zeros_like(gmst), jnp.ones_like(gmst)
+    eci_from_ecef = jnp.stack(
+        [
+            jnp.stack([cos_gmst, -sin_gmst, zero]),
+            jnp.stack([sin_gmst, cos_gmst, zero]),
+            jnp.stack([zero, zero, one]),
+        ]
+    )
+    rotated = world_from_eci(chief_state_eci).astype(jnp.float64) @ eci_from_ecef
+    return rotated.astype(astrojax_config.get_dtype())
+
+
+def sun_direction_world(epoch: Epoch, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     """Unit vector from the chief toward the sun, expressed in world
     coordinates. This one IS translated to the chief -- it feeds a light
     direction at the chief, and the ~3.5e-5 rad parallax against the
@@ -246,7 +279,7 @@ def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarr
     return unit.astype(astrojax_config.get_dtype())
 
 
-def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+def moon_vector_world(epoch: Epoch, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     """Geocentric lunar position vector expressed in WORLD AXES (not
     translated to the chief): direction AND distance, so the true-scale moon
     renders with its real +/-7% apparent-size swing. The geocentric origin is
@@ -263,7 +296,60 @@ def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray
     return rotated.astype(astrojax_config.get_dtype())
 
 
-def illumination(chief_r_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
-    """Conical-shadow illumination fraction in [0, 1] at the chief. Returns a
-    scalar astrojax-dtype (f32 by default) array."""
-    return eclipse_conical(chief_r_eci, sun_position(epoch))
+def illumination(epoch: Epoch, chief_r_eci: jnp.ndarray) -> jnp.ndarray:
+    """Conical-shadow illumination fraction in [0, 1] at the chief: the
+    fraction of the sun's disc still visible past the Earth's. Returns a
+    scalar astrojax-dtype (f32 by default) array.
+
+    From the chief's ~6.8e6 m radius the sun subtends a = 4.65e-3 rad and the
+    Earth b = 1.2196 rad, and the penumbra is the 2a-wide band of separations c
+    where the two discs overlap only partially. Across a band that narrow the
+    Earth's limb is a straight chord over the sun's disc, so the lit fraction
+    is a circular segment of that disc, cut at the signed distance
+    (b**2 - c**2) / 2c from its centre. Clipping that distance to +/- a covers
+    both extremes -- fully lit and full umbra -- so the branch-free form below
+    is the whole function.
+
+    The lens-area form (Montenbruck & Gill, and `astrojax.orbit_dynamics.srp
+    .eclipse_conical`) is exact for discs of any size, and the curvature term
+    this drops is worth ~6e-4 of illumination here -- three orders below the
+    ~0.1 deg sun direction it is evaluated against. What it costs is
+    conditioning: it resolves a difference of two ~5.6e-3 terms against
+    pi*a**2 = 6.8e-5, through an arccos evaluated at ~0.999993 where the
+    derivative is -270, so an input ulp reaches the result amplified about
+    5.9e6 times. At astrojax's default f32 that is O(0.3) of error on a
+    quantity bounded by 1, unbounded in both directions once amplified, and
+    different frame to frame -- a rendered eclipse transition strobes rather
+    than fades. Nothing in the segment form cancels worse than b - c over a
+    range of 2a, so it holds to ~1e-4 even at f32 and to rounding in the f64
+    it is evaluated at here.
+
+    The chord is placed at (b**2 - c**2) / 2c from the sun's centre, which is
+    the exact radical-axis distance short of a term in a**2 / 2c. Restoring
+    that term does NOT make this more accurate -- measured over a penumbra
+    crossing it moves the worst case from 5.7e-4 to 8.1e-4 and leaves the mean
+    at 4.8e-4 -- because what is left is the limb's curvature, which is the
+    same size and partly cancels it. The straight chord is the approximation,
+    not the placement of it.
+    """
+    r = jnp.asarray(chief_r_eci, jnp.float64)[:3]
+    to_sun = jnp.asarray(sun_position(epoch), jnp.float64) - r
+    r_norm = jnp.linalg.norm(r)
+    to_sun_norm = jnp.linalg.norm(to_sun)
+
+    sun_radius_rad = jnp.arcsin(R_SUN / to_sun_norm)
+    earth_radius_rad = jnp.arcsin(R_EARTH / r_norm)
+    # Clipped because the quotient is only mathematically in [-1, 1]: a last
+    # rounding past it takes arccos to NaN, and a NaN illumination blacks out
+    # a frame rather than degrading it.
+    cos_separation = jnp.clip(-jnp.dot(r, to_sun) / (r_norm * to_sun_norm), -1.0, 1.0)
+    separation_rad = jnp.arccos(cos_separation)
+
+    chord = jnp.clip(
+        (earth_radius_rad**2 - separation_rad**2)
+        / (2.0 * separation_rad * sun_radius_rad),
+        -1.0,
+        1.0,
+    )
+    lit = (jnp.arccos(chord) - chord * jnp.sqrt(1.0 - chord**2)) / jnp.pi
+    return lit.astype(astrojax_config.get_dtype())

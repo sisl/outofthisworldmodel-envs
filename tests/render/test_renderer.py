@@ -345,25 +345,17 @@ def test_the_cloud_deck_is_drawn_between_the_globe_and_the_station(renderer):
     station = _collect_meshes(scene.iss) + _collect_meshes(scene.dragon)
     assert station, "expected the station and capsule to carry meshes"
 
-    glow = [
-        mesh
-        for mesh in _collect_meshes(scene._earth_surface_group.parent)
-        if mesh not in (globe, deck)
-    ]
-    assert glow, "expected the atmospheric shells to be present"
-
+    glow = scene._earth_glow
     assert globe.material.render_queue < deck.material.render_queue
-    assert deck.material.render_queue < min(m.material.render_queue for m in glow)
-    assert max(m.material.render_queue for m in glow) < min(
-        m.material.render_queue for m in station
-    )
-    # The shells still depth-test -- being hidden behind the globe is what
-    # makes them a limb rather than a wash -- but on `<=`, so a fragment whose
-    # depth saturates to 1.0 past the depth range still draws against the
-    # cleared buffer instead of losing `<` to it.
-    assert all(m.material.depth_test for m in glow)
-    assert all(m.material.depth_compare == "<=" for m in glow)
-    assert not any(m.material.depth_write for m in glow)
+    assert deck.material.render_queue < glow.material.render_queue
+    assert glow.material.render_queue < min(m.material.render_queue for m in station)
+    # The limb still depth-tests -- being occluded by the station is what keeps
+    # it behind the hardware -- but on `<=`, so a fragment whose depth
+    # saturates to 1.0 past the depth range still draws against the cleared
+    # buffer instead of losing `<` to it.
+    assert glow.material.depth_test
+    assert glow.material.depth_compare == "<="
+    assert glow.material.depth_write is False
     assert deck.material.depth_test is False
     assert deck.material.depth_write is False
     # Front faces are the near hemisphere from outside the shell; both sides
@@ -451,39 +443,27 @@ def _erode(mask, iterations):
 
 
 def test_the_atmosphere_is_a_limb_not_a_wash_over_the_planet(renderer):
-    """What the glow shells' depth test is for.
+    """The rim belongs around the planet, not over it.
 
-    They are additive back-face spheres, so the fragment drawn for each is on
-    the FAR side of the shell. Over the planet those fall behind the globe and
-    the depth test drops them; only around the limb, where the ray misses the
-    surface entirely, do they survive and accumulate. Drop the depth test to
-    stop the far shells being clipped and the effect inverts into a blue wash
-    over the whole disc -- measured, +7.2 levels over the disc interior where
-    it should be adding nothing.
-
-    The opposite failure is the shells being clipped rather than occluded: on
-    a `<` compare their far fragments saturate to a depth of exactly 1.0 and
-    lose to the cleared buffer, which thins the limb from +32.7 levels to
-    +11.2. Both directions are pinned here, so neither can be traded for the
-    other.
+    The shader shades a ray by how close it passes to the globe's centre, and
+    discards the ones that pass closer than the surface radius -- those hit the
+    ground, and the thin column of air in front of a lit surface is not what
+    this draws. Drop that discard and the effect inverts into a blue wash over
+    the whole disc. The opposite failure is the rim not surviving at all: it
+    reaches ~1e6 m, where a float32 depth rounds to exactly 1.0 and loses `<`
+    against the cleared buffer, which is why the compare is `<=`. Both
+    directions are pinned here, so neither can be traded for the other.
     """
     cfg = RenderConfig(image_width=160, image_height=160)
     state = _state_pitched(_limb_depression_deg(cfg) + 25.0)
-    shells = [
-        mesh
-        for mesh in _collect_meshes(renderer._iss_scene._earth_surface_group.parent)
-        if mesh not in tuple(renderer._iss_scene._earth_surface_group.children)
-    ]
-    assert shells, "expected the atmospheric shells to be present"
+    glow = renderer._iss_scene._earth_glow
 
     try:
         with_glow = renderer.render(posed(state), view="DRAGON_FPV").astype(np.float64)
-        for shell in shells:
-            shell.visible = False
+        glow.visible = False
         without = renderer.render(posed(state), view="DRAGON_FPV").astype(np.float64)
     finally:
-        for shell in shells:
-            shell.visible = True
+        glow.visible = True
 
     added = with_glow - without
     on_earth = _earth_hit_mask(cfg, state, *added.shape[:2])
@@ -491,8 +471,12 @@ def test_the_atmosphere_is_a_limb_not_a_wash_over_the_planet(renderer):
     interior = _erode(on_earth, 12)
     assert interior.any(), "the framing must show a solid piece of the disc"
     assert added[interior].mean() < 0.5, "the atmosphere is washing over the planet"
+    # Averaged over all the sky in frame, so a thinner band reads as a smaller
+    # number without being any fainter where it is: the 128 km atmosphere
+    # covers about a sixth of the sky pixels the 574 km shells did.
     limb = added[~on_earth].mean()
-    assert limb > 20.0, f"the limb is only lit to +{limb:.1f}; clipped shells?"
+    assert limb > 3.0, f"the limb is only lit to +{limb:.1f}; is it being clipped?"
+    assert added[~on_earth].max() > 40.0, "the limb is faint even at its brightest"
 
 
 def _sky_only(renderer, state):
@@ -589,6 +573,7 @@ def test_render_views_poses_from_the_inputs_alone(renderer, monkeypatch):
         illumination=0.5,
         chief_distance_m=6.8e6,
         moon_vector_world=np.array([0.0, 3.844e8, 0.0]),
+        earth_rotation_world=np.eye(3),
     )
     action = np.arange(6.0, dtype=np.float32)
     renderer.render_views(
@@ -626,92 +611,6 @@ def test_render_after_close_raises_runtime_error():
 # (logs/trial_coop_goal), copied out of its stored `state_vector` rows rather
 # than invented: the artifact only appears at particular limb geometries, and
 # a pose chosen for looking convenient did not reproduce it.
-_LIMB_ARTIFACT_POSES = (
-    (90.759438, -39.391617, -8.915079, -0.762598, 2.067935, 0.498665,
-     0.654533, -0.243694, -0.699601, 0.150863, 0.305657, -0.533946, 0.241813),
-    (85.982445, -32.487934, -8.551683, -4.352481, 4.753126, -0.535502,
-     0.281803, -0.115844, -0.793397, 0.526962, 0.194769, -0.341299, 0.143757),
-    (85.763176, -32.248665, -8.579208, -4.418416, 4.81745, -0.565676,
-     0.273789, -0.112852, -0.792779, 0.532733, 0.190809, -0.333066, 0.139999),
-    (85.540672, -32.006161, -8.608126, -4.481843, 4.88244, -0.591207,
-     0.265948, -0.10991, -0.792086, 0.538323, 0.186894, -0.324926, 0.136296),
-)
-
-
-def _grow(mask, radius):
-    out = mask.copy()
-    for _ in range(radius):
-        grown = out.copy()
-        grown[1:] |= out[:-1]
-        grown[:-1] |= out[1:]
-        grown[:, 1:] |= out[:, :-1]
-        grown[:, :-1] |= out[:, 1:]
-        out = grown
-    return out
-
-
-def _limb_gap_fraction(frame):
-    """Share of the atmosphere band bitten out by near-black gaps.
-
-    The band is the teal pixels. A gap is darkness with both the band and the
-    lit surface close by -- sky past the band's outer edge is just as dark but
-    has no surface beside it, which is what keeps the starfield out of the
-    count.
-    """
-    rgb = frame.astype(np.int16)
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    band = (b > 60) & (b > r + 25) & (g > r + 10)
-    lit = (rgb.max(axis=-1) > 60) & ~band
-    dark = rgb.max(axis=-1) < 30
-    gaps = dark & _grow(band, 4) & _grow(lit, 4)
-    # Not `max(..., 1)`: a band that vanished entirely would divide into zero
-    # gaps and read as perfect. The caller checks this is a real band first.
-    return float(band.sum()), float(gaps.sum()) / max(int(band.sum()), 1)
-
-
-@pytest.fixture(scope="module")
-def earth_only_renderer():
-    """A renderer with the station and capsule hidden.
-
-    Their silhouettes against the band are dark, lit-adjacent and band-adjacent
-    -- what `_limb_gap_fraction` looks for, and not a defect. Hiding them
-    leaves only Earth and its atmosphere to be measured.
-    """
-    r = ISSRenderer(RenderConfig(image_width=512, image_height=512))
-    scene = r._iss_scene
-    for child in scene.scene.children:
-        if isinstance(child, gfx.Light):
-            continue
-        if child is scene.iss or child is scene.dragon:
-            child.visible = False
-    yield r
-    r.close()
-
-
-@pytest.mark.parametrize("pose", _LIMB_ARTIFACT_POSES)
-def test_the_atmosphere_band_has_no_holes_bitten_out_of_it(earth_only_renderer, pose):
-    """Black polygons used to appear inside the atmosphere band, moving as the
-    pose turned.
-
-    Only the sliver of each glow shell outside the globe's silhouette is ever
-    drawn, and the shells' facets were coarser than that sliver is wide, so
-    they left gaps showing the near-black sky behind. Nothing was drawn in
-    them -- rendered against a red background, they came back red.
-
-    Measured over the reported episode, the band lost up to 0.96% of itself to
-    these; at the shipped tessellation it loses none. The poses are four
-    consecutive frames, so this also covers the defect moving under small
-    rotations.
-    """
-    frame = earth_only_renderer.render(posed(np.array(pose, dtype=np.float32)), view="DRAGON_FPV")
-    band, gaps = _limb_gap_fraction(frame)
-    # A band that is not drawn at all has no holes in it either.
-    assert band > 5000, f"only {band:.0f} px of atmosphere band in frame"
-    # Tight enough to name the shipped tessellation rather than merely rule out
-    # the reported defect: 96x48 measured 0.96% here and 192x96 still 0.04%,
-    # against none at the 256x128 that ships.
-    assert gaps < 0.0002, f"{gaps:.2%} of the atmosphere band is punched out"
-
 def test_render_views_rejects_a_bare_view_name(renderer):
     # A string is a sequence of characters, so this would otherwise be
     # reported as an unknown view called "D".

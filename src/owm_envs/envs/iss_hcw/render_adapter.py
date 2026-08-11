@@ -35,7 +35,13 @@ import numpy as np
 
 from ...render.inputs import Lighting, RenderInputs
 from ..common.epoch_state import epoch_from_prefix, epoch_prefix, seconds_between
-from ..common.orbit import ReferenceOrbit, illumination, moon_vector_world, sun_direction_world
+from ..common.orbit import (
+    ReferenceOrbit,
+    earth_rotation_world,
+    illumination,
+    moon_vector_world,
+    sun_direction_world,
+)
 from .config import HCW_LAYOUT
 
 if TYPE_CHECKING:
@@ -59,10 +65,11 @@ class _HCWRenderAdapter:
         chief = self._ref.chief_state_eci(t)
         chief_pos = chief[0:3]
         return (
-            sun_direction_world(chief, epoch),
-            illumination(chief_pos, epoch),
+            sun_direction_world(epoch, chief),
+            illumination(epoch, chief_pos),
             jnp.linalg.norm(chief_pos),
-            moon_vector_world(chief, epoch),
+            moon_vector_world(epoch, chief),
+            earth_rotation_world(epoch, chief),
         )
 
     def __getstate__(self) -> dict[str, Any]:
@@ -78,12 +85,13 @@ class _HCWRenderAdapter:
         self._kernel = jax.jit(self._compute)
 
     def __call__(self, state: np.ndarray, action: np.ndarray | None = None) -> RenderInputs:
-        sun, illum, distance, moon = self._kernel(jnp.asarray(state[0:2]))
+        sun, illum, distance, moon, earth = self._kernel(jnp.asarray(state[0:2]))
         lighting = Lighting(
             sun_direction_world=np.asarray(sun),
             illumination=float(illum),
             chief_distance_m=float(distance),
             moon_vector_world=np.asarray(moon),
+            earth_rotation_world=np.asarray(earth),
         )
         return RenderInputs.from_view(HCW_LAYOUT.slice_view(state), action, lighting=lighting)
 
