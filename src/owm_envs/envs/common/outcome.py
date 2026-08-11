@@ -38,6 +38,7 @@ position error is not material where a boolean gate an order finer is.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -132,22 +133,26 @@ def _refuse_unresolvable_fallback(
     measured, not just the chaser's: they are the operands the view
     differences, and either one being large is enough to coarsen the result.
 
-    The comparison against `dock.max_distance_m` is strict, because a gate
-    exactly one grid step wide is one a single rounding can carry the chaser
-    across.
+    The grain is per axis, but the gate tests the NORM of three of them, so the
+    error the gate actually has to survive reaches `grain * sqrt(3)` -- the
+    same factor the module docstring derives. The comparison against
+    `dock.max_distance_m` is strict, because a gate exactly one grid step wide
+    is one a single rounding can carry the chaser across.
     """
     blocks = [batch.true_state[..., layout.pos]]
     if layout.chief is not None:
         blocks.append(batch.true_state[..., layout.chief])
     largest = max(float(np.abs(block).max()) for block in blocks)
     grain = float(np.spacing(np.float32(largest)))
-    if grain < cfg.dock.max_distance_m:
+    reachable = grain * math.sqrt(3.0)
+    if reachable < cfg.dock.max_distance_m:
         return
     raise ValueError(
         f"cannot classify this batch: it carries no terminal_events, and "
         f"re-deriving them is not possible for a state whose view is "
         f"differenced from coordinates as large as {largest:.3g} m, where "
-        f"float32 storage lands on a {grain:.3g} m grid "
+        f"float32 storage lands on a {grain:.3g} m per-axis grid -- "
+        f"{reachable:.3g} m across the three-axis norm the gate tests -- "
         f"against a {cfg.dock.max_distance_m} m dock gate. Generate it with a "
         f"driver that records terminal_events"
     )

@@ -66,18 +66,19 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
 
 
 def _check_dock_ports_agree(
-    cfg: BaseTaskConfig, policy_cfg: PolicyConfig, split: str
+    cfg: BaseTaskConfig, policy_cfg: PolicyConfig, context: str
 ) -> None:
-    """Refuse an env port set that generation would not honour.
+    """Refuse an env port set the run would not honour.
 
-    Generation resolves an episode's target from `policy.dock.ports`, never
-    from `BaseTaskConfig.dock.ports` -- that second field is the one `ISSEnv` draws
-    from. They are otherwise the same field, resolved by the same code, so a
-    config that sets the env's and leaves the policy's empty reads as a
-    multi-port run and would quietly write single-target data: the one outcome
-    neither reading of the config asks for. The vector adapters draw per-lane
-    ports themselves these days, but generation still flies the policy's --
-    `VectorEnvDriver` refuses the combination outright -- so the check stands.
+    Both `generate` and `rollout` resolve an episode's target from
+    `policy.dock.ports`, never from `BaseTaskConfig.dock.ports` -- that second
+    field is the one `ISSEnv` draws from. They are otherwise the same field,
+    resolved by the same code, so a config that sets the env's and leaves the
+    policy's empty reads as a multi-port run and would quietly write
+    single-target data: the one outcome neither reading of the config asks for.
+    The vector adapters draw per-lane ports themselves these days, but the
+    drivers still fly the policy's -- `VectorEnvDriver` refuses the combination
+    outright -- so the check stands.
 
     An empty `cfg.dock.ports` -- every config written before that field
     existed -- says nothing about ports and is left alone.
@@ -87,12 +88,12 @@ def _check_dock_ports_agree(
     env_names = [port.name for port in cfg.dock.ports]
     policy_names = [port.name for port in policy_cfg.dock.ports]
     raise typer.BadParameter(
-        f"split '{split}': dock ports disagree. The env config's dock.ports "
+        f"{context}: dock ports disagree. The env config's dock.ports "
         f"names {env_names}, the policy's dock.ports names {policy_names}, and "
-        f"generation flies the policy's -- so this run would not record the "
+        f"the run flies the policy's -- so it would not record the "
         f"ports the env config asks for. Name the same ports on both (--dock-"
-        f"ports, or the split's PORTS field), or drop dock.ports from the env "
-        f"config."
+        f"ports or the split's PORTS field for generate, --port for rollout), "
+        f"or drop dock.ports from the env config."
     )
 
 
@@ -435,7 +436,7 @@ def generate(
     # order, so a disagreement in the last one would be found only after every
     # earlier split had already paid for its full rollout.
     for name, spec in gen.splits.items():
-        _check_dock_ports_agree(cfg, spec.policy or policy_cfg, name)
+        _check_dock_ports_agree(cfg, spec.policy or policy_cfg, f"split '{name}'")
 
     batches = {}
     for name, spec in gen.splits.items():
@@ -694,6 +695,8 @@ def rollout(
         policy_cfg = _policy_config(policy, "measurement", port)
     except Exception as exc:  # pydantic rejects unknown policies and ports
         raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
+
+    _check_dock_ports_agree(cfg, policy_cfg, "rollout")
 
     if render:
         from .render.device import check_gpu_index, select_gpu

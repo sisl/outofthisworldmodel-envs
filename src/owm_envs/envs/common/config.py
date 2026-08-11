@@ -165,12 +165,16 @@ class RewardWeights(ConfigModel):
     The four shaped terms are negative so `docking_reward` is a plain weighted
     sum against non-negative errors, with no negation at the call site. Their
     magnitudes sum to 1, and each shaped term is normalised to ~1 at the edge
-    of the operating envelope (see `RewardShapingConfig`), so one step's shaped
-    cost is bounded at about 1 and a 7200-step rollout at about -7200. That
-    bound is the whole point: it is what leaves `collision` two orders of
-    magnitude above anything an episode can accumulate by flying badly, so the
-    penalty for hitting the station dominates the trajectory rather than being
-    swamped by it.
+    of the operating envelope (see `RewardShapingConfig`), so a step flown
+    inside that envelope costs about 1. The envelope is a normalisation point,
+    not a bound: a full-authority chaser (1600 N against 12000 kg, 2000 N*m
+    against 50000 kg*m^2, over a 360 s horizon) reaches 48 m/s and 14.4 rad/s,
+    and the Huber is asymptotically linear out there, so the worst step it can
+    actually reach costs -30.9 and a full 7200-step rollout of them -222,500.
+    That is what the normalisation buys: `collision` still leads the worst
+    whole rollout by 4.5x, so hitting the station stays strictly the worst
+    thing that can happen to an episode instead of being swamped by shaped
+    cost. The margin is a factor of a few, not orders of magnitude.
 
     `dock_success` is positive and is the one term that is not a penalty. It
     exists because all four shaped terms bottom out at zero, so a chaser
@@ -197,10 +201,13 @@ class RewardShapingConfig(ConfigModel):
     while the near field is smooth with zero slope at the origin, so the last
     metre is worth flying precisely.
 
-    `scale` is the error at which the term reaches ~1: the outer edge of the
-    start shell for position, and for the rest the largest value the task can
-    present. `delta` is where the term turns quadratic, set near each
-    quantity's success gate.
+    `scale` is the error at which the term reaches ~1. For position that is
+    225 m, the outer edge of the `iss-numerical` start shell; this module is
+    shared, and `iss` disperses out to 500 m, so an episode there can start
+    beyond the scale and score above 1. For the rest it is the task's nominal
+    envelope rather than a reachable bound -- see `RewardWeights` for what a
+    full-authority chaser gets to. `delta` is where the term turns quadratic,
+    set near each quantity's success gate.
 
     The rotational gate is `far + (1 - far) / (1 + (d/d0)**2)` on the range `d`
     to the port. Far out, attitude and body rate barely matter -- the job is to

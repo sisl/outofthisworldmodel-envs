@@ -4,6 +4,8 @@ import pytest
 from typer.testing import CliRunner
 
 from owm_envs.cli import app
+from owm_envs.envs.common.config import DockConfig
+from owm_envs.envs.iss.config import ISSConfig
 
 runner = CliRunner()
 
@@ -88,6 +90,20 @@ def test_frame_stride_is_rejected_without_rendering(tmp_path):
     result = run("--out", str(tmp_path), "--policy", "random",
                  "--episodes", "1", "--steps", "200", "--frame-stride", "10")
     assert result.exit_code != 0
+
+
+def test_env_dock_ports_the_single_target_does_not_share_is_a_usage_error(tmp_path):
+    # A rollout flies the policy's port, so an env config naming a port set
+    # beside a single --port would silently roll one target and record it as
+    # if the set had been honoured -- the same disagreement `generate` refuses.
+    cfg_path = tmp_path / "env.yaml"
+    ISSConfig(dock=DockConfig(ports=("zvezda_aft", "poisk_zenith"))).to_yaml(cfg_path)
+    result = run("--out", str(tmp_path / "run"), "--env-config", str(cfg_path),
+                 "--policy", "dock", "--port", "harmony_fwd_pma2",
+                 "--episodes", "1", "--steps", "200")
+    assert result.exit_code != 0
+    assert "dock ports disagree" in result.output
+    assert "zvezda_aft" in result.output and "harmony_fwd_pma2" in result.output
 
 
 def test_an_unknown_port_is_rejected(tmp_path):

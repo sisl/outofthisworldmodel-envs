@@ -228,6 +228,17 @@ def test_the_refusal_measures_the_chief_block_too():
         classify_batch(numerical_batch_of(np.stack([row, row])), NUMERICAL.config_cls(), NUMERICAL)
 
 
+def test_a_grid_only_the_three_axis_norm_outgrows_is_refused_too():
+    # 6e5 m sits in the binade whose float32 grain is 0.0625 m: finer than the
+    # 0.1 m gate per axis, so a per-axis comparison would allow it, but the
+    # gate tests the NORM of three axes and that reaches 0.108 m. This is the
+    # one range where the two comparisons disagree.
+    assert float(np.spacing(np.float32(6.0e5))) == pytest.approx(0.0625)
+    row = numerical_state((6.0e5, 0.0, 0.0))
+    with pytest.raises(ValueError, match="no terminal_events"):
+        classify_batch(numerical_batch_of(np.stack([row, row])), NUMERICAL.config_cls(), NUMERICAL)
+
+
 def test_recorded_events_are_preferred_to_re_deriving_them():
     # The recorded flags win even where re-derivation would be resolvable and
     # would say something else: this terminal state sits 200 m from the dock,
