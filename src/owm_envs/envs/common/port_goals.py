@@ -122,64 +122,23 @@ class PortGoalMixin:
         leaves np_random's stream where a naked reset's port draw would have
         started.
         """
-        if not options:
+        parsed = parse_goal_options(options, self._port_names)
+        if parsed is None:
             return False
-        # A goal-selection API must not let a typo fall through to a random
-        # goal: an unrecognised key is an error, not a naked reset.
-        unknown_keys = set(options) - {"dock_port", "dock_pose"}
-        if unknown_keys:
-            raise ValueError(
-                f"unknown reset option(s) {sorted(unknown_keys)}; this environment "
-                "understands 'dock_port' and 'dock_pose'"
-            )
-        port = options.get("dock_port")
-        pose = options.get("dock_pose")
-        if port is not None and pose is not None:
-            raise ValueError("reset options carry dock_port or dock_pose, not both")
-        if pose is not None:
-            row = np.asarray(pose, dtype=np.float32).reshape(-1)
-            if row.shape != (7,):
-                raise ValueError(
-                    "dock_pose must be 7 values [position xyz, quaternion wxyz], "
-                    f"got shape {np.asarray(pose).shape}"
-                )
+        kind, value = parsed
+        if kind == "pose":
             # In a no-ports config the jitted step has only ever seen
             # dock_pose as None; the first overridden episode hands it an
             # array and pays a one-off retrace. Both signatures stay cached
             # after that.
-            self._dock_pose = jnp.asarray(row)
+            self._dock_pose = value
             return True
-        if port is None:
-            return False
-        if isinstance(port, str):
-            names: tuple[str, ...] = (port,)
-        elif isinstance(port, (list, tuple)) and all(isinstance(n, str) for n in port):
-            names = tuple(port)
-        else:
-            raise ValueError(
-                "dock_port must be a port name or a list/tuple of port names, "
-                f"got {type(port).__name__}"
-            )
-        if not names:
-            raise ValueError("dock_port names an empty set of ports")
-        unknown = [n for n in names if n not in self._port_names]
-        if unknown:
-            raise ValueError(
-                f"unknown dock_port(s) {unknown}; this environment's configured "
-                f"ports are {list(self._port_names)}"
-                + ("" if self._port_names else " -- configure dock.ports or pass dock_pose")
-            )
-        duplicates = sorted({n for n in names if names.count(n) > 1})
-        if duplicates:
-            raise ValueError(
-                f"duplicate dock_port(s) {duplicates}; name each port at most once"
-            )
-        name = (
-            names[0]
-            if len(names) == 1
-            else names[int(self.np_random.integers(len(names)))]
+        indices: tuple[int, ...] = value
+        self._port_index = (
+            indices[0]
+            if len(indices) == 1
+            else indices[int(self.np_random.integers(len(indices)))]
         )
-        self._port_index = self._port_names.index(name)
         self._dock_pose = self._port_targets[self._port_index]
         return True
 
@@ -226,3 +185,64 @@ class PortGoalMixin:
             "dock_port": self._port_names[self._port_index],
             "dock_port_index": self._port_index,
         }
+
+
+def parse_goal_options(
+    options: dict[str, Any] | None, port_names: tuple[str, ...]
+) -> tuple[str, Any] | None:
+    """Validated goal selection from reset options; None for a naked reset.
+
+    Returns ("pose", (7,) jnp row) for an explicit target, or
+    ("ports", tuple of indices into `port_names`) for a name-based menu. The
+    one grammar behind the single-env mixin and the vector adapters, so the
+    options contract and its errors cannot drift between them. A
+    goal-selection API must not let a typo fall through to a random goal:
+    unrecognised keys, malformed values and unknown names are errors, never
+    a silent naked reset.
+    """
+    if not options:
+        return None
+    unknown_keys = set(options) - {"dock_port", "dock_pose"}
+    if unknown_keys:
+        raise ValueError(
+            f"unknown reset option(s) {sorted(unknown_keys)}; this environment "
+            "understands 'dock_port' and 'dock_pose'"
+        )
+    port = options.get("dock_port")
+    pose = options.get("dock_pose")
+    if port is not None and pose is not None:
+        raise ValueError("reset options carry dock_port or dock_pose, not both")
+    if pose is not None:
+        row = np.asarray(pose, dtype=np.float32).reshape(-1)
+        if row.shape != (7,):
+            raise ValueError(
+                "dock_pose must be 7 values [position xyz, quaternion wxyz], "
+                f"got shape {np.asarray(pose).shape}"
+            )
+        return ("pose", jnp.asarray(row))
+    if port is None:
+        return None
+    if isinstance(port, str):
+        names: tuple[str, ...] = (port,)
+    elif isinstance(port, (list, tuple)) and all(isinstance(n, str) for n in port):
+        names = tuple(port)
+    else:
+        raise ValueError(
+            "dock_port must be a port name or a list/tuple of port names, "
+            f"got {type(port).__name__}"
+        )
+    if not names:
+        raise ValueError("dock_port names an empty set of ports")
+    unknown = [n for n in names if n not in port_names]
+    if unknown:
+        raise ValueError(
+            f"unknown dock_port(s) {unknown}; this environment's configured "
+            f"ports are {list(port_names)}"
+            + ("" if port_names else " -- configure dock.ports or pass dock_pose")
+        )
+    duplicates = sorted({n for n in names if names.count(n) > 1})
+    if duplicates:
+        raise ValueError(
+            f"duplicate dock_port(s) {duplicates}; name each port at most once"
+        )
+    return ("ports", tuple(port_names.index(n) for n in names))

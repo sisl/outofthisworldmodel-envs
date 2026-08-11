@@ -71,8 +71,9 @@ def _check_dock_ports_agree(
     from. They are otherwise the same field, resolved by the same code, so a
     config that sets the env's and leaves the policy's empty reads as a
     multi-port run and would quietly write single-target data: the one outcome
-    neither reading of the config asks for. `ISSVectorEnv` refuses the same
-    disagreement rather than ignoring it, and so does this.
+    neither reading of the config asks for. The vector adapters draw per-lane
+    ports themselves these days, but generation still flies the policy's --
+    `VectorEnvDriver` refuses the combination outright -- so the check stands.
 
     An empty `cfg.dock.ports` -- every config written before that field
     existed -- says nothing about ports and is left alone.

@@ -767,3 +767,17 @@ def test_num_episodes_mode_keeps_lane_quota_not_fastest_finishers():
     # Lane-major order: episode 0 is lane 0's start, episode 1 is lane 1's.
     np.testing.assert_allclose(batch.observations[0, 0, 2], -85.0, atol=1.0)
     np.testing.assert_allclose(batch.observations[1, 0, 2], -36.0, atol=1.0)
+
+
+def test_env_side_ports_are_refused_until_the_draws_can_align():
+    # The vector env draws each lane's port itself; this driver's policies
+    # fly to targets drawn from their own table. Two independent draws would
+    # let an episode be flown to one port and gated against another, so the
+    # combination is refused rather than mis-scored.
+    cfg = ISSConfig(dock=DockConfig(ports=("all",)))
+    driver = VectorEnvDriver(
+        env_factory=lambda: ISSVectorEnv(num_envs=2, cfg=cfg),
+        policy_source=TaskPolicySource(cfg, PolicyConfig(type="dock")),
+    )
+    with pytest.raises(ValueError, match="cannot yet align"):
+        driver.generate(RolloutSpec(num_episodes=2, max_steps=5, seed=0))

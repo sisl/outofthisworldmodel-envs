@@ -2,7 +2,10 @@ import jax
 import numpy as np
 import pytest
 
+import jax.numpy as jnp
+
 from owm_envs.envs.common.config import DockConfig, PhysicsConfig
+from owm_envs.envs.common.goal import dock_goal_error
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.env import ISSEnv
@@ -320,3 +323,67 @@ def test_true_state_survives_autoreset_with_noise():
     np.testing.assert_array_equal(
         state_after_autoreset(clean_cfg), state_after_autoreset(noisy_cfg)
     )
+
+
+def test_each_lane_draws_its_own_port_from_the_configured_set():
+    venv = ISSVectorEnv(8, ISSConfig(dock=DockConfig(ports=("all",))))
+    _, info = venv.reset(seed=0)
+    assert info["dock_port_index"].shape == (8,)
+    assert info["goal_pose"].shape == (8, 7)
+    # Eight lanes over eight ports: a shared draw would name one port.
+    assert len(set(info["dock_port"])) > 1
+    # Deterministic per seed.
+    _, again = ISSVectorEnv(8, ISSConfig(dock=DockConfig(ports=("all",)))).reset(seed=0)
+    np.testing.assert_array_equal(info["dock_port_index"], again["dock_port_index"])
+
+
+def test_autoreset_lanes_redraw_their_ports():
+    cfg = ISSConfig(max_steps=2, dock=DockConfig(ports=("all",)))
+    venv = ISSVectorEnv(8, cfg)
+    _, info = venv.reset(seed=3)
+    zero = np.zeros((8, 6), dtype=np.float32)
+    seen = {tuple(info["dock_port_index"])}
+    for _ in range(12):  # four truncation/autoreset cycles
+        _, _, _, _, info = venv.step(zero)
+        seen.add(tuple(info["dock_port_index"]))
+    # Redraws happened: the lane-port assignment did not stay frozen across
+    # autoresets. (Eight lanes over eight ports make a frozen coincidence
+    # across four redraw cycles astronomically unlikely.)
+    assert len(seen) > 1
+
+
+def test_reset_options_narrow_the_lane_menu():
+    cfg = ISSConfig(dock=DockConfig(ports=("all",)))
+    venv = ISSVectorEnv(6, cfg)
+    _, info = venv.reset(seed=0, options={"dock_port": "zvezda_aft"})
+    assert set(info["dock_port"]) == {"zvezda_aft"}
+    subset = ("poisk_zenith", "rassvet_nadir")
+    _, info = venv.reset(seed=1, options={"dock_port": subset})
+    assert set(info["dock_port"]) <= set(subset)
+    with pytest.raises(ValueError, match="unknown dock_port"):
+        venv.reset(seed=0, options={"dock_port": "not_a_port"})
+    with pytest.raises(ValueError, match="unknown reset option"):
+        venv.reset(seed=0, options={"dock_prt": "zvezda_aft"})
+
+
+def test_reset_options_pose_is_shared_by_every_lane():
+    venv = ISSVectorEnv(3, ISSConfig())
+    pose = np.array([5.0, -10.0, 2.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    _, info = venv.reset(seed=0, options={"dock_pose": pose})
+    np.testing.assert_array_equal(info["goal_pose"], np.tile(pose, (3, 1)))
+    # A pose is not a named port, so no lane claims one.
+    assert "dock_port" not in info
+    _, naked = venv.reset(seed=0)
+    assert "dock_port" not in naked  # no ports configured, override forgotten
+    assert not np.allclose(naked["goal_pose"][0], pose)
+
+
+def test_lane_goal_blocks_measure_against_the_lanes_own_ports():
+    cfg = ISSConfig(observation={"goal_error": True}, dock=DockConfig(ports=("all",)))
+    venv = ISSVectorEnv(6, cfg)
+    obs, info = venv.reset(seed=2)
+    for lane in range(6):
+        expected = dock_goal_error(
+            jnp.asarray(obs[lane, :13]), jnp.asarray(info["goal_pose"][lane])
+        )
+        np.testing.assert_allclose(obs[lane, 13:], np.asarray(expected), atol=1e-6)
