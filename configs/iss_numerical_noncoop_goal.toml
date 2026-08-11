@@ -43,15 +43,16 @@ max_body_rate_rad_s = 0.008727
 ports = []
 
 [sensor_noise]
-enabled = false
+enabled = true
 sigma_pos_m = 0.0
-sigma_pos_frac_of_range = 0.0
-sigma_vel_m_s = 0.0
-sigma_att_rad = 0.0
-sigma_rate_rad_s = 0.0
+sigma_pos_frac_of_range = 0.01
+sigma_vel_m_s = 0.03
+sigma_att_rad = 5e-05
+sigma_rate_rad_s = 1e-05
 
 [observation]
-goal_error = false
+goal_error = true
+mode = "relative"
 
 [reward_weights]
 position = -0.5
@@ -83,12 +84,27 @@ argp_deg = 0.0
 mean_anomaly_deg = 0.0
 epoch_offset_range_s = [
     0.0,
-    5400.0,
+    604800.0,
 ]
 start_radius_range_m = [
-    80.0,
-    120.0,
+    100.0,
+    225.0,
 ]
 start_speed_max_m_s = 0.1
 start_attitude_error_max_deg = 10.0
 start_rate_max_rad_s = 0.01
+
+[perturbations]
+zonal_max_degree = 4
+third_body_sun = true
+third_body_moon = true
+drag = true
+chief_mass_kg = 419700.0
+
+[perturbations.chief_ballistic]
+area_m2 = 1500.0
+cd = 2.2
+
+[perturbations.chaser_ballistic]
+area_m2 = 50.0
+cd = 2.2
