@@ -81,6 +81,24 @@ def test_validate_rejects_nonzero_padding():
         batch.validate()
 
 
+def test_validate_rejects_terminal_events_that_are_not_three_wide():
+    # One flag per event -- [collision, docked, escaped] -- so a row of any
+    # other width is not a set of events, whatever it is.
+    batch = make_batch(num_episodes=2)
+    bad = TrajectoryBatch(
+        observations=batch.observations,
+        actions=batch.actions,
+        rewards=batch.rewards,
+        lengths=batch.lengths,
+        terminated=batch.terminated,
+        truncated=batch.truncated,
+        policy_ids=None,
+        terminal_events=np.zeros((2, 2), dtype=bool),
+    )
+    with pytest.raises(ValueError, match="terminal_events"):
+        bad.validate()
+
+
 def test_rollout_spec_is_frozen():
     spec = RolloutSpec(num_episodes=4, max_steps=100, seed=0)
     with pytest.raises(Exception):

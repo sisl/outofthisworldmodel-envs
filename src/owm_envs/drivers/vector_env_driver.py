@@ -69,6 +69,17 @@ def _lane_state(info: dict, lane: int) -> np.ndarray:
     return np.array(info["state"][lane], dtype=np.float32)
 
 
+# The info keys every env in the suite publishes its per-step outcomes under,
+# in the element order `Events` names them: [collision, docked, escaped]. The
+# env's own word "success" is this suite's `docked`.
+_EVENT_KEYS = ("collision", "success", "escaped")
+
+
+def _lane_events(info: dict, lane: int) -> np.ndarray:
+    """One lane's [collision, docked, escaped] out of a vector info dict."""
+    return np.array([bool(info[key][lane]) for key in _EVENT_KEYS], dtype=bool)
+
+
 class VectorEnvDriver:
     """See module docstring.
 
@@ -157,6 +168,13 @@ class VectorEnvDriver:
         # observation or on none, and the vector info is a dict of per-lane
         # arrays, so the key being present means every lane has it.
         records_truth = "state" in info
+
+        # Likewise for the per-step event flags. Recording them here is the
+        # only way the outcome of an episode survives the rollout exactly: the
+        # env raised them at its own precision, while re-deriving them later
+        # from the stored float32 state cannot resolve a 0.1 m dock gate for an
+        # env carrying absolute ECI columns (see `TrajectoryBatch`).
+        records_events = all(key in info for key in _EVENT_KEYS)
 
         # Episode state is created before `lane_obs` below (rather than after,
         # as the accumulator list order might suggest) purely so the initial
@@ -344,6 +362,12 @@ class VectorEnvDriver:
                         }
                         if records_truth:
                             episode["true_state"] = np.stack(lane_true[lane])
+                        if records_events:
+                            # From `next_info`, the info of the step that just
+                            # ended this episode. A lane cut short by
+                            # `horizon_hit` reads all-False here, which is
+                            # what a truncation raises.
+                            episode["terminal_events"] = _lane_events(next_info, lane)
                         finished.append(episode)
                         lane_recorded[lane] += 1
                         transitions_collected += len(lane_obs[lane]) - 1
@@ -413,4 +437,5 @@ class VectorEnvDriver:
             records_dock_targets,
             records_true_state=records_truth,
             state_dim=state_dim,
+            records_terminal_events=records_events,
         )
