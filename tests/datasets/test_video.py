@@ -492,3 +492,25 @@ def test_tee_episode_stills_names_each_view_separately(tmp_path):
         "dragon_iso_000000.png", "dragon_iso_000001.png",
         "fpv_000000.png", "fpv_000001.png",
     ]
+
+
+def test_closing_the_stills_tee_closes_the_iterator_behind_it(tmp_path):
+    """In a rollout this tee wraps `tee_episode_clips` rather than the render
+    pool directly, and the consumer closes whichever tee is outermost. If this
+    one did not pass `close()` on, the tee (and the render pool behind that)
+    would only come down when this one's own frame was collected.
+    """
+    closed: list[bool] = []
+
+    def source():
+        try:
+            for _ in range(3):
+                yield {"observation.images.fpv": np.zeros((4, 4, 4, 3), dtype=np.uint8)}
+        finally:
+            closed.append(True)
+
+    clips = source()
+    tee = tee_episode_stills(clips, tmp_path, stride=1)
+    next(tee)
+    tee.close()
+    assert closed == [True], "the tee did not close the iterator behind it"
