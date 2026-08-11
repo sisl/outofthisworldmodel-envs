@@ -18,8 +18,8 @@ version gate.
 lerobot is an optional extra. The import is function-local so the rest of the
 package imports and tests without it.
 
-Schema: `observation_vector` (float32, obs_dim), `state_vector` (float32,
-13) and `action` (float32, act_dim) carry the trajectory itself. Six more
+Schema: `observation_vector` (float32, obs_dim), `state_vector` (float64,
+state_dim) and `action` (float32, act_dim) carry the trajectory itself. Six more
 features carry outcome metadata that would otherwise be lost once a
 TrajectoryBatch is discarded: `reward` (the per-frame reward; zero on an
 episode's final frame, whose action slot is a zero pad rather than a real
@@ -55,6 +55,14 @@ a policy can be trained on the noisy channel while being scored against
 truth. The first 13 dims of `observation_vector` are the corresponding
 measured state; any dims past them (the goal-error block) have no
 `state_vector` counterpart, which is why the two can differ in width.
+
+It is written at float64 where every other feature here is float32, because
+it is the one feature whose consumers SUBTRACT its columns rather than read
+them. An env carrying absolute ECI positions holds ~6.8e6 m in those columns,
+where float32 lands on a 0.5 m grid; the relative view derived from them --
+the pose a rendered frame is drawn at, and the quantity a 0.1 m dock gate
+tests -- inherits that grid in full, and it moves frame to frame as the
+mantissa bits flip, so it reads as jitter rather than as a fixed offset.
 Unlike `dock_target`, a batch with no truth channel omits the feature
 entirely rather than writing NaN rows: NaN marks a value that is genuinely
 missing for one episode, whereas a driver that cannot record truth has no
@@ -202,7 +210,7 @@ def write_lerobot_split(
         }
         if batch.true_state is not None:
             features["state_vector"] = {
-                "dtype": "float32",
+                "dtype": "float64",
                 "shape": (batch.true_state.shape[-1],),
                 "names": None,
             }
@@ -324,7 +332,7 @@ def _write_episode(
         }
         if batch.true_state is not None:
             frame["state_vector"] = np.asarray(
-                batch.true_state[episode, t], dtype=np.float32
+                batch.true_state[episode, t], dtype=np.float64
             )
         if clip is not None:
             for key, view_clip in clip.items():

@@ -279,7 +279,7 @@ class ISSVectorEnv(VectorEnv):
         return np.asarray(measured, dtype=np.float32)
 
     def _true_states(self) -> np.ndarray:
-        return np.asarray(self._states, dtype=np.float32)
+        return np.asarray(self._states, dtype=np.float64)
 
     def _draw_lane_ports(self, lanes: np.ndarray, key: jax.Array) -> None:
         """Redraw the flagged lanes' ports uniformly from the active menu."""

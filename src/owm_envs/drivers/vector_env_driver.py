@@ -65,8 +65,11 @@ def _lane_state(info: dict, lane: int) -> np.ndarray:
 
     Copied because the env owns that array and is free to overwrite it in
     place on the next step, exactly as the recorded observations are copied.
+    Kept at the width the env published: an env carrying absolute ECI columns
+    has its relative view differenced out of them downstream, and narrowing
+    here would take that difference against a 0.5 m grid.
     """
-    return np.array(info["state"][lane], dtype=np.float32)
+    return np.array(info["state"][lane], dtype=np.float64)
 
 
 # The info keys every env in the suite publishes its per-step outcomes under,
@@ -171,9 +174,9 @@ class VectorEnvDriver:
 
         # Likewise for the per-step event flags. Recording them here is the
         # only way the outcome of an episode survives the rollout exactly: the
-        # env raised them at its own precision, while re-deriving them later
-        # from the stored float32 state cannot resolve a 0.1 m dock gate for an
-        # env carrying absolute ECI columns (see `TrajectoryBatch`).
+        # env raised them at its own precision, and an event is a fact about
+        # the step that raised it rather than something a stored pair of
+        # endpoints is obliged to reproduce (see `TrajectoryBatch`).
         records_events = all(key in info for key in _EVENT_KEYS)
 
         # Episode state is created before `lane_obs` below (rather than after,

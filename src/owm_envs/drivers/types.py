@@ -110,7 +110,7 @@ class TrajectoryBatch:
     # supply one -- every driver in the suite can, recording the `DockConfig`
     # pose for a run with no port set.
     dock_targets: np.ndarray | None = None
-    # (E, T, state_dim) float32, zero-padded past `lengths[e]` on the same
+    # (E, T, state_dim) float64, zero-padded past `lengths[e]` on the same
     # episode and time layout as `observations`: the TRUE dynamics state behind
     # each stored observation, state_dim-wide (13 for the iss env). Identical
     # to `observations[..., :state_dim]` when sensor noise is off, and
@@ -126,21 +126,16 @@ class TrajectoryBatch:
     # at, at the moment the step happened. All three False for an episode that
     # truncated, which raises no event.
     #
-    # Recorded rather than re-derived from `true_state` because for some envs
-    # it cannot be re-derived at all. `true_state` is stored float32, and an
-    # env whose state holds absolute ECI columns carries positions at an
-    # orbital radius of ~6.8e6 m, where float32's spacing is 0.5 m. A relative
-    # view differences two such columns, so each of its axes carries up to that
-    # full spacing -- and the quantity the dock gate tests is the NORM of the
-    # three, which therefore reaches 0.5 * sqrt(3) = 0.87 m; over half a metre
-    # is observed in practice. Against a 0.1 m gate, whether a stored terminal
-    # state is inside it is not a question the stored numbers can answer. The
-    # collision test sweeps a 2.25 m radius through ~1.25 m clearances and is
-    # equally sensitive at a graze.
+    # Recorded rather than re-derived, because an event is a fact about the
+    # step that raised it: the dock gate admits 0.1 m and the collision test
+    # sweeps a 2.25 m radius through ~1.25 m clearances, so a graze is decided
+    # by the swept segment the step actually integrated, not by a later pass
+    # over the two endpoints it left behind. `true_state` now carries the width
+    # to re-derive them, but re-deriving still asks a different question.
     #
     # None when the source cannot supply them; `envs.common.outcome` then falls
-    # back to re-deriving, which is sound only for an env whose state IS the
-    # canonical relative view at ~100 m.
+    # back to re-deriving from the endpoints, and guards that fallback against
+    # the width the batch in front of it actually carries.
     terminal_events: np.ndarray | None = None
 
     @property
@@ -319,7 +314,7 @@ def pack_episodes(
     policy_ids = np.zeros(n, dtype=np.int32) if records_policy_ids else None
     dock_targets = np.zeros((n, 7), dtype=np.float32) if records_dock_targets else None
     true_state = (
-        np.zeros((n, max_len, state_dim), dtype=np.float32)
+        np.zeros((n, max_len, state_dim), dtype=np.float64)
         if records_true_state
         else None
     )

@@ -189,7 +189,7 @@ class ISSEnv(PortGoalMixin, gym.Env):
         return np.asarray(measured, dtype=np.float32)
 
     def _true_state(self) -> np.ndarray:
-        return np.asarray(self._state, dtype=np.float32)
+        return np.asarray(self._state, dtype=np.float64)
 
     def render(self) -> np.ndarray | None:
         if self.render_mode is None:
