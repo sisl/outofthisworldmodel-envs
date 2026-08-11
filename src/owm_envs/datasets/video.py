@@ -31,6 +31,7 @@ import os
 import warnings
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 import numpy as np
@@ -570,8 +571,9 @@ def tee_episode_clips(
     it must close the pool behind it, since the writer now closes this rather
     than the iterator that owns the workers.
     """
-    from pathlib import Path
-
+    # imageio ships in the `render` extra, and this module is imported at
+    # module level by the CLI, so hoisting this would make a base install
+    # unable to run any command at all.
     import imageio.v3 as iio
 
     media_root = Path(media_root)
@@ -649,8 +651,9 @@ def tee_episode_stills(
     if stride < 0:
         raise ValueError(f"stride must be >= 0, got {stride}")
 
-    from pathlib import Path
-
+    # imageio ships in the `render` extra, and this module is imported at
+    # module level by the CLI, so hoisting this would make a base install
+    # unable to run any command at all.
     import imageio.v3 as iio
 
     stills_root = Path(stills_root)
