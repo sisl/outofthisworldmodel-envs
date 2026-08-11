@@ -17,12 +17,16 @@ recorded per episode:
     rassvet_nadir         Rassvet (MRM-1) nadir        Soyuz, Progress
     unity_nadir_cbm       Unity nadir CBM              Cygnus
 
-Unity nadir is a target for the base station only: the `ISS_cygnus.glb`
-variant berths a Cygnus there, re-occupying the corridor (and the collision
-hull carries no vehicle at that port, so that variant's hull understates the
-station it renders around Unity).
+Three of them are targets for the base station only: `ISS_dragon.glb` berths
+a vehicle at harmony_fwd_pma2, `ISS_cygnus.glb` at unity_nadir_cbm and
+`ISS_soyuz.glb` at zvezda_aft, re-occupying those corridors. Each of those
+assets has a collision hull of its own carrying the vehicle it berths
+(`resources/collision_boxes_<variant>.yaml`, written by
+`scripts/write_variant_collision_boxes.py`), so under one of those hulls the
+occupied port's goal pose lies inside the station and the approach ends on
+contact.
 
-Two of those are not the flown hardware. Harmony zenith carries no PMA/IDA in
+Two of the eight are not the flown hardware. Harmony zenith carries no PMA/IDA in
 a 2015 asset, so its mating plane is the bare CBM and sits about 2.5 m inboard
 of the real docking plane. Pirs was deorbited in 2021 and that side of Zvezda
 now carries Nauka and the Prichal node, so `pirs_nadir` stands in for Prichal
