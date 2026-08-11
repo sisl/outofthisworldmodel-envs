@@ -136,11 +136,14 @@ NUMERICAL_DIVERGENCE = {
     "action": 14.5,
     # Written relative, but absolute in practice: every shaped term is
     # normalised, so the reward runs at |r| <= 0.26 here and the max(|r|, 1)
-    # floor at the call site turns this into a flat 2.0e-2. No term reads the
+    # floor at the call site turns this into a flat bound. No term reads the
     # action, so the action divergence above cannot reach the reward -- only
     # the state can, dominated by the velocity term at w/scale = 0.2/5.0 per
-    # m/s against 6.9e-5 m/s of divergence. Measured 2.0e-6.
-    "reward": 2.0e-2,
+    # m/s against 6.9e-5 m/s of divergence. 5.1x measured 1.97e-6, which is
+    # the free-flight call site; the goal-block one measures 9.24e-7. Both
+    # reproduce to every digit across repeated runs and separate processes,
+    # so the multiple is margin against a future config, not against jitter.
+    "reward": 1.0e-5,
 }
 
 # The horizon NUMERICAL_DIVERGENCE's arithmetic is written against. The bound
