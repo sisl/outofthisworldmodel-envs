@@ -8,16 +8,19 @@ from owm_envs.envs.common.outcome import classify_batch
 from owm_envs.envs.iss.config import ISSConfig
 
 DOCK_POSE = np.asarray([0.225, -24.5, -2.5, 0.7071068, -0.7071068, 0.0, 0.0], dtype=np.float32)
+OTHER_DOCK_POSE = np.asarray([100.0, -50.0, 10.0, 0.7071068, -0.7071068, 0.0, 0.0], dtype=np.float32)
 
 
-def episode(states: np.ndarray, terminated: bool, truncated: bool) -> dict:
+def episode(
+    states: np.ndarray, terminated: bool, truncated: bool, dock_target: np.ndarray = DOCK_POSE
+) -> dict:
     length = states.shape[0]
     return {
         "obs": states.astype(np.float32),
         "act": np.zeros((length, 6), dtype=np.float32),
         "rew": np.zeros((length,), dtype=np.float32),
         "true_state": states.astype(np.float32),
-        "dock_target": DOCK_POSE,
+        "dock_target": dock_target,
         "terminated": terminated,
         "truncated": truncated,
         "policy_id": 0,
@@ -49,9 +52,21 @@ def test_an_episode_ending_at_the_gate_is_docked():
     assert outcome.position_error_m == pytest.approx(0.0, abs=1e-4)
 
 
-def test_an_episode_ending_inside_the_hull_is_a_collision():
+def test_an_episode_ending_at_a_point_inside_the_hull_is_a_collision():
     into_station = np.stack([state((0.0, 0.0, 30.0)), state((0.0, 0.0, 0.0))])
     [outcome] = classify_batch(batch_of(episode(into_station, True, False)), CFG, SPEC)
+    assert outcome.collided is True
+    assert outcome.docked is False
+
+
+def test_a_step_that_tunnels_through_the_hull_is_a_collision():
+    # Both endpoints sit clear of every box -- (0, -2, 20) is above the box
+    # centred at (0, -2, 2) with half-extents (5, 1, 1), (0, -2, -20) is below
+    # it -- but the straight-line path between them threads through the box's
+    # 2 m-thick slab. A checker that dropped the true_state[length - 2] lookup
+    # and tested only the terminal point would call this collision-free.
+    tunneling = np.stack([state((0.0, -2.0, 20.0)), state((0.0, -2.0, -20.0))])
+    [outcome] = classify_batch(batch_of(episode(tunneling, True, False)), CFG, SPEC)
     assert outcome.collided is True
     assert outcome.docked is False
 
@@ -97,3 +112,17 @@ def test_each_episode_is_scored_against_its_own_target():
         batch_of(episode(at_dock, True, False), episode(far, False, True)), CFG, SPEC
     )
     assert [o.docked for o in outcomes] == [True, False]
+
+
+def test_position_error_is_measured_against_the_episodes_own_target():
+    # Sitting exactly at OTHER_DOCK_POSE reads as zero error only if the
+    # episode's own dock_target is used; scored against CFG's dock pose (a
+    # different point) instead, this position would show a large error.
+    at_other_dock = np.stack([
+        state(tuple(OTHER_DOCK_POSE[0:3])),
+        state(tuple(OTHER_DOCK_POSE[0:3])),
+    ])
+    [outcome] = classify_batch(
+        batch_of(episode(at_other_dock, False, True, dock_target=OTHER_DOCK_POSE)), CFG, SPEC
+    )
+    assert outcome.position_error_m == pytest.approx(0.0, abs=1e-4)
