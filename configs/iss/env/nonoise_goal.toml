@@ -60,6 +60,7 @@ attitude = -0.2
 body_rate = -0.1
 collision = -1000000.0
 dock_success = 10000.0
+escape = -10000.0
 
 [reward_shaping]
 position_delta_m = 1.0

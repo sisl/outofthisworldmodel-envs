@@ -33,7 +33,7 @@ def state_at(pos, vel=(0.0, 0.0, 0.0), quat=IDENTITY, omega=(0.0, 0.0, 0.0)) -> 
 def only(**weights) -> RewardWeights:
     """Weights with everything zeroed but the named terms."""
     zeroed = dict(position=0.0, velocity=0.0, attitude=0.0, body_rate=0.0,
-                  collision=0.0, dock_success=0.0)
+                  collision=0.0, dock_success=0.0, escape=0.0)
     return RewardWeights(**{**zeroed, **weights})
 
 
@@ -185,12 +185,71 @@ def test_docking_beats_hovering_just_outside_the_gate():
     assert float(dock) > float(hover)
 
 
-def test_escaping_is_neither_rewarded_nor_penalised():
+def test_escaping_applies_the_full_penalty_weight():
     cfg = ISSConfig(dock=AT_ORIGIN)
     state = state_at((2000.0, 0.0, 0.0))
-    assert float(docking_reward(state, ZERO_ACTION, ESCAPED, cfg)) == float(
-        docking_reward(state, ZERO_ACTION, NO_EVENTS, cfg)
-    )
+    escaped = float(docking_reward(state, ZERO_ACTION, ESCAPED, cfg))
+    stayed = float(docking_reward(state, ZERO_ACTION, NO_EVENTS, cfg))
+    assert escaped - stayed == pytest.approx(cfg.reward_weights.escape, abs=1e-2)
+
+
+# Orthogonal to the shipped DockConfig quaternion, so the attitude error is a
+# full pi -- the worst a loitering episode can hold while the escape tests
+# below bound what loitering can cost.
+ANTIPODAL_TO_DOCK = (0.0, 0.0, 1.0, 0.0)
+
+
+def worst_start_position(cfg) -> tuple[float, float, float]:
+    """The point on the start shell furthest from the port it is shaped toward.
+
+    The shell is centred on the ISS and the port sits ~24.6 m off that centre,
+    so the point diametrically opposite the port is that much further from it
+    than the shell radius -- while still being a radius an episode can
+    actually start at. Taking the radius alone would understate the loiter
+    cost the escape penalty has to beat, in the direction that makes the tests
+    below pass more easily.
+    """
+    dock = np.asarray(cfg.dock.position, dtype=float)
+    return tuple(-dock / np.linalg.norm(dock) * cfg.physics.start_radius_range_m[1])
+
+
+def test_escaping_costs_more_than_a_full_horizon_of_loitering_can_save():
+    # Escape is absorbing, so an episode that exits stops paying the shaped
+    # cost of the horizon it skips. The penalty has to exceed everything that
+    # skipping can save, or leaving is cheaper than staying -- and the most a
+    # station-keeping episode can spend is a full horizon held at rest at the
+    # furthest point it can have started from.
+    cfg = ISSConfig()
+    at_rest = state_at(worst_start_position(cfg), quat=ANTIPODAL_TO_DOCK)
+    per_step = abs(float(docking_reward(at_rest, ZERO_ACTION, NO_EVENTS, cfg)))
+    assert abs(cfg.reward_weights.escape) > per_step * cfg.max_steps
+
+
+def test_escaping_is_worse_than_riding_the_horizon_out_at_that_distance():
+    # The same comparison as a return rather than a weight: an episode that
+    # flies to the edge of the start shell and leaves must score below one
+    # that sits there to the horizon. Without the penalty the escape pays one
+    # step of shaped cost and the loiter pays 7200 of them, so the ordering
+    # is backwards -- fleeing outscores staying by three orders.
+    cfg = ISSConfig()
+    at_rest = state_at(worst_start_position(cfg), quat=ANTIPODAL_TO_DOCK)
+    loiter = float(docking_reward(at_rest, ZERO_ACTION, NO_EVENTS, cfg)) * cfg.max_steps
+    escape = float(docking_reward(at_rest, ZERO_ACTION, ESCAPED, cfg))
+    assert escape < loiter
+
+
+def test_escaping_stays_far_less_bad_than_a_collision():
+    # Two orders apart, so no amount of shaped cost between them lets an
+    # episode confuse flying out of the domain with flying into the station.
+    w = ISSConfig(dock=AT_ORIGIN).reward_weights
+    assert abs(w.collision) > 50.0 * abs(w.escape)
+
+
+def test_docking_and_escaping_are_symmetric():
+    # Leaving is exactly as bad as arriving is good: no mixture of the two
+    # over many episodes pays, whatever the ratio.
+    w = ISSConfig(dock=AT_ORIGIN).reward_weights
+    assert w.escape == pytest.approx(-w.dock_success)
 
 
 def test_reward_does_not_depend_on_the_action():
