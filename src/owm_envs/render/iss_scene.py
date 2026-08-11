@@ -486,13 +486,24 @@ class ISSScene:
         # every one of them when it is handed a `Lighting`. Earth is built
         # first because the moon is placed relative to its centre.
         self._earth_group = self._load_earth_group()
+        # The moon is 3.9e8 m out, past what a near plane close enough to
+        # render a dock can express in a float32 depth buffer, so it gets its
+        # own scene and its own pass -- see `ISSRenderer._draw`. It carries its
+        # own key light because a scene is what pygfx gathers lights from, and
+        # a body at lunar distance wants the sun and nothing else anyway: the
+        # ambient and fill that keep an eclipsed STATION readable have no
+        # business brightening the moon, which is not in the Earth's shadow
+        # when the station is.
+        self.distant = gfx.Scene()
         self._moon_group = self._load_moon_group()
+        self._moon_light = self._build_moon_light()
+        self.distant.add(self._moon_group)
+        self.distant.add(self._moon_light)
         self._sun = self._build_sun_sphere()
         ambient_light = self._build_ambient_light()
         self._directional_light = self._build_directional_light()
         self._fill_light = self._build_fill_directional_light()
         self.scene.add(self._earth_group)
-        self.scene.add(self._moon_group)
         self.scene.add(self._sun)
         self.scene.add(ambient_light)
         self.scene.add(self._directional_light)
@@ -514,6 +525,7 @@ class ISSScene:
             "fill_intensity": self._fill_light.intensity,
             "earth_position": tuple(self._earth_group.local.position),
             "moon_position": tuple(self._moon_group.local.position),
+            "moon_light_position": tuple(self._moon_light.local.position),
         }
         self._lit = False
 
@@ -694,6 +706,20 @@ class ISSScene:
         moon_group.local.position = tuple(moon_world.tolist())
         for mesh in _collect_meshes(moon_group):
             mesh.material.render_queue = _DISTANT_QUEUE
+            # Drawn between the starfield and the main scene, so everything in
+            # that scene paints over it and occlusion by the Earth, the station
+            # and the capsule comes out of draw order rather than out of a
+            # depth comparison -- which could not work anyway, since the two
+            # passes project depth through different near planes. Writing
+            # depth here would leave values the main pass reads as nearer than
+            # the Earth and hide the planet behind the moon.
+            mesh.material.depth_write = False
+            mesh.material.depth_test = False
+            # With no depth test a sphere no longer hides its own far side, and
+            # pygfx draws both faces by default. The moon is convex and the
+            # camera is always outside it, so its front faces are exactly the
+            # hemisphere that should be visible.
+            mesh.material.side = gfx.VisibleSide.front
         return moon_group
 
     def _build_sun_sphere(self) -> gfx.Mesh:
@@ -722,6 +748,17 @@ class ISSScene:
         light.shadow.camera.height = 600.0
         light.shadow.camera.depth_range = (0.1, 2_000.0)
         light.shadow.bias = 0.0005
+        return light
+
+    def _build_moon_light(self) -> gfx.DirectionalLight:
+        """The key light for the distant scene, held separately from the one
+        that lights the station: pygfx gathers lights per scene, and this one
+        is never dimmed for eclipse -- the moon is lit whether or not the
+        station it is being viewed from is in the Earth's shadow."""
+        light = gfx.DirectionalLight("#ffffff", self.cfg.directional_light_intensity)
+        direction = _unit(np.array(self.cfg.sun_direction_world, dtype=np.float32))
+        light.local.position = tuple((direction * self.cfg.sun_visual_distance_m).tolist())
+        light.cast_shadow = False
         return light
 
     def _build_ambient_light(self) -> gfx.AmbientLight:
@@ -773,6 +810,7 @@ class ISSScene:
         # The shadow camera is not moved here: pygfx re-derives it from the
         # light's world position every frame (`LightShadow._update_matrix`).
         self._directional_light.local.position = tuple(sun_world.tolist())
+        self._moon_light.local.position = tuple(sun_world.tolist())
         illumination = float(lighting.illumination)
         self._directional_light.intensity = illumination * cfg.directional_light_intensity
         self._fill_light.intensity = illumination * _FILL_INTENSITY_FRACTION * cfg.directional_light_intensity
@@ -794,6 +832,7 @@ class ISSScene:
         static = self._static_lighting
         self._sun.local.position = static["sun_position"]
         self._sun.visible = True
+        self._moon_light.local.position = static["moon_light_position"]
         self._directional_light.local.position = static["key_position"]
         self._directional_light.intensity = static["key_intensity"]
         self._fill_light.local.position = static["fill_position"]

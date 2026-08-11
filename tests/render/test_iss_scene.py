@@ -7,6 +7,7 @@ pytest.importorskip("pygfx", reason="rendering is an optional extra")
 pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 import imageio.v3 as iio  # noqa: E402  -- ships with the render extra, like pygfx
+import pygfx as gfx  # noqa: E402
 import owm_envs.render.iss_scene as scene_module  # noqa: E402
 from PIL import Image  # noqa: E402
 from owm_envs.render.earth import MAP_WIDTHS  # noqa: E402
@@ -15,6 +16,7 @@ from owm_envs.render.iss_scene import (  # noqa: E402
     _FILL_INTENSITY_FRACTION,
     ISSScene,
     RenderConfig,
+    _collect_meshes,
     _earth_globe_geometry,
     _earth_normal_map,
     _load_cloud_texture,
@@ -184,9 +186,12 @@ def test_the_scene_graph_holds_the_nodes_update_moves(scene):
     # the one light no attribute holds: the ambient fill is easy to drop while
     # promoting its neighbours.
     children = list(scene.scene.children)
-    assert children[:4] == [scene.iss, scene._earth_group, scene._moon_group, scene._sun]
-    assert type(children[4]).__name__ == "AmbientLight"
-    assert children[5:] == [scene._directional_light, scene._fill_light, scene.dragon]
+    assert children[:3] == [scene.iss, scene._earth_group, scene._sun]
+    assert type(children[3]).__name__ == "AmbientLight"
+    assert children[4:] == [scene._directional_light, scene._fill_light, scene.dragon]
+    # The moon is not among them: it lives in its own scene, drawn in its own
+    # pass against a near plane sized for lunar distance.
+    assert list(scene.distant.children) == [scene._moon_group, scene._moon_light]
 
 
 def test_update_applies_lighting(lit_scene):
@@ -226,6 +231,33 @@ def test_update_points_the_globe_at_the_frames_earth_rotation(lit_scene):
     subpoint_ecef = earth_rotation.T @ np.array([0.0, 0.0, 1.0])
     globe_local = lit_scene._globe_frame_from_ecef @ subpoint_ecef
     np.testing.assert_allclose(node @ globe_local, [0.0, 0.0, 1.0], atol=1e-6)
+
+
+def test_the_moon_never_writes_depth(scene):
+    """The moon is painted before the main scene, so everything there occludes
+    it by draw order. Writing depth would leave values the main pass reads
+    through a different near plane -- 0.74 against the Earth's 0.9999993 --
+    and the planet would disappear behind the moon."""
+    meshes = _collect_meshes(scene._moon_group)
+    assert meshes, "the moon asset should carry geometry"
+    for mesh in meshes:
+        assert mesh.material.depth_write is False
+        assert mesh.material.depth_test is False
+        # Without a depth test a sphere stops hiding its own far side.
+        assert mesh.material.side == gfx.VisibleSide.front
+
+
+def test_the_moons_key_light_is_not_dimmed_for_the_stations_eclipse(lit_scene):
+    """The station being in the Earth's shadow says nothing about the moon,
+    which is 390,000 km away and lit regardless. Its key light tracks the sun
+    direction but never the illumination fraction."""
+    lit_scene.update(np.zeros(13, dtype=np.float32), lighting=_lighting(illumination=0.0))
+    assert lit_scene._moon_light.intensity == lit_scene.cfg.directional_light_intensity
+    np.testing.assert_allclose(
+        lit_scene._moon_light.local.position,
+        [0.0, 0.0, lit_scene.cfg.sun_visual_distance_m],
+    )
+    assert lit_scene._directional_light.intensity == 0.0
 
 
 def test_update_keeps_the_moon_at_its_true_distance(lit_scene):

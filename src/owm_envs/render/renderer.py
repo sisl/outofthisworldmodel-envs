@@ -111,42 +111,71 @@ def _dragon_fpv_pose_world(cfg: RenderConfig, state: np.ndarray) -> tuple[np.nda
 # `far` is; near=0.5 m at ~1.7e7 m.)
 #
 # This budget is what makes `RenderConfig.fpv_camera_near_m` a knife edge: one
-# camera cannot comfortably hold both a hull 0.4 m away and a limb 2350 km
-# away. The way out is to stop asking it to -- draw the planet and the station
-# in two passes with the depth buffer CLEARED between them, so each gets the
-# whole budget for its own scale. pygfx 0.15 has no public depth-only clear
-# (`renderer.render(clear=True)` takes the colour with it, and the background
-# pass shares this same buffer), so that means compositing the two passes
-# ourselves rather than moving objects between the existing scenes. Worth
-# doing; too structural to fold into a bug fix.
+# camera cannot hold both a hull 0.4 m away and a moon 390,000 km away. The
+# Moon is the object that could never fit -- reaching it needs near >= 23 m,
+# which would clip the capsule's own nose cone -- so it is drawn in a pass of
+# its own, against a near plane sized for lunar distance, and the main pass no
+# longer has to reach it. See `ISSScene.distant` and `ISSRenderer._draw`.
+#
+# The Earth still shares the main pass with the station, which is a far milder
+# ask: the limb at 2350 km sits comfortably inside what a 0.3 m near plane
+# expresses.
 _MAX_DEPTH_RANGE_RATIO = 2.0**24
 
 # `earth_moon_distance_m` is the mean distance, but a frame rendered from
 # ephemeris (`Lighting.moon_vector_world`) puts the Moon at the distance it
 # really was: 405,500 km at apogee against the 384,400 km mean, 5.5% further
 # out, and 5.8% at the extreme of the anomalistic swing. A constant factor
-# rather than a far plane derived from the frame's own Moon: this is only an
-# upper bound on what a camera asks for, and making it per-frame would move
-# every camera's clip distance with the ephemeris to buy nothing.
+# rather than a clip distance derived from the frame's own Moon: this only has
+# to bracket where the Moon can be, and making it per-frame would move the
+# distant camera's planes with the ephemeris to buy nothing.
 _MOON_APOGEE_MARGIN = 1.06
+
+# How far in front of the nearest possible Moon the distant pass puts its near
+# plane. The pass holds nothing else, so this plane exists only to keep the
+# projected depth well clear of 1.0 -- at a tenth of the distance to the
+# subject, depth lands near 0.9 and has bits to spare.
+_DISTANT_NEAR_FRACTION = 0.1
+
+
+def _distant_depth_range(cfg: RenderConfig) -> tuple[float, float]:
+    """near/far bracketing every place the Moon can be, for the pass that
+    draws only the Moon.
+
+    The camera rides the chief, so the Moon's range is its geocentric distance
+    give or take an orbital radius. Both ends are widened past that: nothing
+    else is in this pass to be clipped by a generous far plane, and nothing in
+    it writes depth, so the precision these planes buy is spent only on keeping
+    the Moon's own fragments away from a depth of exactly 1.0.
+    """
+    nearest = cfg.earth_moon_distance_m / _MOON_APOGEE_MARGIN - (
+        cfg.earth_radius_m + cfg.iss_altitude_m + cfg.moon_radius_m
+    )
+    farthest = cfg.earth_moon_distance_m * _MOON_APOGEE_MARGIN + (
+        cfg.earth_radius_m + cfg.iss_altitude_m + cfg.moon_radius_m
+    )
+    return nearest * _DISTANT_NEAR_FRACTION, farthest
 
 
 def _far_covering_the_scene(cfg: RenderConfig) -> float:
-    """A far clip distance that reaches the far side of the Moon, the most
-    distant thing in the scene.
+    """A far clip distance that reaches the far side of the Earth's glow
+    shells, the most distant thing left in the main scene.
 
-    Earth and the Moon live in the same scene graph as the ISS and Dragon,
-    tens to hundreds of millions of metres out -- a far plane sized for
-    nearby station geometry would clip them out entirely. The Moon is past
-    what `_MAX_DEPTH_RANGE_RATIO` allows at any near plane close enough to
-    render a dock, so this is an upper bound on what a camera asks for, not
-    a promise that it gets there.
+    Earth lives in the same scene graph as the ISS and Dragon, thousands of
+    kilometres out, so a far plane sized for nearby station geometry would clip
+    the planet out entirely. Its far side is what has to fit rather than its
+    limb: a nearer plane would cut the globe through the middle, and the far
+    half being hidden anyway is a fact about the depth test, not about the
+    clip. The Moon is not counted -- it left this scene for `ISSScene.distant`
+    precisely because no near plane close enough to render a dock could reach
+    it.
     """
+    outermost_glow = 1.09  # `ISSScene._add_earth_glow`'s outer shell scale
     return (
-        cfg.earth_moon_distance_m * _MOON_APOGEE_MARGIN
-        + cfg.earth_radius_m
+        cfg.earth_radius_m
         + cfg.iss_altitude_m
-        + cfg.moon_radius_m
+        + outermost_glow * cfg.earth_radius_m
+        + cfg.sun_visual_distance_m
     )
 
 
@@ -358,14 +387,31 @@ class ISSRenderer:
         return self._draw(view)
 
     def _draw(self, view: CameraView) -> np.ndarray:
-        """Draw the already-posed scene through one camera.
+        """Draw the already-posed scene through one camera, in three passes
+        from the back of the scene forward.
 
-        The skybox is drawn on the camera as configured and the scene on a
-        copy whose far plane covers the whole scene: the background writes no
-        depth, so the two passes only have to agree on where the camera is,
-        not on how deep it can see.
+        Each pass shares the camera's position and orientation and differs only
+        in how deep it can see, which is what lets one frame hold a capsule
+        hull 0.4 m away and a moon 390,000 km away. None of the first two
+        passes writes depth, so the three only have to agree on where the
+        camera is:
+
+          starfield  the camera as configured, clearing colour and depth
+          distant    the Moon, against a near plane sized for lunar distance
+          scene      Earth, station and capsule, far enough for the planet
+
+        Ordering is what composites them: the main scene paints over the Moon,
+        so the Earth, the station and the capsule occlude it without any depth
+        comparison between passes -- which could not be meaningful anyway,
+        since each pass projects depth through a different near plane.
         """
         self._renderer.render(self._iss_scene.background, make_camera(view), clear=True)
+        distant_near, distant_far = _distant_depth_range(self.cfg)
+        self._renderer.render(
+            self._iss_scene.distant,
+            make_camera(dataclasses.replace(view, near=distant_near, far=distant_far)),
+            clear=False,
+        )
         self._renderer.render(
             self._iss_scene.scene, make_camera(_with_scene_far(view, self.cfg)), clear=False
         )
