@@ -14,6 +14,7 @@ from owm_envs.envs.common.policies import DockParams, PolicyConfig
 from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss_hcw.config import HCWConfig
+from owm_envs.envs.iss_numerical.config import NumericalConfig
 
 runner = CliRunner()
 
@@ -70,6 +71,56 @@ def test_env_flag_accepts_iss_hcw(tmp_path):
     recorded = HCWConfig.from_yaml(out / "env_config.yaml")
     assert recorded.orbit.epoch == HCWConfig().orbit.epoch
     assert json.loads((out / "dataset_card.json").read_text())["env"] == "iss-hcw"
+
+
+def test_env_flag_accepts_iss_numerical(tmp_path):
+    # The whole pipeline under the third environment. What is new here versus
+    # iss-hcw is that the recorded observation is not the state: a 21-wide
+    # float64 state behind a 15-wide "relative" observation, so this is the
+    # first run where the packer's state width and observation width are
+    # different numbers and a stage that conflated them would fail. `--steps
+    # 20` keeps the f64 scan cheap -- what is under test is the wiring.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-numerical",
+        "--split", "train:2:0", "--steps", "20", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    assert GenerationConfig.from_yaml(out / "generation_config.yaml").env == "iss-numerical"
+    # The as-run config has to be the NUMERICAL one. An HCWConfig would
+    # round-trip this file quite happily -- it carries an `orbit` block too --
+    # while silently dropping `perturbations`, which is the whole force model
+    # the trajectories were flown under.
+    written = yaml.safe_load((out / "env_config.yaml").read_text())
+    assert "orbit" in written and "perturbations" in written
+    recorded = NumericalConfig.from_yaml(out / "env_config.yaml")
+    assert recorded.orbit.epoch == NumericalConfig().orbit.epoch
+    assert recorded.observation.mode == "relative"
+    assert json.loads((out / "dataset_card.json").read_text())["env"] == "iss-numerical"
+
+
+def test_iss_numerical_records_the_force_model_it_actually_flew(tmp_path):
+    # The check above reads back a DEFAULT perturbation block, which is every
+    # switch off -- a writer that dropped the section entirely would produce
+    # the same numbers on the way back in. So run one with the switches on:
+    # only a record that really carries them can return them.
+    env_config = tmp_path / "perturbed.yaml"
+    NumericalConfig(
+        perturbations={"zonal_max_degree": 6, "drag": True, "third_body_moon": True}
+    ).to_yaml(env_config)
+
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-numerical",
+        "--split", "train:2:0", "--steps", "8", "--no-lerobot",
+        "--env-config", str(env_config),
+    ])
+    assert result.exit_code == 0, result.output
+    recorded = NumericalConfig.from_yaml(out / "env_config.yaml").perturbations
+    assert recorded.zonal_max_degree == 6
+    assert recorded.drag is True
+    assert recorded.third_body_moon is True
+    assert recorded.third_body_sun is False
 
 
 def test_config_flag_is_gone(tmp_path):
@@ -145,6 +196,36 @@ def test_resolve_driver_vector_path_does_not_double_augment():
     )
     batch = chosen.driver.generate(RolloutSpec(num_episodes=2, max_steps=10, seed=0))
     assert batch.observations.shape[-1] == 25
+
+
+def test_the_vector_path_warns_where_its_view_is_differenced_at_float32(capsys):
+    # iss-numerical's state is absolute ECI and its relative view is the
+    # difference of two ~6.8e6 m columns. This driver's numpy boundary hands
+    # the policy source a float32 state, so that difference costs ~1 m on the
+    # channel the dock gate reads at 0.1 m -- invisible in the output data,
+    # which is why it is worth saying out loud when somebody asks for this
+    # driver explicitly. An env whose state already IS the relative view has
+    # nothing to warn about.
+    from owm_envs.cli import _resolve_driver
+    from owm_envs.envs import ENV_REGISTRY
+
+    _resolve_driver(
+        "vector",
+        NumericalConfig(max_steps=10),
+        PolicyConfig(type="dock"),
+        num_envs=2,
+        env_spec=ENV_REGISTRY["iss-numerical"],
+    )
+    assert "float32 ECI columns" in capsys.readouterr().out
+
+    _resolve_driver(
+        "vector",
+        ISSConfig(max_steps=10),
+        PolicyConfig(type="dock"),
+        num_envs=2,
+        env_spec=ENV_REGISTRY["iss"],
+    )
+    assert "float32 ECI columns" not in capsys.readouterr().out
 
 
 def test_auto_driver_picks_the_fused_path_for_iss(tmp_path):
@@ -782,6 +863,22 @@ def test_goal_error_flag_overrides_the_env_config(tmp_path):
     ])
     assert result.exit_code == 0, result.output
     assert ISSConfig.from_yaml(out / "env_config.yaml").observation.goal_error is True
+
+
+def test_goal_error_flag_preserves_a_configs_observation_subtype(tmp_path):
+    # `--goal-error` used to rebuild `observation` as a bare `ObservationConfig`,
+    # dropping iss-numerical's `mode` field -- which `_observation_space()` and
+    # `make_observe()` both read, so this would fail deep inside env
+    # construction rather than at the CLI boundary.
+    out = tmp_path / "run"
+    result = runner.invoke(app, [
+        "generate", "--out", str(out), "--env", "iss-numerical",
+        "--steps", "8", "--split", "train:2:0", "--goal-error", "--no-lerobot",
+    ])
+    assert result.exit_code == 0, result.output
+    written = NumericalConfig.from_yaml(out / "env_config.yaml")
+    assert written.observation.goal_error is True
+    assert written.observation.mode == "relative"
 
 
 def test_transition_targeted_split_hits_the_target_and_is_recorded(tmp_path):

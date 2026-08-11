@@ -1,8 +1,25 @@
+"""Quaternion helpers shared by every env, at astrojax's width.
+
+Each helper below routes through astrojax's `Quaternion`, which casts to
+astrojax's module-wide dtype -- float32 by default, and independent of this
+package's own x64 flag. So a caller handing these an f64 quaternion gets an
+f32 product back: bounded quantization at the 1e-7 level per call, which is
+the right trade inside an integrator, where the quaternion is re-derived from
+the kinematics every step and never summed into.
+
+It is the wrong trade for a pair of conversions required to be exact
+inverses of each other, where an f32 product floors the round trip at
+~1.4e-7 rad against the ~3e-16 an f64 state carries. A caller in that
+position composes at its own width locally rather than reaching here --
+`envs/iss_numerical/dynamics._quat_compose` is the precedent, and its
+docstring says why widening these instead would be a decision about all three
+envs rather than about one view.
+"""
+
 from __future__ import annotations
 
 import jax.numpy as jnp
 from astrojax.attitude_representations.quaternion import Quaternion
-from astrojax.attitude_representations.rotation_matrix import RotationMatrix
 
 # --------------------------------------------------------------------------------------
 # Quaternion conventions
@@ -56,8 +73,50 @@ def quat_to_rotmat(q: jnp.ndarray) -> jnp.ndarray:
 
 
 def quat_from_rotmat(r_bw: jnp.ndarray) -> jnp.ndarray:
-    """Inverse of `quat_to_rotmat`: unit quaternion [w,x,y,z] from a body -> world matrix."""
-    return Quaternion.from_rotation_matrix(RotationMatrix.from_matrix(r_bw.T)).to_vector()
+    """Inverse of `quat_to_rotmat`: unit quaternion [w,x,y,z], w >= 0, from a
+    body -> world matrix.
+
+    Shepperd's method, branch-free: the four squared quaternion components
+    are each computable straight from the diagonal of `r_bw` (they sum to
+    4, so the largest is always >= 1), and dividing by the largest -- rather
+    than always dividing by w -- keeps the divisor away from zero, including
+    at the near-edge cases (w near 0, any axis-dominant rotation). Which
+    component is largest is selected with `jnp.where` chains rather than a
+    Python `if` or `lax.switch`/`cond` on a traced value, so this is
+    jit/vmap-safe: every branch is always evaluated and simply discarded,
+    never skipped. `q` and `-q` represent the same rotation, so the result
+    is finally sign-flipped to resolve that double cover as w >= 0.
+    """
+    m00, m01, m02 = r_bw[0, 0], r_bw[0, 1], r_bw[0, 2]
+    m10, m11, m12 = r_bw[1, 0], r_bw[1, 1], r_bw[1, 2]
+    m20, m21, m22 = r_bw[2, 0], r_bw[2, 1], r_bw[2, 2]
+
+    qw2 = 1.0 + m00 + m11 + m22
+    qx2 = 1.0 + m00 - m11 - m22
+    qy2 = 1.0 - m00 + m11 - m22
+    qz2 = 1.0 - m00 - m11 + m22
+
+    w_largest = (qw2 >= qx2) & (qw2 >= qy2) & (qw2 >= qz2)
+    x_largest = (~w_largest) & (qx2 >= qy2) & (qx2 >= qz2)
+    y_largest = (~w_largest) & (~x_largest) & (qy2 >= qz2)
+
+    sw = jnp.sqrt(jnp.maximum(qw2, 0.0))
+    sx = jnp.sqrt(jnp.maximum(qx2, 0.0))
+    sy = jnp.sqrt(jnp.maximum(qy2, 0.0))
+    sz = jnp.sqrt(jnp.maximum(qz2, 0.0))
+
+    w_w, x_w, y_w, z_w = 0.5 * sw, (m21 - m12) / (2.0 * sw), (m02 - m20) / (2.0 * sw), (m10 - m01) / (2.0 * sw)
+    w_x, x_x, y_x, z_x = (m21 - m12) / (2.0 * sx), 0.5 * sx, (m01 + m10) / (2.0 * sx), (m02 + m20) / (2.0 * sx)
+    w_y, x_y, y_y, z_y = (m02 - m20) / (2.0 * sy), (m01 + m10) / (2.0 * sy), 0.5 * sy, (m12 + m21) / (2.0 * sy)
+    w_z, x_z, y_z, z_z = (m10 - m01) / (2.0 * sz), (m02 + m20) / (2.0 * sz), (m12 + m21) / (2.0 * sz), 0.5 * sz
+
+    w = jnp.where(w_largest, w_w, jnp.where(x_largest, w_x, jnp.where(y_largest, w_y, w_z)))
+    x = jnp.where(w_largest, x_w, jnp.where(x_largest, x_x, jnp.where(y_largest, x_y, x_z)))
+    y = jnp.where(w_largest, y_w, jnp.where(x_largest, y_x, jnp.where(y_largest, y_y, y_z)))
+    z = jnp.where(w_largest, z_w, jnp.where(x_largest, z_x, jnp.where(y_largest, z_y, z_z)))
+
+    q = jnp.stack([w, x, y, z]).astype(r_bw.dtype)
+    return jnp.where(q[0] < 0.0, -q, q)
 
 
 def rotate_body_to_world(q_bw: jnp.ndarray, v_body: jnp.ndarray) -> jnp.ndarray:

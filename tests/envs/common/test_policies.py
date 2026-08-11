@@ -391,6 +391,22 @@ def test_union_selects_all_three_subpolicies_across_seeds():
     assert chosen == {0, 1, 2}
 
 
+def test_union_traces_on_an_f64_view():
+    """The three sub-policies disagree on dtype when the view is f64 -- the
+    random branch draws f32 whatever it is handed, the other two inherit the
+    view -- and `lax.switch` will not trace branches whose outputs differ.
+    iss-hcw and iss-numerical both carry f64 states, so a mixture on either
+    one runs through this.
+    """
+    policy_fn, extras_fn = make_policy(CFG, PCFG, "union")
+    view = jnp.asarray(np.arange(13.0) / 13.0 + 0.1, jnp.float64)
+    for index in (0, 1, 2):
+        extras = extras_fn(jax.random.PRNGKey(0)).at[0].set(float(index))
+        action = jax.jit(policy_fn)(view, jax.random.PRNGKey(1), extras)
+        assert action.shape == (6,)
+        assert action.dtype == jnp.float32, index
+
+
 def test_union_weights_must_sum_positive():
     # Raised by the PolicyConfig field validator at construction time now,
     # rather than inside make_policy/_build_union -- still a ValueError

@@ -31,8 +31,12 @@ browse, and one split loads back with
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
+
+import yaml
+from pydantic import ValidationError
 
 from ..envs import ENV_REGISTRY, EnvSpec
 from ..envs.common.config import BaseTaskConfig
@@ -121,10 +125,59 @@ _SEGMENT_DOC = {
              "ulp, which coarsens through the day from well under 0.5 ms to "
              "7.8 ms -- a 50 ms step spans at least 6.4 of those ulps, so "
              "consecutive frames stay distinct)",
+    "chief": "chief ECI position and velocity ({width}, m, m/s)",
     "pos": "position ({width}, m)",
     "vel": "velocity ({width}, m/s)",
-    "quat": "attitude quaternion ({width}, w-first, body to world)",
     "omega": "body rate ({width}, rad/s)",
+}
+
+# What `observation_vector` holds under each `observation.mode` an env's
+# `make_observe` can select (`envs/iss_numerical/observe.py`). The state
+# layout describes `state_vector` and is NOT this row: a mode can narrow it,
+# reorder it, and report it in another frame under another attitude
+# convention. Keyed by mode name -- a mode with no entry here fails loudly at
+# card time rather than publishing another mode's layout as this one's.
+_OBS_MODE_DOC = {
+    "absolute": "epoch as [Julian day, seconds of day] (2), the chief's ECI position "
+                "and velocity (6, m, m/s), the chaser's own ECI position and velocity "
+                "(6, m, m/s), the chaser's attitude quaternion (4, w-first, body to "
+                "ECI/inertial) and its body rate with respect to ECI (3, rad/s) -- "
+                "this mode alone reports the raw state's own columns, so it is the "
+                "one mode under which this row and `state_vector` line up",
+    "chaser_absolute": "epoch as [Julian day, seconds of day] (2), the CHASER's ECI "
+                       "position and velocity (6, m, m/s), the chief measured from the "
+                       "chaser -- the chief's ECI position and velocity minus the "
+                       "chaser's, still in ECI axes (6, m, m/s) -- the chaser's "
+                       "attitude quaternion (4, w-first, body to ECI/inertial) and its "
+                       "body rate with respect to ECI (3, rad/s)",
+    "chief_absolute": "epoch as [Julian day, seconds of day] (2), the chief's ECI "
+                      "position and velocity (6, m, m/s), the chaser's "
+                      "station-relative position and velocity in the ROTATING world "
+                      "frame (6, m, m/s) -- the frame's own motion at that offset "
+                      "already removed, so the velocity is not the inertial difference "
+                      "of the two ECI velocities the block beside it would suggest -- "
+                      "the chaser's attitude quaternion (4, w-first, body to "
+                      "ECI/inertial) and its body rate with respect to ECI (3, rad/s)",
+    "relative": "epoch as [Julian day, seconds of day] (2) and the 13-element "
+                "canonical relative view: station-relative position (3, m) and "
+                "velocity (3, m/s) in the rotating world frame, attitude quaternion "
+                "(4, w-first, body to world) and body rate relative to that frame "
+                "(3, rad/s). Nothing about the station's own orbit, and no inertial "
+                "quantity anywhere in the row -- element for element the layout "
+                "`iss-hcw` carries in state",
+}
+
+# The quaternion is the one segment whose CONVENTION, not just its width,
+# differs across layouts, so it has no single entry in _SEGMENT_DOC: iss and
+# iss-hcw's raw slice already is the body-to-world q_bw the task layer
+# consumes, while iss-numerical's is q_bi, body to ECI/inertial, which only
+# becomes q_bw through `relative_view`. Keyed by the segment's own first
+# label (`layout.labels[layout.quat.start]`), which names which convention a
+# layout uses -- a layout with a label this doesn't recognise fails loudly at
+# card time rather than publishing a guessed-at attitude convention.
+_QUAT_DOC_BY_LABEL = {
+    "q_w": "attitude quaternion ({width}, w-first, body to world)",
+    "q_bi_w": "attitude quaternion ({width}, w-first, body to ECI/inertial)",
 }
 
 # Storage order is read off the slices, so this only has to name the fields
@@ -169,6 +222,23 @@ def _segments(layout: StateLayout) -> list[tuple[str, slice]]:
     return sorted(declared, key=lambda item: item[1].start)
 
 
+def _segment_phrase(field: str, sl: slice, layout: StateLayout) -> str:
+    """The `_SEGMENT_DOC`/`_QUAT_DOC_BY_LABEL` phrase for one of `layout`'s
+    segments, `quat` picked by convention rather than a fixed phrase -- see
+    `_QUAT_DOC_BY_LABEL`."""
+    if field != "quat":
+        return _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+    label = layout.labels[sl.start]
+    try:
+        return _QUAT_DOC_BY_LABEL[label].format(width=sl.stop - sl.start)
+    except KeyError:
+        raise KeyError(
+            f"no card phrasing registered for quaternion label {label!r}; add one to "
+            "_QUAT_DOC_BY_LABEL rather than describing this layout's attitude "
+            "convention with another one's phrase"
+        ) from None
+
+
 def _state_doc(layout: StateLayout) -> str:
     """What the state vector holds, element by element, for THIS env.
 
@@ -177,10 +247,7 @@ def _state_doc(layout: StateLayout) -> str:
     describe a state its dataset does not have. `iss` reproduces the sentence
     this was before it was generated.
     """
-    phrases = [
-        _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
-        for field, sl in _segments(layout)
-    ]
+    phrases = [_segment_phrase(field, sl, layout) for field, sl in _segments(layout)]
     body = ", ".join(phrases[:-1]) + " and " + phrases[-1]
     # "all station-relative" is only true when the state is the relative view
     # and nothing else. An epoch prefix is an absolute time, so a layout
@@ -189,22 +256,60 @@ def _state_doc(layout: StateLayout) -> str:
     # layout to put its extra segments before the view.
     if len(phrases) == len(_VIEW_FIELDS):
         return body + ", all station-relative"
+    if layout.chief is not None:
+        # A layout carrying a chief block (iss-numerical) stores the
+        # chaser's own ABSOLUTE ECI position, velocity, attitude and body
+        # rate -- unlike iss-hcw, whose pos/vel/quat/omega slices already are
+        # the relative view, calling these station-relative would be false.
+        # The task layer's relative view is derived from this row and the
+        # chief block together, not read off either alone.
+        return (
+            body
+            + " -- position, velocity, attitude and body rate are the "
+              "chaser's own ECI/inertial state, not station-relative; the "
+              "station-relative view the task layer scores is derived from "
+              "this row together with the chief block, not read off either "
+              "alone"
+        )
     return body + " -- position, velocity, attitude and body rate station-relative"
 
 
-def _state_vector_doc(layout: StateLayout) -> str:
+def _state_vector_doc(layout: StateLayout, observe_mode: str | None = None) -> str:
     """The truth column's meaning, and the obs-minus-truth identity that makes
     it worth writing, at THIS env's offsets.
 
-    The identity holds over the additive channels of the relative view, and
-    the expression names their slices rather than the view as a whole. Both
-    halves of that matter. The view is the whole state for `iss` but sits
-    behind an epoch prefix for `iss-hcw`, so one set of offsets cannot serve
-    both; and the four quaternion columns sit in the middle of the view while
-    carrying a COMPOSED rotation (`envs/common/sensing.py`), so an expression
-    spanning them would tell a reader to subtract four numbers whose
-    difference is not a noise draw at all.
+    `observe_mode` is the env's `observation.mode` when its `EnvSpec` declares
+    a non-identity `make_observe` (iss-numerical), None for every other env.
+    The identity below assumes the recorded `observation_vector` IS this
+    layout, column for column -- true only when `observe_mode` is None. A
+    non-identity observe hook can narrow, reorder, or otherwise reshape the
+    observation (`envs/iss_numerical/observe.py`'s four modes), so there is in
+    general no fixed slice of `observation_vector` that lines up with this
+    column's own offsets; `drivers/types.py`'s `TrajectoryBatch.true_state`
+    docstring makes the same qualification, and this is that qualification
+    carried into the card.
+
+    Where `observe_mode` is None, the identity holds over the additive
+    channels of the relative view, and the expression names their slices
+    rather than the view as a whole. Both halves of that matter. The view is
+    the whole state for `iss` but sits behind an epoch prefix for `iss-hcw`,
+    so one set of offsets cannot serve both; and the four quaternion columns
+    sit in the middle of the view while carrying a COMPOSED rotation
+    (`envs/common/sensing.py`), so an expression spanning them would tell a
+    reader to subtract four numbers whose difference is not a noise draw at
+    all.
     """
+    if observe_mode is not None:
+        return (
+            f"the TRUE {layout.state_dim}-element dynamics state at that frame, before "
+            f"the sensor model touched it: {_state_doc(layout)}. That is this column's "
+            "own layout and not, in general, the width or the column order of "
+            "`observation_vector`, which reports this state reshaped into the "
+            f"`{observe_mode}` frame `observation.mode` selects. There is therefore no "
+            "fixed slice of `observation_vector` that lines up with this column's own "
+            "additive channels for every mode, so the obs-minus-truth noise-draw "
+            "recovery an identity-observe env's card describes here does not apply."
+        )
     start, stop = layout.pos.start, layout.omega.stop
     # pos and vel are contiguous (StateLayout enforces it); omega sits on the
     # far side of the quaternion, so the additive part of the view is two
@@ -216,15 +321,15 @@ def _state_vector_doc(layout: StateLayout) -> str:
         f"`observation_vector[{rate}] - state_vector[{rate}]`"
     )
     outside = [
-        _SEGMENT_DOC[field].format(width=sl.stop - sl.start)
+        _segment_phrase(field, sl, layout)
         for field, sl in _segments(layout)
         if sl.stop <= start or sl.start >= stop
     ]
     untouched = (
         (
-            f". The sensor model only ever draws over the relative view, so the "
-            f"rest of the row -- {', '.join(outside)} -- is identical in the two "
-            f"channels"
+            f". The sensor model only ever draws over position, velocity, "
+            f"attitude and body rate, so the rest of the row -- "
+            f"{', '.join(outside)} -- is identical in the two channels"
         )
         if outside
         else ""
@@ -269,29 +374,91 @@ def dataset_name(env_cfg: BaseTaskConfig, env: str) -> str:
     return f"owm-{env}-{_noise_tag(env_cfg)}-{goal}-dt{dt_ms}ms"
 
 
-def _unknown_env_note(env: str) -> str:
+def _unknown_env_note(env: str, config_parsed: bool) -> str:
     """A card's own warning that it is describing an env this build lacks.
 
     Everything below the note -- the state description, the dynamics summary,
     the noise identity -- then comes from the iss fallback rather than from
     the env that generated the data, and a reader has to be told that before
     trusting any of it.
+
+    `config_parsed` is False when the as-run config went through the
+    fallback's config class only after the keys it does not declare were
+    dropped (`_fallback_config`), which widens the warning: whatever those
+    keys configured is not on the card at all, and anything they would have
+    decided -- the start shell most of all, which every env reads from its
+    own field -- reads as an `iss` default instead of as the run's own. A
+    config that would not parse even after the drop never reaches here; it
+    raises.
     """
     if env in ENV_REGISTRY:
         return ""
-    return (
+    note = (
         f"\n\nThis dataset was generated by the `{env}` environment, which the "
         "version of owm-envs that wrote this card does not register, so the state "
         "layout and dynamics described below are `iss`'s and may not be this "
         "dataset's."
     )
+    if not config_parsed:
+        note += (
+            " Its as-run `env_config.yaml` did not parse as an `iss` config either -- "
+            "it carries fields this version does not declare -- so only the settings "
+            "`iss` shares with it were read, and the measurement model, the start "
+            "distances and the timestep quoted below fall back to `iss` defaults "
+            "wherever it did not. The repo name was derived from the same partial "
+            "reading."
+        )
+    return note
 
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig]:
+def _drop_key(payload: dict, loc: tuple) -> None:
+    """Remove the (possibly nested) key at a Pydantic error `loc` from `payload`."""
+    node: object = payload
+    for step in loc[:-1]:
+        if not isinstance(node, dict):
+            return
+        node = node.get(step)
+    if isinstance(node, dict):
+        node.pop(loc[-1], None)
+
+
+def _fallback_config(path: Path, config_cls: type[BaseTaskConfig]) -> tuple[BaseTaskConfig, bool]:
+    """`path` read through the iss fallback's config class, and whether it
+    parsed cleanly.
+
+    Only reached for an env this build cannot place. Configs forbid extra
+    keys, so an unregistered env's as-run config generally does NOT parse as
+    an `iss` one -- it carries its own sections -- and raising there would
+    have crashed the publish path before the card ever got to warn about the
+    unknown env. Instead exactly the keys the class rejected as unknown are
+    dropped and the rest is re-read, which keeps the settings iss shares with
+    it (dt, the sensor model, the goal-error flag -- everything the repo name
+    is built from) coming from the run rather than from a default. The second
+    return value is then False, and `_unknown_env_note` says on the card
+    which of the values it carries a reader cannot trust.
+
+    Only unknown KEYS are tolerated. A shared field the class does reject on
+    its value is a config this version genuinely cannot read, and that error
+    is raised: substituting defaults there would publish a card describing a
+    run that never happened, under a repo name derived the same way, with
+    nothing on the card able to say which values were the run's own.
+    """
+    try:
+        return config_cls.from_yaml(path), True
+    except ValidationError as rejected:
+        payload = yaml.safe_load(path.read_text()) or {}
+        pruned = copy.deepcopy(payload)
+        for error in rejected.errors():
+            if error["type"] == "extra_forbidden":
+                _drop_key(pruned, error["loc"])
+        return config_cls.model_validate(pruned), False
+
+
+def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig, bool]:
     """The environment a run was generated with, and its as-run config.
 
     The name comes from the run's own `dataset_card.json`, which records it,
@@ -302,9 +469,14 @@ def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig]:
     iss-hcw run could not be published at all: configs forbid extra keys, so
     parsing one as an ISSConfig fails on the reference orbit it carries.
 
-    A run directory from before the card recorded an env, or one naming an
-    env this build no longer registers, falls back to iss: every such run is
-    an iss run, and reading it that way is better than refusing to publish it.
+    Two kinds of run fall back to iss, and they are not the same kind of
+    fallback. A run directory from before the card recorded an env at all IS
+    an iss run -- nothing else existed when it was written -- so reading it
+    as one is simply correct. A run naming an env this build does not
+    register is not: it may be any env at all, and iss is only the reader of
+    last resort, which beats refusing to publish the data. That second case
+    is what `_unknown_env_note` puts on the card, so the fallback is never
+    silent.
 
     A run with no card AT ALL is a different case and is refused here, which
     is also what makes push_preview and push_run agree: the card is where the
@@ -321,16 +493,21 @@ def _run_env(run_dir: Path) -> tuple[EnvSpec, BaseTaskConfig]:
             "hand-write dataset_card.json with those fields."
         )
     env = _read_json(card_path).get("env", "iss")
+    config_path = run_dir / "env_config.yaml"
     if env not in ENV_REGISTRY:
         # The repo is named after iss while the README's load example keeps
         # the card's own env name. That divergence is deliberate: the name has
-        # to come from an env whose config class actually parsed the as-run
+        # to come from an env whose config class actually read the as-run
         # config, and the example has to name the split directory that is
         # really on disk, which the writer built from the card's env. The card
-        # says outright that it is describing an env this build cannot place.
-        env = "iss"
+        # says outright that it is describing an env this build cannot place
+        # -- including, through `_fallback_config`'s second return value,
+        # whether that env's config was readable at all.
+        spec = ENV_REGISTRY["iss"]
+        cfg, config_parsed = _fallback_config(config_path, spec.config_cls)
+        return spec, cfg, config_parsed
     spec = ENV_REGISTRY[env]
-    return spec, spec.config_cls.from_yaml(run_dir / "env_config.yaml")
+    return spec, spec.config_cls.from_yaml(config_path), True
 
 
 def _split_features(run_dir: Path, split: str) -> dict:
@@ -350,8 +527,34 @@ def _shape(feature: dict) -> str:
     return f"({dims[0]},)" if len(dims) == 1 else "(" + ", ".join(map(str, dims)) + ")"
 
 
-def _observation_doc(env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
-    doc = f"the MEASURED state recorded for that frame: {_state_doc(layout)}"
+def _observation_doc(
+    env_cfg: BaseTaskConfig, layout: StateLayout, observe_mode: str | None = None
+) -> str:
+    """What the recorded observation row holds, column for column.
+
+    For an identity-observe env this row IS the state layout, so the layout's
+    own description is also this column's. `observe_mode` (iss-numerical's
+    `observation.mode`) means it is not: the row is the state reshaped into
+    that mode's frame, at that mode's width and column order, and describing
+    it with the layout's phrases would assert a chief block, an inertial
+    frame and a body->ECI quaternion that a mode like `relative` does not
+    carry at all.
+    """
+    if observe_mode is None:
+        doc = f"the MEASURED state recorded for that frame: {_state_doc(layout)}"
+    else:
+        try:
+            mode_doc = _OBS_MODE_DOC[observe_mode]
+        except KeyError:
+            raise KeyError(
+                f"no card phrasing registered for observation mode {observe_mode!r}; "
+                "add one to _OBS_MODE_DOC rather than describing this mode's "
+                "observation with another mode's layout"
+            ) from None
+        doc = (
+            "the MEASURED state recorded for that frame, reshaped into the "
+            f"`{observe_mode}` frame `observation.mode` selects: {mode_doc}"
+        )
     if env_cfg.observation.goal_error:
         doc += (
             ", followed by the goal-error block -- position error (3), velocity error "
@@ -361,23 +564,41 @@ def _observation_doc(env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
     # What the scripted policy actually consumed is a narrower thing than this
     # row, and under observe=state it is not this row at all -- both worth a
     # clause, since a reader modelling the behaviour policy has to know which
-    # columns could have entered it.
-    doc += (
-        ". The scripted policy read the canonical relative view out of it rather "
-        "than the whole row, so any epoch columns were never policy input; and a "
-        "run generated with `--observe state` flew the policy on the true state "
-        "instead of this one"
-    )
+    # columns could have entered it. Under a mode-shaped observation it is not
+    # this row even under the default observe=measurement: the policy reads the
+    # env's own measured state, which the mode reshaped to produce this.
+    if observe_mode is None:
+        doc += (
+            ". The scripted policy read the canonical relative view out of it rather "
+            "than the whole row, so any epoch columns were never policy input; and a "
+            "run generated with `--observe state` flew the policy on the true state "
+            "instead of this one"
+        )
+    else:
+        doc += (
+            ". The scripted policy did not read this row at all: it flew on the "
+            "canonical relative view derived from the MEASURED raw state the env "
+            "publishes alongside it, which is what this row was reshaped from -- so "
+            "these columns are what was RECORDED, not what was consumed; and a run "
+            "generated with `--observe state` flew it on the true state instead"
+        )
     return doc
 
 
-def _schema_table(features: dict, env_cfg: BaseTaskConfig, layout: StateLayout) -> str:
+def _schema_table(features: dict, env_cfg: BaseTaskConfig, env_spec: EnvSpec) -> str:
+    layout = env_spec.layout
+    # None for an identity-observe env (iss, iss-hcw): the recorded
+    # observation_vector IS this layout, column for column. iss-numerical's
+    # EnvSpec declares a make_observe, and its mode -- read straight off the
+    # as-run config, not guessed -- is what the truth column's doc names as
+    # the frame observation_vector was reshaped into.
+    observe_mode = getattr(env_cfg.observation, "mode", None) if env_spec.make_observe else None
     rows = []
     for name, feature in features.items():
         if name == "observation_vector":
-            doc = _observation_doc(env_cfg, layout)
+            doc = _observation_doc(env_cfg, layout, observe_mode)
         elif name == "state_vector":
-            doc = _state_vector_doc(layout)
+            doc = _state_vector_doc(layout, observe_mode)
         else:
             doc = _COLUMN_DOC.get(name, "")
         rows.append(f"| `{name}` | {feature['dtype']} | {_shape(feature)} | {doc} |")
@@ -449,7 +670,11 @@ def _provenance_line(provenance: dict) -> str:
 
 
 def _dataset_card(
-    name: str, run_dir: Path, env_spec: EnvSpec, env_cfg: BaseTaskConfig
+    name: str,
+    run_dir: Path,
+    env_spec: EnvSpec,
+    env_cfg: BaseTaskConfig,
+    config_parsed: bool = True,
 ) -> str:
     """The README.md published with the run: frontmatter plus the run's own facts."""
     summary = _read_json(run_dir / SUMMARY_FILENAME)
@@ -488,7 +713,7 @@ under {env_spec.card_summary} and against the station's 313-box collision hull. 
 [owm-envs](https://github.com/sisl/outofthisworldmodel-envs) for world-model training,
 at {card["fps"]} Hz (dt = {card["dt"]} s).
 
-{_NOISE_PROSE[_noise_tag(env_cfg)]}{_unknown_env_note(env)}
+{_NOISE_PROSE[_noise_tag(env_cfg)]}{_unknown_env_note(env, config_parsed)}
 
 Each split is a self-contained LeRobot dataset in its own directory:
 
@@ -518,7 +743,7 @@ Every frame of every episode carries:
 
 | column | dtype | shape | meaning |
 |---|---|---|---|
-{_schema_table(info["features"], env_cfg, env_spec.layout)}
+{_schema_table(info["features"], env_cfg, env_spec)}
 
 ## Sensor noise
 
@@ -575,7 +800,7 @@ def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dic
     """
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
-    env_spec, env_cfg = _run_env(run_dir)
+    env_spec, env_cfg, _ = _run_env(run_dir)
     return name or dataset_name(env_cfg, env=env_spec.name), counts
 
 
@@ -609,13 +834,13 @@ def push_run(
     run_dir = Path(run_dir)
     repo_name, _ = push_preview(run_dir, name=name)
     repo_id = f"{hub_namespace(namespace)}/{repo_name}"
-    env_spec, env_cfg = _run_env(run_dir)
+    env_spec, env_cfg, config_parsed = _run_env(run_dir)
 
     import huggingface_hub
 
     api = huggingface_hub.HfApi()
     (run_dir / "README.md").write_text(
-        _dataset_card(repo_name, run_dir, env_spec, env_cfg)
+        _dataset_card(repo_name, run_dir, env_spec, env_cfg, config_parsed)
     )
     api.create_repo(repo_id, repo_type="dataset", private=bool(private), exist_ok=True)
     if private is not None:

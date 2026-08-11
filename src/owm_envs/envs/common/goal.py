@@ -98,36 +98,78 @@ def make_augment(
     cfg: BaseTaskConfig,
     policy_cfg: PolicyConfig,
     view: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    observe: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
 ) -> Callable | None:
     """Observation-augment fn for a policy type, or None when disabled.
 
     `view` extracts the canonical 13D relative view from an env's own
     measured state; None means the state already is that view, which is the
-    case for the iss env. The goal-error block is computed from the view, but
-    appended to the FULL measured state -- the dataset records everything the
-    env observes, not just the part the task layer reads.
+    case for the iss env. `observe` is what the env RECORDS of that state --
+    iss-numerical's observation modes, say -- and None means it records the
+    state itself, which is what every env did before the hook existed.
+
+    The two are independent and the returned `augment(measured, extras,
+    observed=None)` applies both: the goal-error block is computed from
+    `view(measured)`, the full state's canonical view, and appended to
+    `observed` if given, else `observe(measured)`. So narrowing what a
+    dataset stores never narrows what the goal error is measured against.
+
+    `observed` exists for a caller that already HAS the exact row to record
+    -- computed by the env itself, not re-derivable from `measured` without
+    losing precision -- and only needs the block appended to it.
+    `TaskPolicySource.augment_observation` is exactly this: for iss-numerical,
+    `measured` is the raw ECI-scale state `view` needs, narrowed to float32 in
+    the info dict it reads, and re-deriving the recorded row from it (via
+    `observe`) would difference two independently-rounded ~6.8e6 m ECI
+    positions a second time, on top of the env's own -- see `dynamics.py`'s
+    module docstring on why that ordering matters. Passing the env's own
+    `observation` through as `observed` means the recorded row is always
+    exactly what the env produced, and only the block pays whatever precision
+    `measured` carries. `ScanDriver`'s own per-step loop never needs it
+    (`measured` there already IS the state the recorded row and the view both
+    derive from, at the same width) and leaves it at the default.
+
+    The block is emitted at `observed`'s dtype, whatever width it carries.
+    That keeps an env that narrows its observation from having the
+    concatenation promote the whole row back (iss-numerical observes f32 off
+    an f64 state), and it is what makes the `union` mixture traceable at all:
+    `lax.switch` requires every branch to return the same dtype, and its zero
+    branch is a literal while the other two inherit the view's width. Neither
+    is a change for iss or iss-hcw, whose observation and view already share a
+    dtype -- for them the cast is the identity.
     """
     if not cfg.observation.goal_error:
         return None
     look = view if view is not None else (lambda m: m)
-    zeros12 = jnp.zeros((GOAL_ERROR_DIM,), jnp.float32)
+    look_obs = observe if observe is not None else (lambda m: m)
     if policy_cfg.type == "random":
-        return lambda measured, extras: jnp.concatenate([measured, zeros12])
+        def augment(measured, extras, observed=None):
+            recorded = look_obs(measured) if observed is None else observed
+            return jnp.concatenate([recorded, jnp.zeros((GOAL_ERROR_DIM,), recorded.dtype)])
+        return augment
     select_target = dock_target_selector(cfg, policy_cfg)
     if policy_cfg.type == "dock":
-        return lambda measured, extras: jnp.concatenate(
-            [measured, dock_goal_error(look(measured), select_target(extras))]
-        )
+        def augment(measured, extras, observed=None):
+            recorded = look_obs(measured) if observed is None else observed
+            block = dock_goal_error(look(measured), select_target(extras))
+            return jnp.concatenate([recorded, block.astype(recorded.dtype)])
+        return augment
     if policy_cfg.type == "orbit":
-        return lambda measured, extras: jnp.concatenate([measured, _orbit_goal_error(look(measured), extras, cfg.dt)])
+        def augment(measured, extras, observed=None):
+            recorded = look_obs(measured) if observed is None else observed
+            block = _orbit_goal_error(look(measured), extras, cfg.dt)
+            return jnp.concatenate([recorded, block.astype(recorded.dtype)])
+        return augment
     if policy_cfg.type == "union":
-        def augment(measured, extras):
+        def augment(measured, extras, observed=None):
+            recorded = look_obs(measured) if observed is None else observed
+            dtype = recorded.dtype
             block = jax.lax.switch(
                 extras[0].astype(jnp.int32),
-                [lambda: zeros12,
-                 lambda: _orbit_goal_error(look(measured), extras[1:6], cfg.dt),
-                 lambda: dock_goal_error(look(measured), select_target(extras))],
+                [lambda: jnp.zeros((GOAL_ERROR_DIM,), dtype),
+                 lambda: _orbit_goal_error(look(measured), extras[1:6], cfg.dt).astype(dtype),
+                 lambda: dock_goal_error(look(measured), select_target(extras)).astype(dtype)],
             )
-            return jnp.concatenate([measured, block])
+            return jnp.concatenate([recorded, block])
         return augment
     raise ValueError(f"unknown policy type '{policy_cfg.type}'")

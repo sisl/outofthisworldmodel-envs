@@ -164,10 +164,15 @@ class ReferenceOrbit:
     def world_from_eci(self, chief_state_eci: jnp.ndarray) -> jnp.ndarray:
         """R such that v_world = R @ v_eci: through RTN at the chief. Returns
         a (3, 3) astrojax-dtype (f32 by default) array."""
-        return _world_rotation(chief_state_eci)
+        return world_from_eci(chief_state_eci)
 
 
-def _world_rotation(chief_state_eci: jnp.ndarray) -> jnp.ndarray:
+def world_from_eci(chief_state_eci: jnp.ndarray) -> jnp.ndarray:
+    """R such that v_world = R @ v_eci, from the chief's ECI state alone.
+
+    The instance method above is the usual way in; this module-level form
+    exists for callers that carry a chief state but no `ReferenceOrbit` --
+    the rotation depends on the state, never on the orbit's elements."""
     rtn_from_eci = rotation_eci_to_rtn(chief_state_eci)
     # RTN_FROM_WORLD's entries are exactly 0/+-1, so narrowing it to the
     # astrojax dtype is lossless and keeps the product from advertising f64
@@ -186,7 +191,7 @@ def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarr
     # back (f64 today) before the result is narrowed: 6.8e6 m against 1.5e11
     # m is only ~400 f32 ulps, so doing it wide keeps the parallax clean.
     rel = sun_position(epoch) - chief_state_eci[:3]
-    unit = _world_rotation(chief_state_eci) @ (rel / jnp.linalg.norm(rel))
+    unit = world_from_eci(chief_state_eci) @ (rel / jnp.linalg.norm(rel))
     return unit.astype(astrojax_config.get_dtype())
 
 
@@ -203,7 +208,7 @@ def moon_vector_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray
     when it does not. `chief_state_eci` enters only through the world rotation.
     Scalar `Epoch` and a single (6,) chief state -- NOT batched; vmap for
     batches. Returns a (3,) astrojax-dtype (f32 by default) array."""
-    rotated = _world_rotation(chief_state_eci) @ moon_position(epoch)
+    rotated = world_from_eci(chief_state_eci) @ moon_position(epoch)
     return rotated.astype(astrojax_config.get_dtype())
 
 

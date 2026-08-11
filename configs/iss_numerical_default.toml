@@ -1,0 +1,67 @@
+dt = 0.05
+max_steps = 7200
+max_range_m = 750.0
+
+[physics]
+mass = 12000.0
+inertia_diag = [
+    80000.0,
+    80000.0,
+    50000.0,
+]
+linear_damping = 0.0
+angular_damping = 0.0
+dragon_collision_radius_m = 2.25
+collision_boxes_path = "collision_boxes.yaml"
+
+[control]
+limit_force_n = 1600.0
+limit_torque_nm = 2000.0
+
+[dock]
+position = [
+    0.225,
+    -24.5,
+    -2.5,
+]
+quaternion = [
+    0.7071068,
+    -0.7071068,
+    0.0,
+    0.0,
+]
+enabled = true
+max_distance_m = 0.1
+max_velocity_m_s = 0.5
+max_attitude_error_deg = 5.0
+max_body_rate_rad_s = 0.008727
+
+[reward_weights]
+position = -1.0
+velocity = -0.35
+angular_velocity = -0.1
+control_effort = -0.05
+collision = -1000000.0
+
+[orbit]
+epoch = "2026-08-01T00:00:00Z"
+epoch_offset_range_s = [
+    0.0,
+    5400.0,
+]
+start_radius_range_m = [
+    80.0,
+    120.0,
+]
+start_speed_max_m_s = 0.1
+start_attitude_error_max_deg = 10.0
+start_rate_max_rad_s = 0.01
+
+[perturbations]
+zonal_max_degree = 4
+third_body_sun = true
+third_body_moon = true
+drag = true
+
+[observation]
+mode = "relative"

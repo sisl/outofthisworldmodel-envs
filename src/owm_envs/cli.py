@@ -30,7 +30,7 @@ from .datasets.video import (
 )
 from .drivers.types import RolloutSpec
 from .envs import ENV_REGISTRY, EnvSpec
-from .envs.common.config import BaseTaskConfig, ObservationConfig
+from .envs.common.config import BaseTaskConfig
 from .envs.common.docking_ports import PORT_NAMES
 from .envs.common.policies import DockParams, PolicyConfig
 from .envs.common.sensing import PRESETS
@@ -377,7 +377,13 @@ def generate(
             )
         cfg = cfg.model_copy(update={"sensor_noise": PRESETS[noise]})
     if goal_error is not None:
-        cfg = cfg.model_copy(update={"observation": ObservationConfig(goal_error=goal_error)})
+        # Copies the existing observation model rather than replacing it with
+        # a bare `ObservationConfig` -- iss-numerical's is a subtype carrying
+        # `mode`, which `_observation_space()` and `make_observe()` both read,
+        # and a plain `ObservationConfig` has no such field.
+        cfg = cfg.model_copy(
+            update={"observation": cfg.observation.model_copy(update={"goal_error": goal_error})}
+        )
     resolved_fps = _resolve_fps(gen.fps, cfg.dt)
     try:
         policy_cfg = _policy_config(policy, observe, dock_ports)
@@ -672,6 +678,23 @@ def _resolve_driver(
                 f"so 'success' is "
                 f"scored at the wrong pose for every episode whose assigned port is not "
                 f"DockConfig's; --driver scan does not have this limitation"
+            )
+        # An env whose layout carries a chief block (iss-numerical) holds
+        # ABSOLUTE ECI columns, and its relative view is the difference of two
+        # of them. This driver crosses a numpy boundary between the env and
+        # the policy source, where the state has already been narrowed to
+        # float32, so that difference is taken at f32's ~0.5 m grain on a
+        # ~6.8e6 m radius rather than at the state's own width -- see
+        # `envs/common/policy_source.py`. The scan driver derives the same
+        # view inside the f64 rollout and carries none of it.
+        if env_spec.layout.chief is not None:
+            typer.echo(
+                f"[warn] --driver vector hands {env_spec.name}'s policy inputs -- and "
+                "the goal-error block it appends to every recorded observation -- a "
+                "relative view differenced from float32 ECI columns, leaving up to "
+                "~1 m of quantization on the station-relative position they read; the "
+                "observation columns themselves still come from the env's own f64 "
+                "derivation, and --driver scan derives the view at f64 throughout"
             )
         # TaskPolicySource applies its own policy-aware goal-error block (see
         # augment_observation) from the ORIGINAL cfg; the env it drives must

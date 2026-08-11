@@ -210,12 +210,16 @@ class ScanDriver:
         """
         # `view` extracts the canonical 13D relative view the task layer reads
         # out of the env's own state; `layout` names the slices sensor noise
-        # writes through. Both come from the spec, so an env with a wider
-        # state needs no change here.
+        # writes through; `observe` shapes what gets RECORDED of that state,
+        # and is the identity for an env that records its state directly. All
+        # three come from the spec, so an env with a wider state or its own
+        # observation modes needs no change here.
         view = self.env_spec.view
         layout = self.env_spec.layout
+        make_observe = self.env_spec.make_observe
+        observe = make_observe(self.cfg) if make_observe is not None else (lambda m: m)
         policy_fn, extras_fn = make_policy(self.cfg, self.policy_cfg)
-        augment = make_augment(self.cfg, self.policy_cfg, view=view)
+        augment = make_augment(self.cfg, self.policy_cfg, view=view, observe=observe)
         # The episode's assigned port, resolved from the same extras the
         # control law and the goal-error block read, so both dock success and
         # the reward are scored against the port the episode was actually
@@ -230,6 +234,19 @@ class ScanDriver:
         torque = cfg.control.limit_torque_nm
         ctrl_low = jnp.array([-force] * 3 + [-torque] * 3, dtype=jnp.float32)
         ctrl_high = -ctrl_low
+
+        def sensor_range(s):
+            """Chaser-to-target distance for `sigma_pos_frac_of_range`.
+
+            Taken from the canonical view rather than left to
+            `apply_sensor_noise`'s default, which reads the layout's own
+            position slice. For iss and iss-hcw that slice IS the view's first
+            three elements, so this is the same expression on the same numbers
+            and their draws are unchanged; for an env whose slice holds an
+            absolute ECI position it is the difference between a 100 m range
+            and a 6.8e6 m one, and so between metres of noise and kilometres.
+            """
+            return jnp.linalg.norm(view(s)[0:3])
 
         def sample_extras(key):
             if extras_fn is None:
@@ -247,7 +264,9 @@ class ScanDriver:
             # noise is enabled -- `jax.random.split(key, 4)` never changes.
             if noise.enabled:
                 noise_key, meas_key = jax.random.split(noise_key)
-                measured = apply_sensor_noise(state, meas_key, noise, layout=layout)
+                measured = apply_sensor_noise(
+                    state, meas_key, noise, layout=layout, range_m=sensor_range(state)
+                )
             else:
                 measured = state
 
@@ -269,7 +288,8 @@ class ScanDriver:
             if noise.enabled:
                 noise_key, next_meas_key = jax.random.split(noise_key)
                 measured_next = apply_sensor_noise(
-                    next_state, next_meas_key, noise, layout=layout
+                    next_state, next_meas_key, noise, layout=layout,
+                    range_m=sensor_range(next_state),
                 )
             else:
                 measured_next = next_state
@@ -293,10 +313,14 @@ class ScanDriver:
             # active sub-policy) -- on the `done` iteration `measured_next`
             # is this episode's terminal observation, not the fresh episode's,
             # so it must use `extras` from before the autoreset swap below.
+            #
+            # `augment` already applies `observe` (it appends the goal block
+            # to the observed part), so the two branches emit the same
+            # observation shape either way.
             if augment is not None:
                 obs_out, obs_next_out = augment(measured, extras), augment(measured_next, extras)
             else:
-                obs_out, obs_next_out = measured, measured_next
+                obs_out, obs_next_out = observe(measured), observe(measured_next)
             # `state`/`next_state` ride along un-noised and un-augmented: the
             # true dynamics state behind each emitted observation, on the same
             # pre-step/terminal layout so the segmenter can cut it identically.
