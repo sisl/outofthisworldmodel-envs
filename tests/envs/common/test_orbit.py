@@ -119,6 +119,41 @@ def test_illumination_extremes():
     assert float(illumination(jnp.asarray(-s_hat * r), e)) == 0.0  # umbra
 
 
+def test_illumination_falls_smoothly_across_the_penumbra():
+    """The rendered lighting reads this value straight into a light intensity,
+    so a penumbra crossing has to be monotone and inside [0, 1] at the step the
+    frames are rendered at -- not merely correct on average. The lens-area form
+    evaluated at f32 leaves O(1) of error here, in both directions past the
+    bounds, and strobes rather than fades."""
+    ref = ReferenceOrbit(OrbitConfig())
+    e = ref.epoch0
+    sun = np.asarray(sun_position(e))
+    s_hat = sun / np.linalg.norm(sun)
+    # A circular chief orbit in a plane containing the sun direction, walked
+    # into the shadow at the 0.05 s step the videos are rendered at.
+    radius = 6_795_000.0
+    across = np.cross(s_hat, [0.0, 0.0, 1.0])
+    across /= np.linalg.norm(across)
+
+    def at(theta: float) -> float:
+        r = radius * (np.cos(theta) * s_hat + np.sin(theta) * across)
+        return float(illumination(jnp.asarray(r, dtype=jnp.float64), e))
+
+    # Bisect onto the shadow entry edge, then sample 400 render steps through it.
+    lo, hi = np.pi / 2.0, np.pi
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if at(mid) > 0.999 else (lo, mid)
+    step = ref.mean_motion * 0.05
+    values = np.array([at(lo - 20 * step + k * step) for k in range(400)])
+
+    assert values.min() >= 0.0 and values.max() <= 1.0
+    assert values[0] > 0.999 and values[-1] < 0.001, "sweep must cross the whole penumbra"
+    assert np.all(np.diff(values) <= 1e-9), "illumination must fall monotonically"
+    partial = (values > 0.0) & (values < 1.0)
+    assert np.abs(np.diff(values))[partial[:-1]].max() < 0.02
+
+
 def test_sun_and_moon_world_vectors():
     ref = ReferenceOrbit(OrbitConfig())
     x = ref.chief_state_eci(0.0)
