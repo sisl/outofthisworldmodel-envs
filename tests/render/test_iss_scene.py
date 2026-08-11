@@ -101,10 +101,16 @@ def lit_scene(scene):
         if intensity is not None:
             node.intensity = intensity
     scene._sun.visible = True
+    scene._apply_earth_surface_rotation(None)
     # Also the flag that decides whether an unlit frame restores anything: a
     # scene left marked as lit would make the next test's `lighting=None` do
     # work the as-built graph does not expect.
     scene._lit = False
+
+
+def _rotation_about_z(angle_rad: float) -> np.ndarray:
+    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
+    return np.array([[cos_a, -sin_a, 0.0], [sin_a, cos_a, 0.0], [0.0, 0.0, 1.0]])
 
 
 def _lighting(**overrides):
@@ -113,6 +119,7 @@ def _lighting(**overrides):
         "illumination": 0.25,
         "chief_distance_m": 6_795_000.0,
         "moon_vector_world": np.array([0.0, 3.6e8, 0.0]),
+        "earth_rotation_world": _rotation_about_z(0.7),
     }
     return Lighting(**(kwargs | overrides))
 
@@ -128,6 +135,7 @@ def _lighting_snapshot(scene):
         "fill_intensity": scene._fill_light.intensity,
         "earth": tuple(scene._earth_group.local.position),
         "moon": tuple(scene._moon_group.local.position),
+        "globe": tuple(scene._earth_surface_group.local.rotation),
     }
 
 
@@ -196,6 +204,28 @@ def test_update_applies_lighting(lit_scene):
     np.testing.assert_allclose(lit_scene._earth_group.local.position, [0.0, 0.0, -6_795_000.0])
     # The moon hangs off the earth centre: earth_center + the geocentric vector.
     np.testing.assert_allclose(lit_scene._moon_group.local.position, [0.0, 3.6e8, -6_795_000.0])
+
+
+def test_update_points_the_globe_at_the_frames_earth_rotation(lit_scene):
+    """A lit frame poses the globe in ECEF terms, so the surface node's
+    rotation has to undo the subpoint the geometry was baked at: composed with
+    that bake it must reproduce the frame's ECEF -> world rotation exactly.
+    Getting this wrong is what parks the station over one spot."""
+    earth_rotation = _rotation_about_z(0.7) @ np.array(
+        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]]
+    )
+    lit_scene.update(
+        np.zeros(13, dtype=np.float32), lighting=_lighting(earth_rotation_world=earth_rotation)
+    )
+
+    node = np.asarray(lit_scene._earth_surface_group.local.rotation_matrix)[:3, :3]
+    np.testing.assert_allclose(node @ lit_scene._globe_frame_from_ecef, earth_rotation, atol=1e-6)
+
+    # And the point that carries: the chief's own ECEF position maps to
+    # +z_world, which is where the scene hangs the station over the planet.
+    subpoint_ecef = earth_rotation.T @ np.array([0.0, 0.0, 1.0])
+    globe_local = lit_scene._globe_frame_from_ecef @ subpoint_ecef
+    np.testing.assert_allclose(node @ globe_local, [0.0, 0.0, 1.0], atol=1e-6)
 
 
 def test_update_keeps_the_moon_at_its_true_distance(lit_scene):

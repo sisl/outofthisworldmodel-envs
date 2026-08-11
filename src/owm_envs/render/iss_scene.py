@@ -378,6 +378,26 @@ def _texture_map(texture: gfx.Texture) -> gfx.TextureMap:
     return gfx.TextureMap(texture, filter="linear", wrap="repeat")
 
 
+# ECEF axes (+X through the prime meridian at the equator, +Z north) onto the
+# axes an untilted globe geometry is built on (+Z through the prime meridian,
+# +Y north). Applied before the subpoint tilt in `_globe_frame_from_ecef`, and
+# undone in `ISSScene._apply_earth_surface_rotation` so a frame carrying real
+# ephemeris can pose the globe in ECEF terms without knowing this convention.
+_GLOBE_FROM_ECEF_AXES = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+
+
+def _globe_frame_from_ecef(subpoint_lon_deg: float, subpoint_lat_deg: float) -> np.ndarray:
+    """R mapping ECEF axes onto the globe geometry's own axes, for a globe
+    built with `(subpoint_lon_deg, subpoint_lat_deg)` on local +Z."""
+    # Spin the subpoint's meridian onto lon 0 (about +Y), then its parallel
+    # down to the equator (about +X); +Z then points at the subpoint.
+    cos_lon0, sin_lon0 = np.cos(np.deg2rad(subpoint_lon_deg)), np.sin(np.deg2rad(subpoint_lon_deg))
+    cos_lat0, sin_lat0 = np.cos(np.deg2rad(subpoint_lat_deg)), np.sin(np.deg2rad(subpoint_lat_deg))
+    about_y = np.array([[cos_lon0, 0.0, -sin_lon0], [0.0, 1.0, 0.0], [sin_lon0, 0.0, cos_lon0]])
+    about_x = np.array([[1.0, 0.0, 0.0], [0.0, cos_lat0, -sin_lat0], [0.0, sin_lat0, cos_lat0]])
+    return about_x @ about_y @ _GLOBE_FROM_ECEF_AXES
+
+
 def _earth_globe_geometry(
     *,
     radius: float,
@@ -396,16 +416,12 @@ def _earth_globe_geometry(
     lon = (uu - 0.5) * (2.0 * np.pi)
     lat = (0.5 - vv) * np.pi
     cos_lat, sin_lat = np.cos(lat), np.sin(lat)
-    unit = np.stack([cos_lat * np.sin(lon), sin_lat, cos_lat * np.cos(lon)], axis=-1).reshape(-1, 3)
+    unit_ecef = np.stack(
+        [cos_lat * np.cos(lon), cos_lat * np.sin(lon), sin_lat], axis=-1
+    ).reshape(-1, 3)
 
-    # Spin the subpoint's meridian onto lon 0 (about +Y), then its parallel
-    # down to the equator (about +X); +Z then points at the subpoint.
-    cos_lon0, sin_lon0 = np.cos(np.deg2rad(subpoint_lon_deg)), np.sin(np.deg2rad(subpoint_lon_deg))
-    cos_lat0, sin_lat0 = np.cos(np.deg2rad(subpoint_lat_deg)), np.sin(np.deg2rad(subpoint_lat_deg))
-    about_y = np.array([[cos_lon0, 0.0, -sin_lon0], [0.0, 1.0, 0.0], [sin_lon0, 0.0, cos_lon0]])
-    about_x = np.array([[1.0, 0.0, 0.0], [0.0, cos_lat0, -sin_lat0], [0.0, sin_lat0, cos_lat0]])
-
-    normals = (unit @ (about_x @ about_y).T).astype(np.float32)
+    frame = _globe_frame_from_ecef(subpoint_lon_deg, subpoint_lat_deg)
+    normals = (unit_ecef @ frame.T).astype(np.float32)
     positions = (float(radius) * normals).astype(np.float32)
     texcoords = np.stack([uu, vv], axis=-1).reshape(-1, 2).astype(np.float32)
 
@@ -426,15 +442,12 @@ class ISSScene:
     def __init__(self, cfg: RenderConfig, *, download_textures: bool = True) -> None:
         self.cfg = cfg
 
-        # At the subpoint the globe's local axes are east (+X), north (+Y),
-        # up (+Z); express the planetary spin axis in that frame so the globe
-        # can be rotated about Earth's true axis while staying anchored to the
-        # configured lon/lat.
-        lat_rad = np.deg2rad(cfg.earth_subpoint_lat_deg)
-        self._earth_spin_axis_local = _unit(
-            np.array([0.0, np.cos(lat_rad), np.sin(lat_rad)], dtype=np.float32)
+        # How the globe's baked geometry relates to ECEF, so a frame carrying
+        # `Lighting.earth_rotation_world` -- which speaks ECEF -- can pose it
+        # without knowing where the configured subpoint put the texture.
+        self._globe_frame_from_ecef = _globe_frame_from_ecef(
+            cfg.earth_subpoint_lon_deg, cfg.earth_subpoint_lat_deg
         )
-        self._earth_spin_angle_rad = 0.0
 
         # Resolved once and held: these calls may fetch and downsample a
         # multi-gigabyte source, and a per-frame lookup would also repeat a
@@ -490,8 +503,9 @@ class ISSScene:
         # shared across every episode of a split, and the same process may
         # render an env that supplies ephemeris and one that does not -- so a
         # frame without ephemeris has to show this scene's static
-        # configuration, not wherever the last lit frame left the sun.
-        # Exactly the set `_apply_lighting` writes.
+        # configuration, not wherever the last lit frame left the sun. Every
+        # placement `_apply_lighting` writes except the globe's attitude, whose
+        # static value is the identity the geometry is already baked at.
         self._static_lighting = {
             "sun_position": tuple(self._sun.local.position),
             "key_position": tuple(self._directional_light.local.position),
@@ -590,7 +604,7 @@ class ISSScene:
             self._earth_surface_group.add(cloud_mesh)
 
         earth_group.local.position = (0.0, 0.0, -(cfg.earth_radius_m + cfg.iss_altitude_m))
-        self._apply_earth_surface_rotation()
+        self._apply_earth_surface_rotation(None)
         return earth_group
 
     def _add_earth_glow(self, earth_group: gfx.Group, surface_rotation) -> None:
@@ -648,10 +662,18 @@ class ISSScene:
             shell.local.scale = (radius, radius, radius)
             earth_group.add(shell)
 
-    def _apply_earth_surface_rotation(self) -> None:
-        self._earth_surface_group.local.rotation = la.quat_from_axis_angle(
-            self._earth_spin_axis_local, self._earth_spin_angle_rad
-        )
+    def _apply_earth_surface_rotation(self, earth_rotation_world: np.ndarray | None) -> None:
+        """Point the globe at `earth_rotation_world` (ECEF axes -> world), or
+        back to the configured subpoint when a frame carries no ephemeris.
+
+        The surface and the cloud deck are the only children this reaches: the
+        glow shells are spheres, so their orientation is not observable.
+        """
+        if earth_rotation_world is None:
+            self._earth_surface_group.local.rotation = (0.0, 0.0, 0.0, 1.0)
+            return
+        matrix = np.asarray(earth_rotation_world, dtype=np.float64) @ self._globe_frame_from_ecef.T
+        self._earth_surface_group.local.rotation = la.quat_from_mat(matrix)
 
     def _earth_center_world(self) -> np.ndarray:
         """Where the planet's centre currently sits. Read rather than
@@ -762,6 +784,11 @@ class ISSScene:
         moon_world = self._earth_center_world() + np.asarray(lighting.moon_vector_world, dtype=np.float32)
         self._moon_group.local.position = tuple(moon_world.tolist())
 
+        # Which terrain is under the station. Most of what this rotation does
+        # between frames is the chief's own motion around the planet, not the
+        # planet's rotation: the world frame rides the chief.
+        self._apply_earth_surface_rotation(lighting.earth_rotation_world)
+
     def _restore_static_lighting(self) -> None:
         """Undo `_apply_lighting`, back to the values built from the config."""
         static = self._static_lighting
@@ -773,6 +800,7 @@ class ISSScene:
         self._fill_light.intensity = static["fill_intensity"]
         self._earth_group.local.position = static["earth_position"]
         self._moon_group.local.position = static["moon_position"]
+        self._apply_earth_surface_rotation(None)
 
     def update(
         self,

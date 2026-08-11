@@ -53,7 +53,12 @@ import numpy as np
 
 from ...render.inputs import Lighting, RenderInputs
 from ..common.epoch_state import epoch_from_prefix
-from ..common.orbit import illumination, moon_vector_world, sun_direction_world
+from ..common.orbit import (
+    earth_rotation_world,
+    illumination,
+    moon_vector_world,
+    sun_direction_world,
+)
 from .dynamics import relative_view
 
 if TYPE_CHECKING:
@@ -80,6 +85,7 @@ class _NumericalRenderAdapter:
             illumination(chief_pos, epoch),
             jnp.linalg.norm(chief_pos),
             moon_vector_world(chief, epoch),
+            earth_rotation_world(chief, epoch),
             relative_view(state),
         )
 
@@ -95,12 +101,13 @@ class _NumericalRenderAdapter:
         self._kernel = jax.jit(self._compute)
 
     def __call__(self, state: np.ndarray, action: np.ndarray | None = None) -> RenderInputs:
-        sun, illum, distance, moon, view = self._kernel(jnp.asarray(state))
+        sun, illum, distance, moon, earth, view = self._kernel(jnp.asarray(state))
         lighting = Lighting(
             sun_direction_world=np.asarray(sun),
             illumination=float(illum),
             chief_distance_m=float(distance),
             moon_vector_world=np.asarray(moon),
+            earth_rotation_world=np.asarray(earth),
         )
         return RenderInputs.from_view(np.asarray(view), action, lighting=lighting)
 

@@ -589,6 +589,7 @@ def test_render_views_poses_from_the_inputs_alone(renderer, monkeypatch):
         illumination=0.5,
         chief_distance_m=6.8e6,
         moon_vector_world=np.array([0.0, 3.844e8, 0.0]),
+        earth_rotation_world=np.eye(3),
     )
     action = np.arange(6.0, dtype=np.float32)
     renderer.render_views(

@@ -230,6 +230,40 @@ def world_from_eci(chief_state_eci: jnp.ndarray) -> jnp.ndarray:
     return jnp.asarray(RTN_FROM_WORLD.T, rtn_from_eci.dtype) @ rtn_from_eci
 
 
+def earth_rotation_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
+    """R such that v_world = R @ v_ecef: where the rotating Earth's own axes
+    point in world coordinates at `epoch`.
+
+    The renderer holds the globe as a fixed body and needs its attitude, not a
+    spin angle: the world frame is RTN at the chief, so the planet turns under
+    the scene for two independent reasons -- the Earth's own rotation, and the
+    chief's motion around it, which is much the faster of the two. Handing back
+    the composed rotation covers both, and the sub-satellite point falls out of
+    it rather than having to be tracked: the chief's own ECEF position maps to
+    +z_world by construction, which is exactly where the scene hangs the
+    station over the planet.
+
+    ECEF here is the ECI frame turned by Greenwich mean sidereal time about the
+    pole, with no precession, nutation or polar motion. Those reach ~0.4 deg of
+    surface longitude at present epochs -- tens of km of ground track, which is
+    not resolvable against a globe drawn from a 16k-wide texture, and nothing
+    downstream of this measures a position on the surface. Scalar `Epoch` and a
+    single (6,) chief state -- NOT batched; vmap for batches. Returns a (3, 3)
+    astrojax-dtype (f32 by default) array."""
+    gmst = jnp.asarray(epoch.gmst(), jnp.float64)
+    cos_gmst, sin_gmst = jnp.cos(gmst), jnp.sin(gmst)
+    zero, one = jnp.zeros_like(gmst), jnp.ones_like(gmst)
+    eci_from_ecef = jnp.stack(
+        [
+            jnp.stack([cos_gmst, -sin_gmst, zero]),
+            jnp.stack([sin_gmst, cos_gmst, zero]),
+            jnp.stack([zero, zero, one]),
+        ]
+    )
+    rotated = world_from_eci(chief_state_eci).astype(jnp.float64) @ eci_from_ecef
+    return rotated.astype(astrojax_config.get_dtype())
+
+
 def sun_direction_world(chief_state_eci: jnp.ndarray, epoch: Epoch) -> jnp.ndarray:
     """Unit vector from the chief toward the sun, expressed in world
     coordinates. This one IS translated to the chief -- it feeds a light

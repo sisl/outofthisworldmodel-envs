@@ -23,6 +23,7 @@ def test_from_view_carries_action_and_lighting_through():
         illumination=1.0,
         chief_distance_m=6.8e6,
         moon_vector_world=np.zeros(3),
+        earth_rotation_world=np.eye(3),
     )
     inputs = RenderInputs.from_view(view, action=action, lighting=lighting)
     assert inputs.action is action

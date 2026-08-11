@@ -10,6 +10,7 @@ from owm_envs.envs.common.orbit import (
     RTN_FROM_WORLD,
     OrbitConfig,
     ReferenceOrbit,
+    earth_rotation_world,
     illumination,
     moon_vector_world,
     sun_direction_world,
@@ -152,6 +153,48 @@ def test_illumination_falls_smoothly_across_the_penumbra():
     assert np.all(np.diff(values) <= 1e-9), "illumination must fall monotonically"
     partial = (values > 0.0) & (values < 1.0)
     assert np.abs(np.diff(values))[partial[:-1]].max() < 0.02
+
+
+def test_earth_rotation_world_puts_the_subpoint_under_the_chief():
+    """The scene hangs the Earth straight below the chief on -z, so the chief's
+    own ECEF position must map onto +z_world -- that is what makes the terrain
+    under the station the terrain it is really over."""
+    ref = ReferenceOrbit(OrbitConfig())
+    for offset_s in (0.0, 900.0, 43_200.0, 604_800.0):
+        epoch = ref.epoch0 + offset_s
+        state = ref.chief_state_eci(offset_s)
+        rotation = np.asarray(earth_rotation_world(state, epoch), dtype=np.float64)
+
+        np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=1e-6)
+        assert np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6)
+
+        gmst = float(epoch.gmst())
+        cos_g, sin_g = np.cos(gmst), np.sin(gmst)
+        ecef_from_eci = np.array([[cos_g, sin_g, 0.0], [-sin_g, cos_g, 0.0], [0.0, 0.0, 1.0]])
+        chief_ecef = ecef_from_eci @ np.asarray(state[:3], dtype=np.float64)
+
+        under_chief = rotation @ (chief_ecef / np.linalg.norm(chief_ecef))
+        np.testing.assert_allclose(under_chief, [0.0, 0.0, 1.0], atol=1e-5)
+
+
+def test_earth_rotation_world_turns_the_ground_under_the_orbit():
+    """A globe that never turns is what parks the station over one spot: over a
+    quarter orbit the surface point below it has to move by the arc the chief
+    covered, not stay put."""
+    ref = ReferenceOrbit(OrbitConfig())
+    quarter_orbit_s = 0.5 * np.pi / ref.mean_motion
+
+    def subpoint(offset_s: float) -> np.ndarray:
+        rotation = np.asarray(
+            earth_rotation_world(ref.chief_state_eci(offset_s), ref.epoch0 + offset_s),
+            dtype=np.float64,
+        )
+        # The ECEF point the scene draws at +z_world, back in ECEF axes.
+        return rotation.T @ np.array([0.0, 0.0, 1.0])
+
+    start, later = subpoint(0.0), subpoint(quarter_orbit_s)
+    swept_deg = np.rad2deg(np.arccos(np.clip(np.dot(start, later), -1.0, 1.0)))
+    assert 80.0 < swept_deg < 100.0, f"ground track swept {swept_deg:.1f} deg in a quarter orbit"
 
 
 def test_sun_and_moon_world_vectors():
