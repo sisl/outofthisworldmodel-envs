@@ -9,20 +9,23 @@ src/owm_envs/envs/common/resources/, each the shipped 313 boxes plus boxes
 covering that variant's vehicle, so a config's collision_boxes_path names a
 single self-contained file.
 
-The vehicle is found geometrically, not by module name: modules are renamed
-and re-tessellated between assets, so a name-based diff spans the whole
-station rather than the vehicle. Instead, take the triangles of the variant
-whose every vertex is further than NEW_VERTEX_RADIUS from every vertex of the
-base asset, and mark the voxels their surfaces pass through, sampling each
-triangle's interior at SAMPLE_SPACING. Marking surfaces rather than corners is
-what makes solar arrays -- quads whose corners are metres apart -- occupy a
-connected run of cells instead of a few scattered ones. Those cells are
-clustered at VOXEL connectivity and only the cluster nearest the occupied port
-is kept. The other clusters are re-tessellated station structure the shipped
-hull already approximates, 20-35 m from the port; keeping them would change
-collision behaviour at ports that have no visiting vehicle. That cluster's
-cells are merged into axis-aligned boxes by greedy meshing, which never covers
-empty space.
+The vehicle is found geometrically, not by module name: a variant adds nodes
+for re-tessellated station structure alongside the vehicle's own, so the nodes
+a name-based diff reports are not confined to the vehicle. Instead, take the
+triangles of the variant whose every vertex is further than NEW_VERTEX_RADIUS
+from every vertex of the base asset, and mark the voxels their surfaces run
+through, sampling each triangle's interior at SAMPLE_SPACING -- fine enough
+that a voxel goes unmarked only where a triangle clips it by less than that
+spacing. Marking surfaces rather than corners is what makes solar arrays --
+quads whose corners are metres apart -- occupy a connected run of cells
+instead of a few scattered ones.
+
+Those cells are clustered at VOXEL connectivity and only the cluster
+nearest the occupied port is kept. The other clusters are re-tessellated
+station structure the shipped hull already approximates, 20-35 m from the
+port; keeping them would change collision behaviour at ports that have no
+visiting vehicle. That cluster's cells are merged into axis-aligned boxes by
+greedy meshing, which never covers empty space.
 
 Reads scipy (cKDTree, ndimage.label), which is not a declared dependency of
 this package but arrives transitively with jax.
@@ -151,12 +154,30 @@ def world_triangles(path: Path) -> np.ndarray:
 def sample_triangles(triangles: np.ndarray, spacing: float) -> np.ndarray:
     """Points covering each triangle at roughly `spacing`, plus its corners.
 
+    The lattice is sized from the triangle's longest edge, so no two adjacent
+    samples are further apart than `spacing` whatever the triangle's shape: a
+    cell the triangle enters by more than `spacing` from every face always
+    holds a sample, though one it merely clips at a corner may not. Sizing
+    from the square root of the area instead would undersample a sliver by the
+    square root of its aspect ratio, and a zero-area triangle entirely.
+
+    Sample count is quadratic in the longest edge, so a triangle metres across
+    costs thousands of points whatever its area -- the shipped assets stay
+    under 30 samples an edge. There is no cap, because a cap is what lets a
+    long triangle step over a voxel.
+
     Triangles are grouped by how many samples they need along an edge so the
     barycentric lattice is built once per group rather than once per triangle.
     """
     a, b, c = triangles[:, 0], triangles[:, 1], triangles[:, 2]
-    area = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
-    per_edge = np.clip(np.ceil(np.sqrt(area) / spacing).astype(int) + 1, 2, 24)
+    longest = np.maximum.reduce(
+        [
+            np.linalg.norm(b - a, axis=1),
+            np.linalg.norm(c - b, axis=1),
+            np.linalg.norm(a - c, axis=1),
+        ]
+    )
+    per_edge = np.maximum(np.ceil(longest / spacing).astype(int) + 1, 2)
 
     points = [triangles.reshape(-1, 3)]
     for n in np.unique(per_edge):
