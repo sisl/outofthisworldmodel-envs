@@ -15,8 +15,9 @@ from owm_envs.datasets.stats import (
     compute_norm_stats,
 )
 from owm_envs.drivers.types import TrajectoryBatch
-from owm_envs.envs.iss.config import ISSConfig, PhysicsConfig
-from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.common.config import PhysicsConfig
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.iss.config import ISSConfig
 
 
 def batch_with_padding():

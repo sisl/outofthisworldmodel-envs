@@ -22,8 +22,8 @@ from pathlib import Path
 import pytest
 
 from owm_envs.datasets.stats import GenerationConfig
+from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.sensing import PRESETS
 
 REPO = Path(__file__).resolve().parents[1]
 CONFIGS = REPO / "configs"

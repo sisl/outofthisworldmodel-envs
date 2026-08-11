@@ -21,11 +21,12 @@ import numpy as np
 import pytest
 from gymnasium.utils.env_checker import check_env
 
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_target
-from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
+from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
+from owm_envs.envs.common.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
+from owm_envs.envs.common.goal import dock_goal_error
+from owm_envs.envs.common.sensing import PRESETS
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.env import ISSEnv
-from owm_envs.envs.iss.goal import dock_goal_error
-from owm_envs.envs.iss.sensing import PRESETS
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 ZERO_ACTION = np.zeros(6, dtype=np.float32)

@@ -2,9 +2,9 @@ import numpy as np
 
 from owm_envs.drivers.scan_driver import ScanDriver
 from owm_envs.drivers.types import RolloutSpec
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.common.sensing import PRESETS
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.policies import PolicyConfig
-from owm_envs.envs.iss.sensing import PRESETS
 
 
 def test_scan_driver_records_noisy_observations_but_true_dynamics():

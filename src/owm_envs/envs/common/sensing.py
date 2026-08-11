@@ -1,4 +1,4 @@
-"""Sensor/measurement noise for the ISS chaser state.
+"""Sensor/measurement noise for the chaser state.
 
 One JAX-traceable measurement function used everywhere noise is applied:
 the Gymnasium envs' observations, and the rollout drivers' recorded
@@ -17,6 +17,7 @@ from pydantic import Field, ValidationInfo, field_validator
 
 from ...core.models import ConfigModel
 from ...core.quaternion import quat_multiply, quat_normalize
+from .layout import ISS_LAYOUT, StateLayout
 
 
 # fold_in constant deriving a measurement-noise key stream from a dynamics
@@ -105,15 +106,23 @@ def _per_axis_sigma(value: Sigma) -> jnp.ndarray:
 
 
 def apply_sensor_noise(
-    state: jnp.ndarray, key: jax.Array, noise: SensorNoiseConfig
+    state: jnp.ndarray,
+    key: jax.Array,
+    noise: SensorNoiseConfig,
+    layout: StateLayout = ISS_LAYOUT,
 ) -> jnp.ndarray:
-    """True state (13,) -> measured state (13,). Identity when disabled."""
+    """True state -> measured state. Identity when disabled.
+
+    Noise touches only the pos/vel/quat/omega slices; anything else in the
+    layout (an epoch prefix, a chief block) passes through untouched -- a
+    vehicle knows its own clock, and absolute-chief noise is an env concern.
+    """
     if not noise.enabled:
         return state
 
     key_pos, key_vel, key_att, key_rate = jax.random.split(key, 4)
-    pos, vel = state[0:3], state[3:6]
-    q_bw, omega = state[6:10], state[10:13]
+    pos, vel = state[layout.pos], state[layout.vel]
+    q_bw, omega = state[layout.quat], state[layout.omega]
 
     sigma_range = noise.sigma_pos_frac_of_range * jnp.linalg.norm(pos) / _SQRT3
     sigma_pos = jnp.sqrt(_per_axis_sigma(noise.sigma_pos_m) ** 2 + sigma_range**2)
@@ -134,4 +143,9 @@ def apply_sensor_noise(
 
     sigma_rate = _per_axis_sigma(noise.sigma_rate_rad_s)
     omega_m = omega + sigma_rate * jax.random.normal(key_rate, (3,), jnp.float32)
-    return jnp.concatenate([pos_m, vel_m, q_m, omega_m])
+
+    out = state.at[layout.pos].set(pos_m)
+    out = out.at[layout.vel].set(vel_m)
+    out = out.at[layout.quat].set(q_m)
+    out = out.at[layout.omega].set(omega_m)
+    return out

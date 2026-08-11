@@ -26,9 +26,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..envs.common.policies import PolicyConfig
+from ..envs.common.sensing import PRESETS
 from ..envs.iss.config import ISSConfig
-from ..envs.iss.policies import PolicyConfig
-from ..envs.iss.sensing import PRESETS
 from .stats import SUMMARY_FILENAME, GenerationConfig
 
 _NOISE_TAGS = {"off": "nonoise", "cooperative": "coop", "noncooperative": "noncoop"}

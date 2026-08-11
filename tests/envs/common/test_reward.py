@@ -1,9 +1,10 @@
 import jax.numpy as jnp
 import numpy as np
 
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, RewardWeights
-from owm_envs.envs.iss.dynamics import Events
-from owm_envs.envs.iss.reward import iss_reward
+from owm_envs.envs.common.config import DockConfig, RewardWeights
+from owm_envs.envs.common.events import Events
+from owm_envs.envs.common.reward import iss_reward
+from owm_envs.envs.iss.config import ISSConfig
 
 NO_EVENTS = Events(collision=jnp.array(False), docked=jnp.array(False), escaped=jnp.array(False))
 ZERO_ACTION = jnp.zeros((6,), dtype=jnp.float32)

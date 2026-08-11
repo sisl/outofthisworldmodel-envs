@@ -33,7 +33,7 @@ from ...core.quaternion import (
     quat_multiply,
     quat_normalize,
 )
-from .config import ISSConfig, dock_target
+from .config import BaseTaskConfig, dock_target
 from .policies import PolicyConfig, dock_target_selector, orbit_reference
 
 GOAL_ERROR_DIM = 12
@@ -94,27 +94,39 @@ def _orbit_goal_error(measured, orbit_extras, dt):
     return goal_error(measured, p_des, v_des, q_des, zeros)
 
 
-def make_augment(cfg: ISSConfig, policy_cfg: PolicyConfig) -> Callable | None:
-    """Observation-augment fn for a policy type, or None when disabled."""
+def make_augment(
+    cfg: BaseTaskConfig,
+    policy_cfg: PolicyConfig,
+    view: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable | None:
+    """Observation-augment fn for a policy type, or None when disabled.
+
+    `view` extracts the canonical 13D relative view from an env's own
+    measured state; None means the state already is that view, which is the
+    case for the iss env. The goal-error block is computed from the view, but
+    appended to the FULL measured state -- the dataset records everything the
+    env observes, not just the part the task layer reads.
+    """
     if not cfg.observation.goal_error:
         return None
+    look = view if view is not None else (lambda m: m)
     zeros12 = jnp.zeros((GOAL_ERROR_DIM,), jnp.float32)
     if policy_cfg.type == "random":
         return lambda measured, extras: jnp.concatenate([measured, zeros12])
     select_target = dock_target_selector(cfg, policy_cfg)
     if policy_cfg.type == "dock":
         return lambda measured, extras: jnp.concatenate(
-            [measured, dock_goal_error(measured, select_target(extras))]
+            [measured, dock_goal_error(look(measured), select_target(extras))]
         )
     if policy_cfg.type == "orbit":
-        return lambda measured, extras: jnp.concatenate([measured, _orbit_goal_error(measured, extras, cfg.dt)])
+        return lambda measured, extras: jnp.concatenate([measured, _orbit_goal_error(look(measured), extras, cfg.dt)])
     if policy_cfg.type == "union":
         def augment(measured, extras):
             block = jax.lax.switch(
                 extras[0].astype(jnp.int32),
                 [lambda: zeros12,
-                 lambda: _orbit_goal_error(measured, extras[1:6], cfg.dt),
-                 lambda: dock_goal_error(measured, select_target(extras))],
+                 lambda: _orbit_goal_error(look(measured), extras[1:6], cfg.dt),
+                 lambda: dock_goal_error(look(measured), select_target(extras))],
             )
             return jnp.concatenate([measured, block])
         return augment

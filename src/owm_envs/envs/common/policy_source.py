@@ -8,13 +8,13 @@ dataset generation for the ISS backend lives here, not in `drivers/`.
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from .config import ISSConfig
+from .config import BaseTaskConfig
 from .goal import make_augment
 from .policies import EXTRAS_DIM, PolicyConfig, dock_target_selector, make_policy
 
@@ -30,7 +30,16 @@ class _EpisodeState(NamedTuple):
 class ISSPolicySource:
     """Wraps `make_policy` behind the backend-agnostic PolicySource protocol."""
 
-    def __init__(self, cfg: ISSConfig, policy_cfg: PolicyConfig):
+    def __init__(
+        self,
+        cfg: BaseTaskConfig,
+        policy_cfg: PolicyConfig,
+        view: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    ):
+        # `view` extracts the canonical 13D relative view the scripted
+        # policies and the goal-error block read; None means the env's state
+        # already is that view, as it is for the iss env.
+        self._view = view if view is not None else (lambda m: m)
         self.records_policy_ids = policy_cfg.type == "union"
         # Every ISS episode has a dock target, so this source always supplies
         # one: the assigned port's pose under a port set, the `DockConfig`
@@ -41,7 +50,7 @@ class ISSPolicySource:
         self._policy_fn, self._extras_fn = make_policy(cfg, policy_cfg)
         self._extras_width = EXTRAS_DIM[policy_cfg.type]
         self._observe = policy_cfg.observe
-        self._augment = make_augment(cfg, policy_cfg)
+        self._augment = make_augment(cfg, policy_cfg, view=view)
 
     def new_episode(self, seed: int) -> _EpisodeState:
         key = jax.random.PRNGKey(seed)
@@ -63,7 +72,9 @@ class ISSPolicySource:
         # rather than the possibly-noisy recorded observation; non-ISS infos
         # without that key fall back to the observation.
         policy_input = info.get("state", observation) if self._observe == "state" else observation
-        action = self._policy_fn(jnp.asarray(policy_input), act_key, episode_state.extras)
+        action = self._policy_fn(
+            self._view(jnp.asarray(policy_input)), act_key, episode_state.extras
+        )
         return np.asarray(action, dtype=np.float32)
 
     def augment_observation(self, observation: np.ndarray, episode_state: _EpisodeState) -> np.ndarray:

@@ -4,10 +4,11 @@ import pytest
 
 from owm_envs.drivers.scan_driver import ScanDriver
 from owm_envs.drivers.types import RolloutSpec
-from owm_envs.envs.iss.config import ISSConfig, dock_target
-from owm_envs.envs.iss.docking_ports import dock_targets
-from owm_envs.envs.iss.goal import dock_goal_error
-from owm_envs.envs.iss.policies import DockParams, PolicyConfig
+from owm_envs.envs.common.config import dock_target
+from owm_envs.envs.common.docking_ports import dock_targets
+from owm_envs.envs.common.goal import dock_goal_error
+from owm_envs.envs.common.policies import DockParams, PolicyConfig
+from owm_envs.envs.iss.config import ISSConfig
 
 
 def test_scan_driver_records_goal_error_block():

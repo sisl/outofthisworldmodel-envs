@@ -12,14 +12,14 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
-from owm_envs.envs.iss.policies import (
+from owm_envs.envs.common.docking_ports import PORT_NAMES, PORTS_BY_NAME, port_pose
+from owm_envs.envs.common.policies import (
     DockParams,
     DockPort,
     PolicyConfig,
     dock_target_table,
 )
+from owm_envs.envs.iss.config import ISSConfig
 
 CFG = ISSConfig()
 

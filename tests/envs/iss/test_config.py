@@ -4,15 +4,15 @@ import numpy as np
 import pytest
 import yaml
 
-from owm_envs.envs.iss.config import (
+from owm_envs.envs.common.config import (
     DEFAULT_COLLISION_BOXES_FILENAME,
-    ISSConfig,
     PhysicsConfig,
     RewardWeights,
     _RESOURCES_DIR,
     default_collision_boxes_path,
     load_collision_boxes,
 )
+from owm_envs.envs.iss.config import ISSConfig
 
 
 def test_default_config_matches_expected_values():

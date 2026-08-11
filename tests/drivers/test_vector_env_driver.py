@@ -6,11 +6,12 @@ import pytest
 
 from owm_envs.drivers.types import RolloutSpec
 from owm_envs.drivers.vector_env_driver import VectorEnvDriver, _lane_info
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig, dock_target
-from owm_envs.envs.iss.docking_ports import dock_targets
-from owm_envs.envs.iss.policies import DockParams, PolicyConfig
-from owm_envs.envs.iss.policy_source import ISSPolicySource
-from owm_envs.envs.iss.sensing import PRESETS
+from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
+from owm_envs.envs.common.docking_ports import dock_targets
+from owm_envs.envs.common.policies import DockParams, PolicyConfig
+from owm_envs.envs.common.policy_source import ISSPolicySource
+from owm_envs.envs.common.sensing import PRESETS
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.vector_env import ISSVectorEnv
 
 FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)

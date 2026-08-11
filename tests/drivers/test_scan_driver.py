@@ -3,9 +3,10 @@ import pytest
 
 from owm_envs.drivers.scan_driver import ScanDriver, supports_fused_rollout
 from owm_envs.drivers.types import RolloutSpec
-from owm_envs.envs.iss.config import DockConfig, ISSConfig, PhysicsConfig
+from owm_envs.envs.common.config import DockConfig, PhysicsConfig
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.dynamics import ISSDynamics
-from owm_envs.envs.iss.policies import PolicyConfig
 
 FREE_FLIGHT_PHYSICS = dict(collision_boxes_path=None)
 FREE_FLIGHT_DOCK = dict(enabled=False)

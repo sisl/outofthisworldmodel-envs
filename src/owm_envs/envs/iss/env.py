@@ -15,16 +15,17 @@ import jax.numpy as jnp
 import numpy as np
 from gymnasium import spaces
 
-from .config import ISSConfig, dock_port_targets, dock_target
-from .dynamics import ISSDynamics
-from .goal import (
+from ..common.config import dock_port_targets, dock_target
+from ..common.goal import (
     GOAL_ERROR_DIM,
     GOAL_ERROR_NORM_LABELS,
     dock_goal_error,
     goal_error_norms,
 )
-from .reward import iss_reward
-from .sensing import NOISE_STREAM, apply_sensor_noise
+from ..common.reward import iss_reward
+from ..common.sensing import NOISE_STREAM, apply_sensor_noise
+from .config import ISSConfig
+from .dynamics import ISSDynamics
 
 
 def _observation_space(cfg: ISSConfig) -> spaces.Box:

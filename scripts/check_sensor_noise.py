@@ -29,8 +29,8 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from owm_envs.envs.common.sensing import Sigma
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.sensing import Sigma
 
 # Position-error range bins, and the number of frames one needs before its RMS
 # is worth comparing to anything: at 100 samples the relative standard error of

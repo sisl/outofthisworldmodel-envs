@@ -3,12 +3,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from owm_envs.envs.iss.config import (
+from owm_envs.envs.common.config import (
     DockConfig,
-    ISSConfig,
     PhysicsConfig,
     default_collision_boxes_path,
 )
+from owm_envs.envs.iss.config import ISSConfig
 from owm_envs.envs.iss.dynamics import STATE_LABELS, ISSDynamics
 
 ZERO_ACTION = jnp.zeros((6,), dtype=jnp.float32)

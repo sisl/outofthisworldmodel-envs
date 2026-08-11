@@ -2,8 +2,8 @@ import numpy as np
 
 from owm_envs.drivers.scan_driver import ScanDriver
 from owm_envs.drivers.types import RolloutSpec
+from owm_envs.envs.common.policies import PolicyConfig
 from owm_envs.envs.iss.config import ISSConfig
-from owm_envs.envs.iss.policies import PolicyConfig
 
 
 def make_driver(num_envs=2, cfg=None):

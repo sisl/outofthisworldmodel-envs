@@ -7,15 +7,16 @@ from owm_envs.core.quaternion import (
     quat_from_body_z_to,
     quat_multiply,
 )
-from owm_envs.envs.iss.config import ISSConfig, dock_target
-from owm_envs.envs.iss.goal import (
+from owm_envs.envs.common.config import dock_target
+from owm_envs.envs.common.goal import (
     GOAL_ERROR_DIM,
     _orbit_goal_error,
     dock_goal_error,
     goal_error,
     make_augment,
 )
-from owm_envs.envs.iss.policies import PolicyConfig
+from owm_envs.envs.common.policies import PolicyConfig
+from owm_envs.envs.iss.config import ISSConfig
 
 
 def _state(pos, vel=(0.0, 0.0, 0.0), quat=(1.0, 0.0, 0.0, 0.0), rate=(0.0, 0.0, 0.0)):
