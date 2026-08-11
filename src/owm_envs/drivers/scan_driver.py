@@ -129,6 +129,7 @@ class ScanDriver:
             records_dock_targets=True,
             records_true_state=True,
             state_dim=self.env_spec.layout.state_dim,
+            records_terminal_events=True,
         )
 
     def _generate_transitions(
@@ -190,6 +191,7 @@ class ScanDriver:
             records_dock_targets=True,
             records_true_state=True,
             state_dim=self.env_spec.layout.state_dim,
+            records_terminal_events=True,
         )
 
     def _build_runner(self, max_steps: int, horizon: int):
@@ -324,8 +326,15 @@ class ScanDriver:
             # `state`/`next_state` ride along un-noised and un-augmented: the
             # true dynamics state behind each emitted observation, on the same
             # pre-step/terminal layout so the segmenter can cut it identically.
+            # `step_events` rides along in Events' own order so the segmenter
+            # can take the row of the iteration where `done` fired -- the
+            # events of the step that ended the episode, at the f64 precision
+            # the scan ran at rather than at the f32 the state is stored to.
+            step_events = jnp.stack(
+                [events.collision, events.docked, events.escaped]
+            )
             emitted = (obs_out, obs_next_out, action, reward, terminated, truncated, done,
-                       extras, dock_pose, state, next_state)
+                       extras, dock_pose, state, next_state, step_events)
 
             # In-scan autoreset: a done lane starts a fresh episode on the next
             # iteration, with newly sampled extras.
@@ -415,6 +424,7 @@ class ScanDriver:
             dock_poses,
             true_states,
             true_next_states,
+            step_events,
         ) = (np.asarray(x) for x in emitted)
         act_dim = actions.shape[-1]
         zero_action = np.zeros((1, act_dim), dtype=np.float32)
@@ -453,6 +463,9 @@ class ScanDriver:
                         ),
                         "terminated": bool(terminated[lane, t]),
                         "truncated": bool(truncated[lane, t]),
+                        # The events of the step that ended the episode -- the
+                        # same `t` the done flag above was read at.
+                        "terminal_events": step_events[lane, t].astype(bool),
                         "policy_id": int(extras[lane, start, _UNION_POLICY_IDX])
                         if records_policy_ids
                         else None,

@@ -537,7 +537,7 @@ def _episode_row(batch: TrajectoryBatch, index: int) -> dict:
     would be repacked with that padding inside its length -- zeros that read
     back as real timesteps rather than as pad.
 
-    The three optional channels are included only when the source batch has
+    The four optional channels are included only when the source batch has
     them, which is exactly when `pack_episodes` is told to read them.
     """
     length = int(batch.lengths[index])
@@ -554,6 +554,8 @@ def _episode_row(batch: TrajectoryBatch, index: int) -> dict:
         row["dock_target"] = batch.dock_targets[index]
     if batch.true_state is not None:
         row["true_state"] = batch.true_state[index, :length]
+    if batch.terminal_events is not None:
+        row["terminal_events"] = batch.terminal_events[index]
     return row
 
 
@@ -752,6 +754,7 @@ def rollout(
         records_dock_targets=source.dock_targets is not None,
         records_true_state=source.true_state is not None,
         state_dim=env_spec.layout.state_dim,
+        records_terminal_events=source.terminal_events is not None,
     )
 
     # The config as run, not the file that was passed: --env-config is

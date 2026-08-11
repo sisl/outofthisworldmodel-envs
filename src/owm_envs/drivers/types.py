@@ -121,6 +121,25 @@ class TrajectoryBatch:
     # from (see `envs/iss_numerical/observe.py`'s modes), so the identity
     # holds only when it is one. None when the source cannot supply truth.
     true_state: np.ndarray | None = None
+    # (E, 3) bool [collision, docked, escaped] for the step that ENDED each
+    # episode, recorded by the driver at the full precision the rollout ran
+    # at, at the moment the step happened. All three False for an episode that
+    # truncated, which raises no event.
+    #
+    # Recorded rather than re-derived from `true_state` because for some envs
+    # it cannot be re-derived at all. `true_state` is stored float32, and an
+    # env whose state holds absolute ECI columns carries positions at ~3.6e6 m,
+    # where float32's spacing is 0.25 m; a relative view differences two such
+    # columns and so lands on a ~0.5 m grid. The dock gate is 0.1 m wide, five
+    # times finer than that grid, so whether a stored terminal state is inside
+    # it is not a question the stored numbers can answer. The collision test
+    # sweeps a 2.25 m radius through ~1.25 m clearances and is equally
+    # sensitive at a graze.
+    #
+    # None when the source cannot supply them; `envs.common.outcome` then falls
+    # back to re-deriving, which is sound only for an env whose state IS the
+    # canonical relative view at ~100 m.
+    terminal_events: np.ndarray | None = None
 
     @property
     def num_episodes(self) -> int:
@@ -171,6 +190,17 @@ class TrajectoryBatch:
                 raise ValueError(
                     f"true_state rows must be ({t}, state_dim) dynamics states, "
                     f"got {self.true_state.shape[1:]}"
+                )
+        if self.terminal_events is not None:
+            if self.terminal_events.shape[0] != n:
+                raise ValueError(
+                    f"episode count mismatch: terminal_events has "
+                    f"{self.terminal_events.shape[0]}, expected {n}"
+                )
+            if self.terminal_events.shape[1:] != (3,):
+                raise ValueError(
+                    f"terminal_events rows must be (3,) [collision, docked, escaped], "
+                    f"got {self.terminal_events.shape[1:]}"
                 )
 
         if self.actions.shape[1] != t or self.rewards.shape[1] != t:
@@ -257,6 +287,7 @@ def pack_episodes(
     records_dock_targets: bool = False,
     records_true_state: bool = False,
     state_dim: int = 13,
+    records_terminal_events: bool = False,
 ) -> TrajectoryBatch:
     """Pad a list of variable-length episodes into a TrajectoryBatch.
 
@@ -267,10 +298,10 @@ def pack_episodes(
     Each episode dict carries `obs` (L, obs_dim), `act` (L, act_dim), `rew` (L,),
     `terminated` bool and `truncated` bool. The remaining entries are read only
     under their own flag: `policy_id` int when `records_policy_ids`,
-    `dock_target` (7,) when `records_dock_targets`, and `true_state`
-    (L, state_dim) when `records_true_state`. A driver that has no value for an
-    unread entry may leave it None -- an entry the flag switches off is never
-    looked at.
+    `dock_target` (7,) when `records_dock_targets`, `true_state` (L, state_dim)
+    when `records_true_state`, and `terminal_events` (3,) bool when
+    `records_terminal_events`. A driver that has no value for an unread entry
+    may leave it None -- an entry the flag switches off is never looked at.
     """
     n = len(episodes)
     if n == 0:
@@ -289,6 +320,9 @@ def pack_episodes(
         np.zeros((n, max_len, state_dim), dtype=np.float32)
         if records_true_state
         else None
+    )
+    terminal_events = (
+        np.zeros((n, 3), dtype=bool) if records_terminal_events else None
     )
 
     for i, episode in enumerate(episodes):
@@ -315,6 +349,8 @@ def pack_episodes(
                     f"got {episode_true_state.shape}"
                 )
             true_state[i, :length] = episode_true_state
+        if terminal_events is not None:
+            terminal_events[i] = episode["terminal_events"]
 
     batch = TrajectoryBatch(
         observations=observations,
@@ -326,6 +362,7 @@ def pack_episodes(
         policy_ids=policy_ids,
         dock_targets=dock_targets,
         true_state=true_state,
+        terminal_events=terminal_events,
     )
     batch.validate()
     return batch

@@ -236,6 +236,10 @@ def test_both_drivers_agree_on_free_flight_trajectories(env_name):
     _assert_truth_channels_agree(a, b, env_name, rtol=1e-4, atol=1e-4)
     _assert_truth_recorded(a, env_spec)
     _assert_truth_recorded(b, env_spec)
+    # No collision geometry and no dock gate here, so every episode truncates
+    # and neither driver may report an event on any of them.
+    _assert_terminal_events_agree(a, b)
+    assert not a.terminal_events.any()
 
 
 def test_both_drivers_reset_iss_numerical_lanes_to_the_same_state():
@@ -395,6 +399,10 @@ def test_both_drivers_agree_when_episodes_terminate_on_collision(env_name):
     assert np.all(a.terminated) and np.all(b.terminated)
     np.testing.assert_array_equal(a.lengths, b.lengths)
     np.testing.assert_array_equal(a.terminated, b.terminated)
+    # And both must record WHICH event terminated them -- collision, the only
+    # one this config leaves reachable.
+    _assert_terminal_events_agree(a, b)
+    assert np.all(a.terminal_events[:, 0])
 
 
 def _assert_within(actual, expected, tolerance, what):
@@ -559,13 +567,29 @@ def _assert_goal_blocks_agree(scan, vector, env_name, observed_width):
 def _assert_terminal_convention(batch):
     """Every episode's final action slot is zero, and a terminated episode's
     final observation differs from its first (the terminal state was really
-    reached, not just a zero-padded no-op)."""
+    reached, not just a zero-padded no-op).
+
+    The recorded terminal events must also account for `terminated`: an episode
+    terminated by the env raised exactly the events that terminated it, and one
+    that truncated raised none. Both drivers derive `terminated` from those
+    same three flags, so a driver that recorded the wrong step's events -- the
+    one after the autoreset, say -- shows up here.
+    """
     for i in range(batch.num_episodes):
         length = int(batch.lengths[i])
         final_action = batch.actions[i, length - 1]
         np.testing.assert_array_equal(final_action, np.zeros_like(final_action))
         if batch.terminated[i]:
             assert not np.array_equal(batch.observations[i, 0], batch.observations[i, length - 1])
+        if batch.terminal_events is not None:
+            assert bool(batch.terminal_events[i].any()) == bool(batch.terminated[i])
+
+
+def _assert_terminal_events_agree(a, b):
+    """Both drivers record the terminal events, and record the same ones."""
+    assert a.terminal_events is not None
+    assert b.terminal_events is not None
+    np.testing.assert_array_equal(a.terminal_events, b.terminal_events)
 
 
 def _assert_truth_recorded(batch, env_spec):
