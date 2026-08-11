@@ -9,6 +9,7 @@ pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 import jax.numpy as jnp  # noqa: E402
 from owm_envs.core.quaternion import quat_from_rotmat  # noqa: E402
+from owm_envs.render.inputs import Lighting, RenderInputs  # noqa: E402
 from owm_envs.render.iss_scene import RenderConfig, _collect_meshes  # noqa: E402
 from owm_envs.render.renderer import (  # noqa: E402
     _MAX_DEPTH_RANGE_RATIO,
@@ -23,6 +24,16 @@ VIEWS = ["DRAGON_ISO", "DRAGON_TOP", "DRAGON_FPV", "ISS_ISO", "ISS_TOP", "ISS_FP
 
 def a_state(pos=(100.0, 0.0, 0.0)):
     return np.array([*pos, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], dtype=np.float32)
+
+
+def posed(state, action=None):
+    """A 13D state row as the renderer now takes it.
+
+    The rows themselves stay: `_build_views`, `_dragon_fpv_pose_world` and the
+    ray-cast helpers below all read the same layout, and iss's own adapter is
+    this call.
+    """
+    return RenderInputs.from_view(state, action)
 
 
 def _state_pitched(depression_deg, pos=(0.0, 60.0, 0.0)):
@@ -74,14 +85,14 @@ def test_renders_an_rgb_array_of_the_configured_size(nonsquare_renderer):
     # Non-square dimensions pin height/width ordering, not just total pixel
     # count -- a stray `pixel_ratio` left at its pygfx default of 2 (see
     # renderer.py) would double both axes and still pass a square-only check.
-    frame = nonsquare_renderer.render(a_state())
+    frame = nonsquare_renderer.render(posed(a_state()))
     assert frame.shape == (96, 160, 3)
     assert frame.dtype == np.uint8
 
 
 @pytest.mark.parametrize("view", VIEWS)
 def test_every_view_renders(renderer, view):
-    frame = renderer.render(a_state(), view=view)
+    frame = renderer.render(posed(a_state()), view=view)
     assert frame.shape[2] == 3
 
 
@@ -91,7 +102,7 @@ def test_views_are_pairwise_distinct(renderer):
     # Requiring every pair of the six views to actually differ catches that;
     # the observed minimum pairwise mean-absolute difference across the six
     # views is 4.4, well above the diff > 1.0 threshold used here.
-    frames = {view: renderer.render(a_state(), view=view) for view in VIEWS}
+    frames = {view: renderer.render(posed(a_state()), view=view) for view in VIEWS}
     for i, a in enumerate(VIEWS):
         for b in VIEWS[i + 1 :]:
             diff = np.abs(frames[a].astype(np.int16) - frames[b].astype(np.int16)).mean()
@@ -99,18 +110,18 @@ def test_views_are_pairwise_distinct(renderer):
 
 
 def test_different_states_produce_different_frames(renderer):
-    near = renderer.render(a_state(pos=(30.0, 0.0, 0.0)))
-    far = renderer.render(a_state(pos=(300.0, 0.0, 0.0)))
+    near = renderer.render(posed(a_state(pos=(30.0, 0.0, 0.0))))
+    far = renderer.render(posed(a_state(pos=(300.0, 0.0, 0.0))))
     assert not np.array_equal(near, far)
 
 
 def test_unknown_view_raises(renderer):
     with pytest.raises(ValueError, match="view"):
-        renderer.render(a_state(), view="NADIR")
+        renderer.render(posed(a_state()), view="NADIR")
 
 
 def test_views_returns_all_six_placements(renderer):
-    views = renderer.views(a_state())
+    views = renderer.views(posed(a_state()))
     assert set(views) == set(VIEWS)
 
 
@@ -166,7 +177,7 @@ def test_earth_fills_the_lower_half_of_an_fpv_frame_pointed_at_it(renderer):
     # what happened while the starfield was undimmed.
     cfg = RenderConfig()
     on_the_limb = _state_pitched(_limb_depression_deg(cfg))
-    frame = renderer.render(on_the_limb, view="DRAGON_FPV")
+    frame = renderer.render(posed(on_the_limb), view="DRAGON_FPV")
     height = frame.shape[0]
     band = slice(height // 2, height // 2 + height // 8)
     on_earth = _earth_hit_mask(cfg, on_the_limb, *frame.shape[:2])[band]
@@ -215,7 +226,7 @@ def no_glow_renderer():
 
 
 def _missing_earth_fraction(cfg, renderer, state):
-    frame = renderer.render(state, view="DRAGON_FPV")
+    frame = renderer.render(posed(state), view="DRAGON_FPV")
     hit = _earth_hit_mask(cfg, state, *frame.shape[:2])
     expected = int(hit.sum())
     assert expected > 0, "the test framing must put some of Earth on screen"
@@ -258,7 +269,7 @@ def test_clouds_are_never_drawn_over_a_clipped_surface():
     for clouds in (True, False):
         r = ISSRenderer(cfg.model_copy(update={"show_earth_clouds": clouds}))
         try:
-            lit[clouds] = r.render(state, view="DRAGON_FPV").mean(axis=-1) > 40
+            lit[clouds] = r.render(posed(state), view="DRAGON_FPV").mean(axis=-1) > 40
         finally:
             r.close()
 
@@ -271,9 +282,9 @@ def _hull_mask(renderer, state):
     """Which pixels the capsule's own body covers, found by toggling it."""
     dragon = renderer._iss_scene.dragon
     dragon.visible = True
-    with_hull = renderer.render(state, view="DRAGON_FPV")
+    with_hull = renderer.render(posed(state), view="DRAGON_FPV")
     dragon.visible = False
-    without = renderer.render(state, view="DRAGON_FPV")
+    without = renderer.render(posed(state), view="DRAGON_FPV")
     dragon.visible = True
     return np.abs(with_hull.astype(np.int16) - without.astype(np.int16)).max(axis=-1) > 16
 
@@ -313,9 +324,9 @@ def _cloud_mesh(renderer):
 def _cloud_mask(renderer, state, cloud):
     """Which pixels the cloud deck is responsible for, found by toggling it."""
     cloud.visible = True
-    on = renderer.render(state, view="DRAGON_FPV")
+    on = renderer.render(posed(state), view="DRAGON_FPV")
     cloud.visible = False
-    off = renderer.render(state, view="DRAGON_FPV")
+    off = renderer.render(posed(state), view="DRAGON_FPV")
     cloud.visible = True
     return np.abs(on.astype(np.int16) - off.astype(np.int16)).max(axis=-1) > 24
 
@@ -407,9 +418,9 @@ def test_the_station_occludes_the_cloud_deck(renderer):
         cloud_pixels = _cloud_mask(renderer, state, _cloud_mesh(renderer))
         for child in planet:
             child.visible = False
-        with_station = renderer.render(state, view="DRAGON_FPV")
+        with_station = renderer.render(posed(state), view="DRAGON_FPV")
         scene.iss.visible = scene.dragon.visible = False
-        sky_only = renderer.render(state, view="DRAGON_FPV")
+        sky_only = renderer.render(posed(state), view="DRAGON_FPV")
     finally:
         for child in planet:
             child.visible = True
@@ -466,10 +477,10 @@ def test_the_atmosphere_is_a_limb_not_a_wash_over_the_planet(renderer):
     assert shells, "expected the atmospheric shells to be present"
 
     try:
-        with_glow = renderer.render(state, view="DRAGON_FPV").astype(np.float64)
+        with_glow = renderer.render(posed(state), view="DRAGON_FPV").astype(np.float64)
         for shell in shells:
             shell.visible = False
-        without = renderer.render(state, view="DRAGON_FPV").astype(np.float64)
+        without = renderer.render(posed(state), view="DRAGON_FPV").astype(np.float64)
     finally:
         for shell in shells:
             shell.visible = True
@@ -491,7 +502,7 @@ def _sky_only(renderer, state):
     try:
         for child in hidden:
             child.visible = False
-        return renderer.render(state, view="DRAGON_FPV")
+        return renderer.render(posed(state), view="DRAGON_FPV")
     finally:
         for child in hidden:
             child.visible = True
@@ -534,10 +545,10 @@ def test_star_brightness_scales_the_starfield(renderer):
 
 
 def test_render_views_matches_rendering_each_view_on_its_own(renderer):
-    together = renderer.render_views(a_state(), views=VIEWS)
+    together = renderer.render_views(posed(a_state()), views=VIEWS)
     assert list(together) == VIEWS
     for view in VIEWS:
-        np.testing.assert_array_equal(together[view], renderer.render(a_state(), view=view))
+        np.testing.assert_array_equal(together[view], renderer.render(posed(a_state()), view=view))
 
 
 def test_render_views_poses_the_scene_once_for_all_six(renderer, monkeypatch):
@@ -549,15 +560,57 @@ def test_render_views_poses_the_scene_once_for_all_six(renderer, monkeypatch):
     monkeypatch.setattr(
         renderer._iss_scene,
         "update",
-        lambda state, action=None: (poses.append(1), real_update(state, action))[1],
+        lambda state, action=None, lighting=None: (
+            poses.append(1),
+            real_update(state, action, lighting),
+        )[1],
     )
-    renderer.render_views(a_state(), views=VIEWS)
+    renderer.render_views(posed(a_state()), views=VIEWS)
     assert len(poses) == 1
+
+
+def test_render_views_poses_from_the_inputs_alone(renderer, monkeypatch):
+    """The renderer never sees an environment's state row now, so everything
+    the scene is posed with has to come off the `RenderInputs`: the position
+    and attitude in the 13D layout the scene reads, and the action and
+    lighting untouched.
+    """
+    seen = {}
+    monkeypatch.setattr(
+        renderer._iss_scene,
+        "update",
+        lambda state, action=None, lighting=None: seen.update(
+            state=np.asarray(state), action=action, lighting=lighting
+        ),
+    )
+
+    lighting = Lighting(
+        sun_direction_world=np.array([0.0, 0.0, 1.0]),
+        illumination=0.5,
+        chief_distance_m=6.8e6,
+        moon_vector_world=np.array([0.0, 3.844e8, 0.0]),
+    )
+    action = np.arange(6.0, dtype=np.float32)
+    renderer.render_views(
+        RenderInputs(
+            position_world=np.array([1.0, 2.0, 3.0]),
+            quaternion_bw=np.array([0.0, 1.0, 0.0, 0.0]),
+            action=action,
+            lighting=lighting,
+        ),
+        views=["DRAGON_ISO"],
+    )
+
+    np.testing.assert_array_equal(
+        seen["state"], [1, 2, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]
+    )
+    assert seen["action"] is action
+    assert seen["lighting"] is lighting
 
 
 def test_render_views_rejects_an_unknown_view(renderer):
     with pytest.raises(ValueError, match="view"):
-        renderer.render_views(a_state(), views=["DRAGON_FPV", "NADIR"])
+        renderer.render_views(posed(a_state()), views=["DRAGON_FPV", "NADIR"])
 
 
 def test_render_after_close_raises_runtime_error():
@@ -566,7 +619,7 @@ def test_render_after_close_raises_runtime_error():
     r = ISSRenderer(RenderConfig(image_width=64, image_height=64))
     r.close()
     with pytest.raises(RuntimeError, match="closed"):
-        r.render(a_state())
+        r.render(posed(a_state()))
 
 
 # Four consecutive poses from val episode 1 of the run that showed the defect
@@ -650,7 +703,7 @@ def test_the_atmosphere_band_has_no_holes_bitten_out_of_it(earth_only_renderer, 
     consecutive frames, so this also covers the defect moving under small
     rotations.
     """
-    frame = earth_only_renderer.render(np.array(pose, dtype=np.float32), view="DRAGON_FPV")
+    frame = earth_only_renderer.render(posed(np.array(pose, dtype=np.float32)), view="DRAGON_FPV")
     band, gaps = _limb_gap_fraction(frame)
     # A band that is not drawn at all has no holes in it either.
     assert band > 5000, f"only {band:.0f} px of atmosphere band in frame"
@@ -663,4 +716,4 @@ def test_render_views_rejects_a_bare_view_name(renderer):
     # A string is a sequence of characters, so this would otherwise be
     # reported as an unknown view called "D".
     with pytest.raises(TypeError, match="sequence of view names"):
-        renderer.render_views(a_state(), views="DRAGON_FPV")
+        renderer.render_views(posed(a_state()), views="DRAGON_FPV")

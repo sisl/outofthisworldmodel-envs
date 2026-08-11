@@ -1,8 +1,10 @@
 """The ISS docking scene: station, capsule, Earth, Moon, and starfield.
 
 Builds a static pygfx scene graph once and re-poses the Dragon capsule from
-the simulation state on every call to `ISSScene.update`. Camera views and the
-force/torque debug overlays are built on top of this scene elsewhere.
+the simulation state on every call to `ISSScene.update`. A caller with real
+ephemeris can pass `Lighting` to that same call and move the sun, Earth and
+Moon with it; without it they stay where the config put them. Camera views and
+the force/torque debug overlays are built on top of this scene elsewhere.
 
 The station asset is the ISS as it stood between February and May 2015: CATS
 was installed on the JEM exposed facility in January 2015 and the PMM was
@@ -32,6 +34,7 @@ from owm_envs.core.models import ConfigModel
 from owm_envs.core.quaternion import quat_to_rotmat
 from owm_envs.render import asset_path
 from owm_envs.render.earth import MAP_WIDTHS, earth_texture_path
+from owm_envs.render.inputs import Lighting
 from owm_envs.render.iss_frame import ISS_RECENTRE_OFFSET, UPRIGHT_EULER_XYZ
 from owm_envs.render.loaders import load_cubemap_from_faces, load_glb_scene
 
@@ -272,6 +275,14 @@ _DISTANT_QUEUE = 2000  # Earth's surface, the Sun, the Moon -- all below the dec
 _CLOUD_QUEUE = 2100  # the deck, over them
 _GLOW_QUEUE = 2200  # the atmospheric limb, over the deck
 
+# The fill light is a fixed fraction of the key light, which is what makes it
+# a fill and not a second sun: it keeps the shadowed side readable rather than
+# black. Held here because per-frame eclipse dimming has to scale both by the
+# same factor -- a fill left at full strength would light a station the sun no
+# longer reaches. The one term that does survive an eclipse is the ambient,
+# which is deliberate rather than an omission here: see `_build_ambient_light`.
+_FILL_INTENSITY_FRACTION = 0.35
+
 
 def _max_texture_size() -> int:
     return int(get_shared().device.limits["max-texture-dimension-2d"])
@@ -458,12 +469,39 @@ class ISSScene:
         self.scene = gfx.Scene()
         self.iss = self._load_iss_group()
         self.scene.add(self.iss)
-        self.scene.add(self._load_earth_group())
-        self.scene.add(self._load_moon_group())
-        self.scene.add(self._build_sun_sphere())
-        self.scene.add(self._build_ambient_light())
-        self.scene.add(self._build_directional_light())
-        self.scene.add(self._build_fill_directional_light())
+        # Held as attributes, not just added and forgotten: `update` moves
+        # every one of them when it is handed a `Lighting`. Earth is built
+        # first because the moon is placed relative to its centre.
+        self._earth_group = self._load_earth_group()
+        self._moon_group = self._load_moon_group()
+        self._sun = self._build_sun_sphere()
+        ambient_light = self._build_ambient_light()
+        self._directional_light = self._build_directional_light()
+        self._fill_light = self._build_fill_directional_light()
+        self.scene.add(self._earth_group)
+        self.scene.add(self._moon_group)
+        self.scene.add(self._sun)
+        self.scene.add(ambient_light)
+        self.scene.add(self._directional_light)
+        self.scene.add(self._fill_light)
+
+        # What `update(lighting=None)` means, held as values rather than as
+        # "whatever is there now". A renderer outlives the frame -- one is
+        # shared across every episode of a split, and the same process may
+        # render an env that supplies ephemeris and one that does not -- so a
+        # frame without ephemeris has to show this scene's static
+        # configuration, not wherever the last lit frame left the sun.
+        # Exactly the set `_apply_lighting` writes.
+        self._static_lighting = {
+            "sun_position": tuple(self._sun.local.position),
+            "key_position": tuple(self._directional_light.local.position),
+            "key_intensity": self._directional_light.intensity,
+            "fill_position": tuple(self._fill_light.local.position),
+            "fill_intensity": self._fill_light.intensity,
+            "earth_position": tuple(self._earth_group.local.position),
+            "moon_position": tuple(self._moon_group.local.position),
+        }
+        self._lit = False
 
         self.dragon = self._load_dragon_group()
         self.scene.add(self.dragon)
@@ -615,6 +653,12 @@ class ISSScene:
             self._earth_spin_axis_local, self._earth_spin_angle_rad
         )
 
+    def _earth_center_world(self) -> np.ndarray:
+        """Where the planet's centre currently sits. Read rather than
+        recomputed from the config, so anything placed against it -- the moon
+        -- follows when `update` moves the Earth to the chief's true altitude."""
+        return np.asarray(self._earth_group.local.position, dtype=np.float32)
+
     def _load_moon_group(self) -> gfx.Group:
         cfg = self.cfg
         scene_obj = load_glb_scene(asset_path("moon", "moon_small.glb"))
@@ -623,9 +667,8 @@ class ISSScene:
         scale = cfg.moon_radius_m / max(cfg.moon_asset_radius_units, 1e-6)
         moon_group.local.scale = (scale, scale, scale)
 
-        earth_center_world = np.array([0.0, 0.0, -(cfg.earth_radius_m + cfg.iss_altitude_m)], dtype=np.float32)
         direction = _unit(np.array(cfg.moon_direction_from_earth_world, dtype=np.float32))
-        moon_world = earth_center_world + cfg.earth_moon_distance_m * direction
+        moon_world = self._earth_center_world() + cfg.earth_moon_distance_m * direction
         moon_group.local.position = tuple(moon_world.tolist())
         for mesh in _collect_meshes(moon_group):
             mesh.material.render_queue = _DISTANT_QUEUE
@@ -660,18 +703,95 @@ class ISSScene:
         return light
 
     def _build_ambient_light(self) -> gfx.AmbientLight:
+        # Held at full strength through an eclipse, unlike the key and fill
+        # that `_apply_lighting` dims. A station in umbra is not in the dark:
+        # the Earth fills half its sky and earthshine is what it is lit by.
+        # This term stands in for that, and it is also the floor that keeps an
+        # eclipsed frame from being a black image with nothing in it to learn
+        # from. It is a flat approximation -- a real earthshine would swing
+        # with the sunlit fraction of the disc below -- and dimming it with
+        # the sun would be a worse one.
         return gfx.AmbientLight("#c7d8ff", 0.22)
 
     def _build_fill_directional_light(self) -> gfx.DirectionalLight:
         fill_direction = _unit(np.array([-0.55, 0.4, 0.9], dtype=np.float32))
-        light = gfx.DirectionalLight("#dfe9ff", 0.35 * self.cfg.directional_light_intensity)
+        light = gfx.DirectionalLight(
+            "#dfe9ff", _FILL_INTENSITY_FRACTION * self.cfg.directional_light_intensity
+        )
         light.local.position = tuple((fill_direction * self.cfg.sun_visual_distance_m).tolist())
         light.cast_shadow = False
         return light
 
-    def update(self, state: np.ndarray, action: np.ndarray | None = None) -> None:
+    def _apply_lighting(self, lighting: Lighting) -> None:
+        """Point the sun, dim it for eclipse, and place Earth and the Moon.
+
+        Everything here is per-frame ephemeris, replacing the static config
+        placement the scene is built with.
+        """
+        cfg = self.cfg
+
+        # At `sun_visual_distance_m` exactly, never further or nearer: the
+        # disc's radius is baked from that distance in `_build_sun_sphere`, so
+        # moving it along the sphere of that radius is what keeps its angular
+        # diameter at `sun_angular_diameter_deg`. Nothing needs rescaling.
+        sun_direction = _unit(np.asarray(lighting.sun_direction_world, dtype=np.float32))
+        sun_world = sun_direction * cfg.sun_visual_distance_m
+        self._sun.local.position = tuple(sun_world.tolist())
+
+        # In umbra the disc is hidden, not merely unlit. Depth does not do
+        # this for us: the proxy sits at `sun_visual_distance_m` (1e6 m) while
+        # the Earth's surface along an oblique ray is further away than that,
+        # so the disc draws IN FRONT of the night side. Measured over one ISS
+        # orbit, 55 of 1115 samples -- 4.9% of the period, sun_dir_z ~ -0.47 --
+        # would show the sun through the dark planet. Hiding it is exact
+        # rather than a patch: the camera rides the chief, and this station
+        # being in umbra is precisely the Earth standing between the two.
+        self._sun.visible = bool(lighting.illumination > 0.0)
+
+        # The shadow camera is not moved here: pygfx re-derives it from the
+        # light's world position every frame (`LightShadow._update_matrix`).
+        self._directional_light.local.position = tuple(sun_world.tolist())
+        illumination = float(lighting.illumination)
+        self._directional_light.intensity = illumination * cfg.directional_light_intensity
+        self._fill_light.intensity = illumination * _FILL_INTENSITY_FRACTION * cfg.directional_light_intensity
+
+        # The chief's true altitude, in place of the fixed `iss_altitude_m`.
+        # The cloud deck and the glow shells are children of this group and
+        # follow it; the moon is not, so it is placed off the new centre.
+        self._earth_group.local.position = (0.0, 0.0, -float(lighting.chief_distance_m))
+        moon_world = self._earth_center_world() + np.asarray(lighting.moon_vector_world, dtype=np.float32)
+        self._moon_group.local.position = tuple(moon_world.tolist())
+
+    def _restore_static_lighting(self) -> None:
+        """Undo `_apply_lighting`, back to the values built from the config."""
+        static = self._static_lighting
+        self._sun.local.position = static["sun_position"]
+        self._sun.visible = True
+        self._directional_light.local.position = static["key_position"]
+        self._directional_light.intensity = static["key_intensity"]
+        self._fill_light.local.position = static["fill_position"]
+        self._fill_light.intensity = static["fill_intensity"]
+        self._earth_group.local.position = static["earth_position"]
+        self._moon_group.local.position = static["moon_position"]
+
+    def update(
+        self,
+        state: np.ndarray,
+        action: np.ndarray | None = None,
+        lighting: Lighting | None = None,
+    ) -> None:
         """Pose the Dragon capsule from a 13D state: 0:3 position, 6:10
-        quaternion q_bw (body -> world), the rest unused here."""
+        quaternion q_bw (body -> world), the rest unused here.
+
+        `lighting` is this frame's ephemeris. `None` means the static
+        configuration -- the sun direction, altitude and moon placement this
+        scene was built with -- which is what every env but `iss-hcw` renders
+        through. It is a statement about the frame, not an instruction to skip
+        the lights: a scene a previous frame moved is put back. One renderer
+        serves a whole split and can be handed frames from more than one env,
+        so leaving them where they were would light an env that supplies no
+        ephemeris with the last `iss-hcw` frame's sun.
+        """
         s = np.asarray(state, dtype=np.float32).reshape(-1)
         if s.shape[0] != 13:
             raise ValueError(f"expected a 13-element state, got shape {s.shape}")
@@ -684,6 +804,16 @@ class ISSScene:
         matrix[:3, :3] = rotation
         matrix[:3, 3] = position
         self.dragon.local.matrix = matrix
+
+        if lighting is not None:
+            self._apply_lighting(lighting)
+            self._lit = True
+        elif self._lit:
+            # Only when something moved them: a scene that has never been lit
+            # is already at these values, and every frame of every env but
+            # `iss-hcw` takes this branch.
+            self._restore_static_lighting()
+            self._lit = False
 
 
 def iss_vertices_world(

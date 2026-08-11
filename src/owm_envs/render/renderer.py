@@ -18,6 +18,7 @@ import wgpu
 from pygfx.renderers import WgpuRenderer
 
 from owm_envs.core.quaternion import quat_to_rotmat
+from owm_envs.render.inputs import RenderInputs
 from owm_envs.render.iss_scene import ISSScene, RenderConfig
 from owm_envs.render.view import CameraView, make_camera
 
@@ -64,6 +65,23 @@ def _unit(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     return (v / n).astype(np.float32) if n >= eps else np.zeros_like(v)
 
 
+def _pose_row(inputs: RenderInputs) -> np.ndarray:
+    """The 13D row `_build_views` and `ISSScene.update` pose from.
+
+    Both read the position out of 0:3 and the attitude out of 6:10 and nothing
+    else, so the velocity and angular-rate slices are zeros: a `RenderInputs`
+    carries no rates, and posing needs none.
+    """
+    return np.concatenate(
+        [
+            np.asarray(inputs.position_world, dtype=np.float32).reshape(3),
+            np.zeros(3, dtype=np.float32),
+            np.asarray(inputs.quaternion_bw, dtype=np.float32).reshape(4),
+            np.zeros(3, dtype=np.float32),
+        ]
+    )
+
+
 def _dragon_fpv_pose_world(cfg: RenderConfig, state: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Dragon's onboard camera position/forward/up in world coordinates.
 
@@ -103,6 +121,15 @@ def _dragon_fpv_pose_world(cfg: RenderConfig, state: np.ndarray) -> tuple[np.nda
 # doing; too structural to fold into a bug fix.
 _MAX_DEPTH_RANGE_RATIO = 2.0**24
 
+# `earth_moon_distance_m` is the mean distance, but a frame rendered from
+# ephemeris (`Lighting.moon_vector_world`) puts the Moon at the distance it
+# really was: 405,500 km at apogee against the 384,400 km mean, 5.5% further
+# out, and 5.8% at the extreme of the anomalistic swing. A constant factor
+# rather than a far plane derived from the frame's own Moon: this is only an
+# upper bound on what a camera asks for, and making it per-frame would move
+# every camera's clip distance with the ephemeris to buy nothing.
+_MOON_APOGEE_MARGIN = 1.06
+
 
 def _far_covering_the_scene(cfg: RenderConfig) -> float:
     """A far clip distance that reaches the far side of the Moon, the most
@@ -115,7 +142,12 @@ def _far_covering_the_scene(cfg: RenderConfig) -> float:
     render a dock, so this is an upper bound on what a camera asks for, not
     a promise that it gets there.
     """
-    return cfg.earth_moon_distance_m + cfg.earth_radius_m + cfg.iss_altitude_m + cfg.moon_radius_m
+    return (
+        cfg.earth_moon_distance_m * _MOON_APOGEE_MARGIN
+        + cfg.earth_radius_m
+        + cfg.iss_altitude_m
+        + cfg.moon_radius_m
+    )
 
 
 def _with_scene_far(view: CameraView, cfg: RenderConfig) -> CameraView:
@@ -262,29 +294,31 @@ class ISSRenderer:
         # pygfx defaults to a device pixel ratio of 2.
         self._renderer.pixel_ratio = 1
 
-    def views(self, state: np.ndarray) -> dict[ViewName, CameraView]:
-        return _build_views(self.cfg, state)
+    def views(self, inputs: RenderInputs) -> dict[ViewName, CameraView]:
+        return _build_views(self.cfg, _pose_row(inputs))
 
     def render(
         self,
-        state: np.ndarray,
-        action: np.ndarray | None = None,
+        inputs: RenderInputs,
         view: ViewName = "DRAGON_ISO",
     ) -> np.ndarray:
-        return self.render_views(state, action, (view,))[view]
+        return self.render_views(inputs, (view,))[view]
 
     def render_views(
         self,
-        state: np.ndarray,
-        action: np.ndarray | None = None,
+        inputs: RenderInputs,
         views: Sequence[ViewName] = ("DRAGON_ISO",),
     ) -> dict[ViewName, np.ndarray]:
-        """Render several of the named views of one state, posed once.
+        """Render several of the named views of one frame, posed once.
 
-        Posing the scene is per-state, not per-camera, so a caller that wants
+        Posing the scene is per-frame, not per-camera, so a caller that wants
         more than one view of the same frame should ask for them together:
         `render` in a loop would re-pose the capsule and rebuild the debug
         overlays once per view for no change in what is drawn.
+
+        `inputs` is whatever the source environment's render adapter made of
+        its own state -- the renderer never sees that state, which is what
+        lets it draw for an environment whose rows it could not read.
         """
         if self._closed:
             raise RuntimeError("renderer is closed")
@@ -294,22 +328,22 @@ class ISSRenderer:
             # an unknown view named "D".
             raise TypeError(f"views must be a sequence of view names, not {views!r}")
 
-        all_views = _build_views(self.cfg, state)
+        pose = _pose_row(inputs)
+        all_views = _build_views(self.cfg, pose)
         unknown = [view for view in views if view not in all_views]
         if unknown:
             raise ValueError(
                 f"unknown view {unknown[0]!r}; expected one of {sorted(all_views)}"
             )
 
-        self._iss_scene.update(state, action)
-        self._update_debug_overlays(action)
+        self._iss_scene.update(pose, inputs.action, lighting=inputs.lighting)
+        self._update_debug_overlays(inputs.action)
         return {view: self._draw(all_views[view]) for view in views}
 
     def render_view(
         self,
-        state: np.ndarray,
+        inputs: RenderInputs,
         view: CameraView,
-        action: np.ndarray | None = None,
     ) -> np.ndarray:
         """Render the posed scene through an arbitrary camera.
 
@@ -319,8 +353,8 @@ class ISSRenderer:
         if self._closed:
             raise RuntimeError("renderer is closed")
 
-        self._iss_scene.update(state, action)
-        self._update_debug_overlays(action)
+        self._iss_scene.update(_pose_row(inputs), inputs.action, lighting=inputs.lighting)
+        self._update_debug_overlays(inputs.action)
         return self._draw(view)
 
     def _draw(self, view: CameraView) -> np.ndarray:

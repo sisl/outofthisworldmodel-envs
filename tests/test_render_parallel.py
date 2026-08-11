@@ -20,10 +20,18 @@ pytest.importorskip("pygfx", reason="rendering is an optional extra")
 from owm_envs.datasets.video import (  # noqa: E402
     FPV_KEY,
     iter_batch_frames,
+    render_adapter_for,
     render_batch_frames,
 )
+from owm_envs.envs.iss.config import ISSConfig  # noqa: E402
 
 FPV = FPV_KEY
+
+# The environment these batches came from: the render pipeline builds its
+# adapter from the pair rather than being handed one, because a spawned
+# worker can only be sent something it can rebuild an adapter from.
+ISS = {"env_name": "iss", "env_cfg": ISSConfig()}
+ISS_STATE_DIM = 13
 
 
 class _FakeRenderer:
@@ -38,9 +46,9 @@ class _FakeRenderer:
         _FakeRenderer.instances += 1
         self.cfg = cfg
 
-    def render_views(self, state, action=None, views=("DRAGON_FPV",)):
+    def render_views(self, inputs, views=("DRAGON_FPV",)):
         frame = np.zeros((self.cfg.image_height, self.cfg.image_width, 3), dtype=np.uint8)
-        frame[0, 0, 0] = int(state[0])
+        frame[0, 0, 0] = int(inputs.position_world[0])
         return {view: frame.copy() for view in views}
 
     def close(self):
@@ -80,13 +88,13 @@ def fake_renderer(monkeypatch):
 
 def test_single_worker_yields_clips_in_episode_order(fake_renderer):
     batch = _fake_batch()
-    clips = [episode[FPV] for episode in iter_batch_frames(batch, _Cfg())]
+    clips = [episode[FPV] for episode in iter_batch_frames(batch, _Cfg(), **ISS)]
     assert [clip.shape[0] for clip in clips] == [3, 2, 4]
     assert [int(clip[0, 0, 0, 0]) for clip in clips] == [1, 2, 3]
 
 
 def test_single_worker_reuses_one_renderer_and_closes_it(fake_renderer):
-    list(iter_batch_frames(_fake_batch(), _Cfg()))
+    list(iter_batch_frames(_fake_batch(), _Cfg(), **ISS))
     assert fake_renderer.instances == 1
     assert fake_renderer.closes == 1
 
@@ -95,7 +103,7 @@ def test_abandoning_the_iterator_still_closes_the_renderer(fake_renderer):
     # The writer may raise part-way through consuming the clips, and a
     # renderer holds ~200 MB of GPU buffers, so it has to be released even
     # when the iterator is never exhausted.
-    clips = iter_batch_frames(_fake_batch(), _Cfg())
+    clips = iter_batch_frames(_fake_batch(), _Cfg(), **ISS)
     next(clips)
     clips.close()
     assert fake_renderer.closes == 1
@@ -119,8 +127,102 @@ def test_a_worker_never_downloads_its_own_earth_textures(monkeypatch):
     monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
     from owm_envs.render.iss_scene import RenderConfig
 
-    video._worker_init(RenderConfig().model_dump_json(), (FPV,), None)
+    video._worker_init(
+        RenderConfig().model_dump_json(), (FPV,), None, "iss", ISSConfig().model_dump_json()
+    )
     assert seen["download_textures"] is False
+
+
+def test_a_worker_builds_its_own_render_adapter(monkeypatch):
+    """An adapter reaches a worker as the (env_name, config) it is built from,
+    never as a callable: the pool is a spawn one, the child re-imports this
+    module from scratch, and what the parent holds is bound to a config the
+    child does not have. The config crosses as JSON for the same reason the
+    RenderConfig does, so this rebuilds through that round trip.
+    """
+    import owm_envs.datasets.video as video
+
+    monkeypatch.setattr("owm_envs.render.renderer.ISSRenderer", lambda cfg, **kw: None)
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", lambda index: None)
+    from owm_envs.render.iss_scene import RenderConfig
+
+    video._worker_init(
+        RenderConfig().model_dump_json(), (FPV,), None, "iss", ISSConfig().model_dump_json()
+    )
+    posed = video._WORKER_ADAPTER(np.arange(13.0), np.zeros(6))
+    np.testing.assert_array_equal(posed.position_world, [0.0, 1.0, 2.0])
+    np.testing.assert_array_equal(posed.quaternion_bw, [6.0, 7.0, 8.0, 9.0])
+
+
+def test_a_goal_augmented_hcw_batch_is_posed_at_its_own_state_width(monkeypatch):
+    """No truth channel, so the pose comes off the observation -- and an
+    iss-hcw observation is a 15-wide state (a 2-element epoch prefix ahead of
+    the 13D view) followed by the 12-dim goal-error block. What an adapter is
+    owed is its env's whole state row, so the width of the row is asserted
+    here and not only the pose that came out of it: iss-hcw's own adapter
+    happens to read nothing past element 12, so a row truncated to iss's 13
+    would render identically today and stop doing so the moment a layout puts
+    anything the renderer reads further out. Both paths take their width from
+    the registry; this pins the in-process one, which is the one that used to
+    compute the right source and then ignore it.
+    """
+    import owm_envs.datasets.video as video
+
+    from owm_envs.envs.common.epoch_state import epoch_prefix
+    from owm_envs.envs.common.goal import GOAL_ERROR_DIM
+    from owm_envs.envs.common.orbit import ReferenceOrbit
+    from owm_envs.envs.iss_hcw.config import HCWConfig
+
+    posed = []
+
+    class _Capturing(_FakeRenderer):
+        def render_views(self, inputs, views=("DRAGON_FPV",)):
+            posed.append(inputs)
+            return super().render_views(inputs, views)
+
+    monkeypatch.setattr("owm_envs.render.renderer.ISSRenderer", _Capturing)
+    cfg = HCWConfig()
+    state_dim = 15
+    row = np.zeros(state_dim + GOAL_ERROR_DIM, dtype=np.float32)
+    row[:2] = np.asarray(epoch_prefix(ReferenceOrbit(cfg.orbit).epoch0), dtype=np.float32)
+    row[2:state_dim] = np.arange(1.0, 14.0)
+    # A goal block that would be unmistakable if it ever reached a pose.
+    row[state_dim:] = 99.0
+
+    batch = TrajectoryBatch(
+        observations=row.reshape(1, 1, -1),
+        actions=np.zeros((1, 1, 6), dtype=np.float32),
+        rewards=np.zeros((1, 1), dtype=np.float32),
+        lengths=np.array([1], dtype=np.int32),
+        terminated=np.array([True]),
+        truncated=np.array([False]),
+        policy_ids=None,
+    )
+    assert batch.true_state is None
+
+    # The real adapter, wrapped so the row it was handed can be inspected.
+    real = render_adapter_for("iss-hcw", cfg)
+    handed = []
+
+    def recording(state, action=None):
+        handed.append(np.asarray(state).copy())
+        return real(state, action)
+
+    monkeypatch.setattr(video, "render_adapter_for", lambda env_name, env_cfg: recording)
+    list(iter_batch_frames(batch, _Cfg(), env_name="iss-hcw", env_cfg=cfg))
+
+    assert len(handed) == 1
+    np.testing.assert_array_equal(handed[0], row[:state_dim])
+
+    expected = real(row[:state_dim], np.zeros(6, dtype=np.float32))
+    assert len(posed) == 1
+    np.testing.assert_array_equal(posed[0].position_world, expected.position_world)
+    np.testing.assert_array_equal(posed[0].quaternion_bw, expected.quaternion_bw)
+    np.testing.assert_array_equal(
+        posed[0].lighting.sun_direction_world, expected.lighting.sun_direction_world
+    )
+    assert posed[0].lighting.illumination == expected.lighting.illumination
+    assert posed[0].lighting.chief_distance_m == expected.lighting.chief_distance_m
 
 
 def test_parallel_matches_sequential():
@@ -130,8 +232,10 @@ def test_parallel_matches_sequential():
     from owm_envs.render.iss_scene import RenderConfig
 
     cfg = RenderConfig(image_width=64, image_height=64)
-    sequential = render_batch_frames(batch, cfg)
-    parallel = list(iter_batch_frames(batch, cfg, workers=2))
+    sequential = render_batch_frames(
+        batch, cfg, adapter=render_adapter_for(**ISS), state_dim=ISS_STATE_DIM
+    )
+    parallel = list(iter_batch_frames(batch, cfg, workers=2, **ISS))
     assert len(parallel) == len(sequential)
     for seq, par in zip(sequential, parallel):
         assert set(seq) == set(par)
@@ -146,7 +250,9 @@ def test_abandoning_a_pool_iterator_returns_promptly():
     batch = _scan_batch("off", goal_error=False)
     from owm_envs.render.iss_scene import RenderConfig
 
-    clips = iter_batch_frames(batch, RenderConfig(image_width=64, image_height=64), workers=2)
+    clips = iter_batch_frames(
+        batch, RenderConfig(image_width=64, image_height=64), workers=2, **ISS
+    )
     next(clips)
     start = time.perf_counter()
     clips.close()
@@ -166,6 +272,7 @@ def test_a_worker_that_cannot_start_fails_instead_of_hanging():
         """
         import numpy as np
         from owm_envs.datasets.video import iter_batch_frames
+        from owm_envs.envs.iss.config import ISSConfig
         from owm_envs.drivers.types import TrajectoryBatch
         from owm_envs.render.iss_scene import RenderConfig
 
@@ -179,7 +286,8 @@ def test_a_worker_that_cannot_start_fails_instead_of_hanging():
             policy_ids=None,
         )
         cfg = RenderConfig(image_width=64, image_height=64)
-        list(iter_batch_frames(batch, cfg, workers=2, gpu_index=9999))
+        list(iter_batch_frames(batch, cfg, workers=2, gpu_index=9999,
+                               env_name="iss", env_cfg=ISSConfig()))
         """
     )
     done = subprocess.run(

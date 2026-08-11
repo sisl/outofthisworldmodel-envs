@@ -25,7 +25,9 @@ from gymnasium.envs.registration import register
 
 if TYPE_CHECKING:
     import jax.numpy as jnp
+    import numpy as np
 
+    from ..render.inputs import RenderInputs
     from .common.config import BaseTaskConfig
     from .common.layout import StateLayout
 
@@ -39,11 +41,14 @@ class EnvSpec:
     make_dynamics: Callable[[BaseTaskConfig], Any]
     make_vector_env: Callable[[int, BaseTaskConfig], Any]
     view: Callable[[jnp.ndarray], jnp.ndarray]
-    # Whether the video path can pose the renderer from this env's recorded
-    # true_state rows, which it reads as the iss layout's element order.
-    # Deliberately given no default: an env that gets this wrong renders
-    # silently wrong video rather than failing, so registering one has to be
-    # the moment somebody answers the question.
+    # Whether the video path can render this env at all -- which since the
+    # RenderInputs seam means exactly that it has a `make_render_adapter`, the
+    # thing that reads its rows in its own element order. Deliberately given
+    # no default: an env that gets this wrong renders silently wrong video
+    # rather than failing, so registering one has to be the moment somebody
+    # answers the question. `tests/envs/test_registry.py` holds the two fields
+    # in step, because the CLI's `--render` guard reads this one while the
+    # render workers reach for the other.
     renderable: bool
     # How this env's equations of motion are described in a published
     # dataset's card, as the object of "under ...". Every env in the suite
@@ -51,15 +56,27 @@ class EnvSpec:
     # state layout are the whole of what a card has to say differently about
     # one env versus another.
     card_summary: str = "rigid-body free-flyer dynamics"
+    # Factory for this env's render adapter: given a config, returns a
+    # (state, action) -> RenderInputs callable that poses a frame from the
+    # env's own state layout. Module-level by construction (never a lambda
+    # or closure) -- render worker processes rebuild the adapter from
+    # (env_name, cfg) via ENV_REGISTRY and have to pickle it across the
+    # process boundary to do it. None for an env whose adapter has not landed,
+    # which is precisely an env whose `renderable` is False.
+    make_render_adapter: (
+        Callable[[BaseTaskConfig], Callable[[np.ndarray, np.ndarray | None], RenderInputs]] | None
+    ) = None
 
 
 def _build_env_registry() -> dict[str, EnvSpec]:
     from .common.layout import ISS_LAYOUT
     from .iss.config import ISSConfig
     from .iss.dynamics import ISSDynamics
+    from .iss.render_adapter import make_render_adapter as iss_make_render_adapter
     from .iss.vector_env import ISSVectorEnv
     from .iss_hcw.config import HCW_LAYOUT, HCWConfig
     from .iss_hcw.dynamics import HCWDynamics
+    from .iss_hcw.render_adapter import make_render_adapter as hcw_make_render_adapter
     from .iss_hcw.vector_env import HCWVectorEnv
 
     return {
@@ -72,6 +89,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_vector_env=lambda num_envs, cfg: ISSVectorEnv(num_envs=num_envs, cfg=cfg),
             view=ISS_LAYOUT.slice_view,
             renderable=True,
+            make_render_adapter=iss_make_render_adapter,
         ),
         "iss-hcw": EnvSpec(
             name="iss-hcw",
@@ -81,9 +99,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
             make_dynamics=HCWDynamics,
             make_vector_env=lambda num_envs, cfg: HCWVectorEnv(num_envs=num_envs, cfg=cfg),
             view=HCW_LAYOUT.slice_view,
-            # Until the RenderInputs seam lands, the video path would read
-            # this env's epoch prefix as a position.
-            renderable=False,
+            renderable=True,
             # No internal comma: the card reads "under {card_summary} and
             # against the station's collision hull", which a comma clause
             # turns into a garden path.
@@ -91,6 +107,7 @@ def _build_env_registry() -> dict[str, EnvSpec]:
                 "Clohessy-Wiltshire relative dynamics about a Keplerian chief "
                 "with gravity-gradient attitude torque"
             ),
+            make_render_adapter=hcw_make_render_adapter,
         ),
     }
 
