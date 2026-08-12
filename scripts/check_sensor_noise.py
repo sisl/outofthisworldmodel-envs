@@ -8,10 +8,13 @@ range). Exits non-zero when any measured RMS is off its configured value by
 more than the tolerance, so a generated run can be checked before it is
 published.
 
-The residual is `observation_vector[:13] - state_vector`, which is exactly the
-sensor-noise draw the simulator made for that frame -- this measures the noise
-that actually landed in the dataset rather than trusting the config that
-produced it.
+The residual is the measured 13D relative view minus the true state's view --
+exactly the sensor-noise draw the simulator made for that frame -- so this
+measures the noise that actually landed in the dataset rather than trusting
+the config that produced it. Which env generated the run (and so which config
+class parses its env_config.yaml, where the view sits in `observation_vector`,
+and how `state_vector` maps to a view) is resolved from the run's own
+dataset_card.json; see run_view.py.
 
 Usage:
     uv run --extra datasets python scripts/check_sensor_noise.py RUN_DIR
@@ -29,8 +32,10 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from run_view import observed_views, run_env, state_views
+
+from owm_envs.envs.common.config import BaseTaskConfig
 from owm_envs.envs.common.sensing import Sigma
-from owm_envs.envs.iss.config import ISSConfig
 
 # Position-error range bins, and the number of frames one needs before its RMS
 # is worth comparing to anything: at 100 samples the relative standard error of
@@ -113,7 +118,7 @@ def total_sigma(value: Sigma) -> float:
     return float(value)
 
 
-def expected_sigmas(cfg: ISSConfig, range_rms: float = 0.0) -> dict[str, float]:
+def expected_sigmas(cfg: BaseTaskConfig, range_rms: float = 0.0) -> dict[str, float]:
     """Total-RMS residual each channel should show, per the config.
 
     Position combines its constant and range-proportional terms as independent
@@ -183,7 +188,7 @@ def _print_row(label: str, measured: float, target: float, tolerance: float, suf
     return passed
 
 
-def report_split(split: str, stats: dict, cfg: ISSConfig, tolerance: float) -> bool:
+def report_split(split: str, stats: dict, cfg: BaseTaskConfig, tolerance: float) -> bool:
     """Print the measured-vs-expected table. True when the split passes."""
     print(f"\n{split}: {stats['count']} frames, true range RMS {stats['range_rms_m']:.1f} m")
     print(f"  {'channel':<18} {'measured':>12} {'expected':>12} {'rel err':>9}  result")
@@ -217,7 +222,7 @@ def main() -> int:
     env_config = args.run_dir / "env_config.yaml"
     if not env_config.is_file():
         raise SystemExit(f"{env_config} not found; is {args.run_dir} a run directory?")
-    cfg = ISSConfig.from_yaml(env_config)
+    spec, cfg = run_env(args.run_dir)
     splits = args.splits or split_names(args.run_dir)
     if not splits:
         raise SystemExit(f"no splits found under {args.run_dir}")
@@ -229,7 +234,8 @@ def main() -> int:
     ok = True
     for split in splits:
         obs, truth = load_split(args.run_dir, split)
-        ok &= report_split(split, residual_stats(obs, truth), cfg, args.tolerance)
+        stats = residual_stats(observed_views(spec, cfg, obs), state_views(spec, truth))
+        ok &= report_split(split, stats, cfg, args.tolerance)
 
     print("\nPASS" if ok else "\nFAIL")
     return 0 if ok else 1

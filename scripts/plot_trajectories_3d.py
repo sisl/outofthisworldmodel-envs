@@ -19,6 +19,11 @@ terminated by docking in practice.
 
 Paths are drawn from `state_vector`, the true simulator state, falling back to
 `observation_vector` for a run with no truth column; the page title says which.
+Either column is read through the run's own env as the canonical 13D relative
+view (see run_view.py): an env like iss-numerical stores an absolute 21D ECI
+state whose leading elements are an epoch and the chief's orbital radius, and
+drawing those as station-relative coordinates would put every path millions of
+metres from a station drawn at the origin.
 
 Episodes are coloured along one blue ramp by episode index, which separates
 neighbouring paths without implying eight kinds of episode; identity comes from
@@ -38,6 +43,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+
+from run_view import observed_views, run_env, state_views
 
 # Chart surface and ink for the dark page this renders on, and the two ends of
 # the ordinal blue ramp episode colour interpolates along -- the light end is
@@ -124,6 +131,22 @@ def _cell(value) -> np.ndarray:
     if arr.dtype == object:
         arr = np.stack([np.ravel(np.asarray(v)) for v in arr])
     return np.ravel(arr).astype(float)
+
+
+def view_cells(cells: pd.Series, source: str, spec, cfg) -> list[np.ndarray]:
+    """Each cell's canonical 13D relative view, in the cells' own order.
+
+    `spec` and `cfg` come from run_view.run_env; None -- a run directory
+    without configs -- reads the vectors as the 13D-first layout every run
+    predating dataset_card.json was written in, which keeps such directories
+    plottable.
+    """
+    vectors = np.stack([_cell(v) for v in cells])
+    if spec is None:
+        return list(vectors)
+    views = (state_views(spec, vectors) if source == "state_vector"
+             else observed_views(spec, cfg, vectors))
+    return list(views)
 
 
 def dock_positions(frame: pd.DataFrame) -> np.ndarray:
@@ -428,14 +451,18 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
 
     meta = load_run_meta(args.run_dir)
+    spec = cfg = None
+    if (args.run_dir / "env_config.yaml").is_file():
+        spec, cfg = run_env(args.run_dir)
     for split in splits:
         frame, total = load_split(args.run_dir, split, args.max_episodes)
         source = "state_vector" if "state_vector" in frame.columns else "observation_vector"
-        outcomes = classify_outcomes(frame, meta, source)
+        frame["view_vector"] = view_cells(frame[source], source, spec, cfg)
+        outcomes = classify_outcomes(frame, meta, "view_vector")
         groups = policy_groups(frame, meta["split_policy"].get(split))
         for policy, episodes in sorted(groups.items()):
             rows = frame[frame["episode_index"].isin(episodes)]
-            paths = _paths(rows, episodes, source, args.max_points)
+            paths = _paths(rows, episodes, "view_vector", args.max_points)
             docks = dock_positions(rows)
             tally = ", ".join(
                 f"{label} {sum(outcomes.get(ep) == label for ep in episodes)}"

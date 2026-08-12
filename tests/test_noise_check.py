@@ -6,15 +6,23 @@ math it exits non-zero on is covered by the suite rather than only by eye.
 import sys
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
+from astrojax.constants import GM_EARTH
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from check_sensor_noise import expected_sigmas, report_split, residual_stats  # noqa: E402
+from run_view import observed_views, state_views  # noqa: E402
 
-from owm_envs.envs.common.sensing import PRESETS  # noqa: E402
+from owm_envs.envs import ENV_REGISTRY  # noqa: E402
+from owm_envs.envs.common.sensing import PRESETS, apply_sensor_noise  # noqa: E402
 from owm_envs.envs.iss.config import ISSConfig  # noqa: E402
+from owm_envs.envs.iss_numerical.config import NUM_LAYOUT, NumericalConfig  # noqa: E402
+from owm_envs.envs.iss_numerical.dynamics import chaser_state_from_view  # noqa: E402
+from owm_envs.envs.iss_numerical.observe import make_observe  # noqa: E402
 
 
 def _identity_truth(n: int) -> np.ndarray:
@@ -142,6 +150,40 @@ def test_residual_stats_uses_the_first_13_observation_dims():
     stats = residual_stats(obs, truth)
     assert stats["pos_rms_m"] == 0.0
     assert stats["att_rms_rad"] == 0.0
+
+
+def test_residuals_recover_numerical_env_noise_through_the_relative_view():
+    """iss-numerical draws its noise on the raw 21D ECI state and records the
+    RELATIVE view of the measurement; the residual between the recorded view
+    and the true state's view must still carry the configured sigmas, which is
+    the identity the whole check rests on for that env.
+    """
+    spec = ENV_REGISTRY["iss-numerical"]
+    cfg = NumericalConfig(sensor_noise=PRESETS["noncooperative"])
+
+    view = jnp.asarray([60.0, -80.0, 0.0, 0.05, 0.0, 0.0,
+                        1.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0], jnp.float64)
+    sma = 6.795e6
+    chief = jnp.asarray([sma, 0.0, 0.0, 0.0, float(np.sqrt(GM_EARTH / sma)), 0.0],
+                        jnp.float64)
+    epoch = jnp.asarray([2460000.5, 0.0], jnp.float64)
+    state = jnp.concatenate([epoch, chief, chaser_state_from_view(chief, view)])
+    range_m = float(jnp.linalg.norm(view[0:3]))   # 100 m
+
+    n = 20_000
+    keys = jax.random.split(jax.random.PRNGKey(0), n)
+    noisy = jax.vmap(lambda k: apply_sensor_noise(
+        state, k, cfg.sensor_noise, layout=NUM_LAYOUT, range_m=range_m
+    ))(keys)
+    obs = np.asarray(jax.vmap(make_observe(cfg))(noisy))
+    truth = np.tile(np.asarray(state), (n, 1))
+
+    stats = residual_stats(observed_views(spec, cfg, obs), state_views(spec, truth))
+    expected = expected_sigmas(cfg, range_rms=range_m)
+    assert stats["pos_rms_m"] == pytest.approx(expected["pos_rms_m"], rel=0.02)
+    assert stats["vel_rms_m_s"] == pytest.approx(expected["vel_rms_m_s"], rel=0.02)
+    assert stats["att_rms_rad"] == pytest.approx(expected["att_rms_rad"], rel=0.02)
+    assert stats["rate_rms_rad_s"] == pytest.approx(expected["rate_rms_rad_s"], rel=0.02)
 
 
 def test_expected_sigmas_reads_the_preset():
