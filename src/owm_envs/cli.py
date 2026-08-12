@@ -268,8 +268,9 @@ def generate(
     ),
     gpu_index: Optional[int] = typer.Option(
         None,
-        help="GPU adapter index for rendering (default: wgpu's own choice). "
-             "Counts discrete GPUs only. Also settable via OWM_ENVS_GPU_INDEX.",
+        help="GPU this run uses, for the rollout as well as the renderer "
+             "(default: wgpu's own choice, and JAX's own choice). Counts "
+             "discrete GPUs only. Also settable via OWM_ENVS_GPU_INDEX.",
     ),
 ) -> None:
     """Roll out trajectories for every split and write a dataset run directory."""
@@ -594,7 +595,9 @@ def rollout(
     frame_stride: int = typer.Option(
         0, help="Also write every Nth frame as a PNG, for figures. 0 writes none."),
     render_workers: int = typer.Option(1, help="Parallel render worker processes."),
-    gpu_index: Optional[int] = typer.Option(None, help="GPU adapter index for rendering."),
+    gpu_index: Optional[int] = typer.Option(
+        None, help="GPU this run uses, for the rollout as well as the renderer."
+    ),
 ) -> None:
     """Roll out a few episodes and write their video, for review or figures.
 

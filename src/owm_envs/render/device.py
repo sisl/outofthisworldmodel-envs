@@ -82,8 +82,14 @@ def _select(index: int) -> None:
     pygfx_wgpu.select_adapter(_pick_adapter(_enumerate(), index))
 
 
-def _resolve(index: int | None) -> int | None:
-    """The requested GPU: the argument, else the env var, else none at all."""
+def resolve_gpu_index(index: int | None) -> int | None:
+    """The requested GPU: the argument, else the env var, else none at all.
+
+    Public because the renderer is no longer the only consumer: the rollout's
+    JAX device is chosen from the same request, and it has to be chosen from
+    the same rule, or a run that says which GPU to use through the environment
+    rather than the flag would pin only half of itself.
+    """
     if index is not None:
         return index
     raw = os.environ.get(ENV_VAR)
@@ -107,7 +113,7 @@ def select_gpu(index: int | None = None) -> None:
     rendering on the first one.
     """
     global _SELECTED
-    index = _resolve(index)
+    index = resolve_gpu_index(index)
     if index is None or index == _SELECTED:
         return
     _select(index)
@@ -124,7 +130,7 @@ def check_gpu_index(index: int | None = None) -> None:
     `select_adapter` pins the process, and this deliberately does not call it,
     so the workers still get their pick of the card.
     """
-    index = _resolve(index)
+    index = resolve_gpu_index(index)
     if index is None:
         return
     _pick_adapter(_enumerate(), index)

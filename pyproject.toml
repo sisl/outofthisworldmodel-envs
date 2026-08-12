@@ -31,7 +31,7 @@ render = ["pygfx==0.15.2", "pylinalg", "imageio", "pillow", "trimesh"]
 datasets = ["lerobot>=0.4.4", "huggingface-hub>=0.34.2", "plotly>=6.0", "matplotlib>=3.9"]
 
 [project.scripts]
-owm-envs = "owm_envs.cli:app"
+owm-envs = "owm_envs._entry:main"
 
 [build-system]
 requires = ["hatchling"]
