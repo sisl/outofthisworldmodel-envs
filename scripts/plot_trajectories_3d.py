@@ -25,8 +25,8 @@ neighbouring paths without implying eight kinds of episode; identity comes from
 the legend (click an entry to isolate one path) and the hover readout.
 
 Usage:
-    uv run --extra datasets python scripts/plot_trajectories_3d.py RUN_DIR
-    uv run --extra datasets python scripts/plot_trajectories_3d.py RUN_DIR --out logs/traj
+    uv run python scripts/plot_trajectories_3d.py RUN_DIR
+    uv run python scripts/plot_trajectories_3d.py RUN_DIR --out logs/traj
 """
 
 from __future__ import annotations
@@ -412,8 +412,8 @@ def main() -> int:
         import plotly  # noqa: F401
     except ImportError as missing:
         raise SystemExit(
-            f"{missing.name} is required by this script: install the datasets extra "
-            "(uv sync --extra datasets) or run it with 'uv run --extra datasets'."
+            f"{missing.name} is required by this script and ships in the base "
+            "install: rebuild the project environment with 'uv sync'."
         )
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt

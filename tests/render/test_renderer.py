@@ -4,7 +4,7 @@ import numpy as np
 import pygfx as gfx
 import pytest
 
-pytest.importorskip("pygfx", reason="rendering is an optional extra")
+pytest.importorskip("pygfx", reason="pygfx is not installed")
 pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 import jax.numpy as jnp  # noqa: E402

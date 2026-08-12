@@ -81,7 +81,7 @@ def _probe(module: str) -> tuple[str, str]:
         text=True,
     )
     if result.returncode != 0:
-        # An optional extra (the render stack) is not installed here.
+        # The render stack is not importable here.
         return "unimportable", result.stderr
     return result.stdout.strip(), result.stderr
 

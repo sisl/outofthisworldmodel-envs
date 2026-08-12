@@ -1,8 +1,7 @@
 """Renders one episode's stored states into video clips.
 
 Kept separate from `lerobot_writer.py` so that module stays the sole lerobot
-call site: rendering needs `owm_envs.render`, an optional extra of its own,
-so the import here is lazy -- nothing in this package may pull in pygfx at
+call site: rendering needs `owm_envs.render`, so the import here is lazy -- nothing in this package may pull in pygfx at
 module level outside the render package itself. `render.inputs` is the
 exception that proves it: it is numpy and nothing else, which is what lets a
 render worker pose a frame without a GPU stack.

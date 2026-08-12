@@ -25,7 +25,7 @@ tests/test_variant_configs.py fails when the committed files drift from what
 this writes.
 
 Usage:
-    uv run --extra datasets python scripts/write_iss_variant_configs.py
+    uv run python scripts/write_iss_variant_configs.py
 """
 
 from pathlib import Path

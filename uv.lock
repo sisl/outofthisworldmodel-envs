@@ -2563,29 +2563,23 @@ source = { editable = "." }
 dependencies = [
     { name = "astrojax" },
     { name = "gymnasium" },
+    { name = "huggingface-hub" },
+    { name = "imageio" },
     { name = "jax", version = "0.10.2", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version < '3.12'" },
     { name = "jax", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, extra = ["cuda13"], marker = "python_full_version >= '3.12'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "tomli-w" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-datasets = [
-    { name = "huggingface-hub" },
     { name = "lerobot" },
     { name = "matplotlib" },
-    { name = "plotly" },
-]
-render = [
-    { name = "imageio" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "pillow" },
+    { name = "plotly" },
+    { name = "pydantic" },
     { name = "pygfx" },
     { name = "pylinalg" },
+    { name = "pyyaml" },
+    { name = "tomli-w" },
     { name = "trimesh" },
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -2597,23 +2591,22 @@ dev = [
 requires-dist = [
     { name = "astrojax", specifier = ">=0.8.0" },
     { name = "gymnasium", specifier = ">=1.0" },
-    { name = "huggingface-hub", marker = "extra == 'datasets'", specifier = ">=0.34.2" },
-    { name = "imageio", marker = "extra == 'render'" },
+    { name = "huggingface-hub", specifier = ">=0.34.2" },
+    { name = "imageio" },
     { name = "jax", extras = ["cuda13"], specifier = ">=0.4.30" },
-    { name = "lerobot", marker = "extra == 'datasets'", specifier = ">=0.4.4" },
-    { name = "matplotlib", marker = "extra == 'datasets'", specifier = ">=3.9" },
+    { name = "lerobot", specifier = ">=0.4.4" },
+    { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "pillow", marker = "extra == 'render'" },
-    { name = "plotly", marker = "extra == 'datasets'", specifier = ">=6.0" },
+    { name = "pillow" },
+    { name = "plotly", specifier = ">=6.0" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pygfx", marker = "extra == 'render'", specifier = "==0.15.2" },
-    { name = "pylinalg", marker = "extra == 'render'" },
+    { name = "pygfx", specifier = "==0.15.2" },
+    { name = "pylinalg" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "tomli-w", specifier = ">=1.0" },
-    { name = "trimesh", marker = "extra == 'render'" },
+    { name = "trimesh" },
     { name = "typer", specifier = ">=0.12" },
 ]
-provides-extras = ["render", "datasets"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.0" }]

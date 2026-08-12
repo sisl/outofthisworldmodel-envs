@@ -218,7 +218,8 @@ class HCWEnv(PortGoalMixin, gym.Env):
             from ...render.renderer import ISSRenderer
         except ImportError as exc:
             raise ImportError(
-                "Rendering requires the optional 'render' extra: pip install owm-envs[render]"
+                "Rendering requires the render stack, which ships in the base install: "
+                "rebuild the environment with 'uv sync'."
             ) from exc
 
         render_cfg = RenderConfig(**self.cfg.render) if self.cfg.render else RenderConfig()

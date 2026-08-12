@@ -15,7 +15,7 @@ sphere at every port interface, a sphere at the active goal, and a shaft from
 the goal down the corridor to its interface. Per-pose PNGs, a contact sheet and
 a TOML block for `DockConfig` are written to `--out`.
 
-    uv run --extra render scripts/preview_dock_poses.py --out logs/dock_preview
+    uv run scripts/preview_dock_poses.py --out logs/dock_preview
 """
 
 from __future__ import annotations

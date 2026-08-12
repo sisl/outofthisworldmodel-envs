@@ -3,7 +3,7 @@ import pytest
 
 from owm_envs.drivers.types import TrajectoryBatch
 
-pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+pytest.importorskip("lerobot", reason="lerobot is not installed")
 
 from owm_envs.datasets.lerobot_writer import write_lerobot_split  # noqa: E402
 from owm_envs.datasets.video import COMPOSITE_KEY, FPV_KEY  # noqa: E402

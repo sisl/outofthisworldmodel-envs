@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-pytest.importorskip("pygfx", reason="rendering is an optional extra")
+pytest.importorskip("pygfx", reason="pygfx is not installed")
 pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 from owm_envs.render.atmosphere import AtmosphereMaterial  # noqa: E402
