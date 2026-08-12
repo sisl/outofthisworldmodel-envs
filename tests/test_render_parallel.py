@@ -15,7 +15,7 @@ from owm_envs.drivers.types import TrajectoryBatch
 
 from .test_true_state import _scan_batch
 
-pytest.importorskip("pygfx", reason="rendering is an optional extra")
+pytest.importorskip("pygfx", reason="pygfx is not installed")
 
 from owm_envs.datasets.video import (  # noqa: E402
     FPV_KEY,
@@ -315,7 +315,7 @@ def test_a_worker_that_cannot_start_fails_instead_of_hanging():
 
 
 def _writer():
-    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+    pytest.importorskip("lerobot", reason="lerobot is not installed")
     from owm_envs.datasets.lerobot_writer import write_lerobot_split
 
     return write_lerobot_split

@@ -17,8 +17,8 @@ and how `state_vector` maps to a view) is resolved from the run's own
 dataset_card.json; see run_view.py.
 
 Usage:
-    uv run --extra datasets python scripts/check_sensor_noise.py RUN_DIR
-    uv run --extra datasets python scripts/check_sensor_noise.py RUN_DIR --tolerance 0.05
+    uv run python scripts/check_sensor_noise.py RUN_DIR
+    uv run python scripts/check_sensor_noise.py RUN_DIR --tolerance 0.05
 """
 
 from __future__ import annotations

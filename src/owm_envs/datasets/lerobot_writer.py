@@ -15,8 +15,8 @@ takes no arguments and means the same thing in every lerobot the dependency
 floor admits (checked against 0.4.4, 0.5.1 and 0.6.1), so it needs no
 version gate.
 
-lerobot is an optional extra. The import is function-local so the rest of the
-package imports and tests without it.
+The lerobot import is function-local, so importing this module costs nothing
+until a split is actually written.
 
 Schema: `observation_vector` (float32, obs_dim), `state_vector` (float64,
 state_dim) and `action` (float32, act_dim) carry the trajectory itself. Six more
@@ -107,7 +107,7 @@ so a 500k-frame split holds one episode of video in RAM rather than the
 The feature names themselves are the caller's: this file writes what it is
 given rather than knowing which camera produced it. `datasets/video.py` owns
 that mapping, and rendering lives there too -- kept out of this file because
-rendering needs `owm_envs.render` (an optional extra of its own) and this
+rendering needs `owm_envs.render`, and this
 file's only job is staying the sole lerobot call site.
 """
 

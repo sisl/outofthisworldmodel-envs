@@ -459,8 +459,8 @@ def test_unknown_policy_is_rejected(tmp_path):
 
 
 def test_generate_gives_a_legible_error_when_lerobot_is_missing(tmp_path, monkeypatch):
-    # --lerobot defaults to True, but lerobot is declared only in the
-    # optional 'datasets' extra. A base install must be told why it isn't
+    # --lerobot defaults to True. An environment without lerobot must be
+    # told why it isn't
     # getting a dataset, not fail with a bare ModuleNotFoundError deep in
     # write_lerobot_split, and not silently fall back to metadata only.
     real_import = builtins.__import__

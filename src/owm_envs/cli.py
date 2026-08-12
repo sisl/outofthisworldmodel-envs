@@ -397,17 +397,17 @@ def generate(
         raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
 
     if lerobot:
-        # lerobot is declared only in the optional 'datasets' extra, so a
-        # base install hits ModuleNotFoundError deep inside write_lerobot_split.
-        # Check up front, before spending time on a rollout, and say what a
-        # user who asked for a dataset needs to do to actually get one,
-        # rather than quietly writing metadata only.
+        # An environment missing lerobot otherwise hits ModuleNotFoundError deep
+        # inside write_lerobot_split. Check up front, before spending time on a
+        # rollout, and say what a user who asked for a dataset needs to do to
+        # actually get one, rather than quietly writing metadata only.
         try:
             import lerobot  # noqa: F401
         except ModuleNotFoundError as exc:
             raise typer.BadParameter(
-                "lerobot is not installed; install the 'datasets' extra "
-                "(pip install 'owm-envs[datasets]') or pass --no-lerobot"
+                "lerobot is not installed; the datasets stack ships in the base "
+                "install, so rebuild the environment with 'uv sync' -- or pass "
+                "--no-lerobot"
             ) from exc
 
     if render:

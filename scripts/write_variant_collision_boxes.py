@@ -35,7 +35,7 @@ points, or the constants below; tests/test_variant_collision_boxes.py fails
 when the committed hulls drift from what this writes.
 
 Usage:
-    uv run --extra datasets python scripts/write_variant_collision_boxes.py
+    uv run python scripts/write_variant_collision_boxes.py
 """
 
 from pathlib import Path

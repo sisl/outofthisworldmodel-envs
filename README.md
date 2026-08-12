@@ -28,8 +28,8 @@ observations; omit it to leave the config's own setting in place.
 
 Two checks on a generated run before it is published:
 
-    uv run --extra datasets python scripts/check_sensor_noise.py logs/run1
-    uv run --extra datasets python scripts/plot_trajectories_3d.py logs/run1 --out logs/run1_traj
+    uv run python scripts/check_sensor_noise.py logs/run1
+    uv run python scripts/plot_trajectories_3d.py logs/run1 --out logs/run1_traj
 
 `check_sensor_noise.py` measures the residual between the measured relative
 view in each frame's `observation_vector` and the view of its true

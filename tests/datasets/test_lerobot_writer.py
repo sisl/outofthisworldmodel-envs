@@ -3,7 +3,7 @@ import pytest
 
 from owm_envs.drivers.types import TrajectoryBatch
 
-lerobot = pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+lerobot = pytest.importorskip("lerobot", reason="lerobot is not installed")
 
 from owm_envs.datasets.lerobot_writer import write_lerobot_split  # noqa: E402
 

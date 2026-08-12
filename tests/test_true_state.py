@@ -214,7 +214,7 @@ def test_scan_transitions_mode_records_truth():
 
 
 def test_writer_emits_state_vector(tmp_path):
-    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+    pytest.importorskip("lerobot", reason="lerobot is not installed")
     import pandas as pd
 
     from owm_envs.datasets.lerobot_writer import write_lerobot_split
@@ -234,7 +234,7 @@ def test_writer_emits_state_vector(tmp_path):
 def test_writer_omits_state_vector_for_a_legacy_batch(tmp_path):
     """A batch predating the truth channel must still write, with no column
     of NaN stand-ins pretending to be a state."""
-    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+    pytest.importorskip("lerobot", reason="lerobot is not installed")
     import pandas as pd
 
     from owm_envs.datasets.lerobot_writer import write_lerobot_split
@@ -296,7 +296,7 @@ def test_video_poses_truth_not_the_noisy_observation():
 
 
 def test_video_renders_truth_for_goal_error_batch():
-    pytest.importorskip("pygfx", reason="rendering is an optional extra")
+    pytest.importorskip("pygfx", reason="pygfx is not installed")
     pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
     from owm_envs.datasets.video import render_episode_frames

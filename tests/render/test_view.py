@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-pytest.importorskip("pygfx", reason="rendering is an optional extra")
+pytest.importorskip("pygfx", reason="pygfx is not installed")
 
 from owm_envs.render.view import CameraView, make_camera  # noqa: E402
 

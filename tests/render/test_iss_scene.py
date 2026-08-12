@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 import pytest
 
-pytest.importorskip("pygfx", reason="rendering is an optional extra")
+pytest.importorskip("pygfx", reason="pygfx is not installed")
 pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
 import imageio.v3 as iio  # noqa: E402  -- ships with the render extra, like pygfx

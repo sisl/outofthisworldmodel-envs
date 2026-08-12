@@ -7,7 +7,7 @@ into `resources/earth/maps/`, both the gitignored full-resolution maps and the
 committed fallbacks.
 
 Usage:
-    uv run --extra render python scripts/downsample_earth_maps.py
+    uv run python scripts/downsample_earth_maps.py
 """
 
 from __future__ import annotations

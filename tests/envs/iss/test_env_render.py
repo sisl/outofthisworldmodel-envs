@@ -31,7 +31,7 @@ class TestWithRenderExtra:
 
     @pytest.fixture(autouse=True)
     def _require_render(self):
-        pytest.importorskip("pygfx", reason="rendering is an optional extra")
+        pytest.importorskip("pygfx", reason="pygfx is not installed")
         pytest.importorskip("trimesh", reason="GLB loading needs trimesh")
 
     def test_render_returns_an_rgb_frame(self):

@@ -4,7 +4,7 @@ import weakref
 import numpy as np
 import pytest
 
-pytest.importorskip("pygfx", reason="rendering is an optional extra")
+pytest.importorskip("pygfx", reason="pygfx is not installed")
 
 from owm_envs.datasets.video import (  # noqa: E402
     COMPOSITE_KEY,
@@ -404,7 +404,7 @@ def test_a_failing_debug_clip_does_not_abort_the_dataset_write(tmp_path, monkeyp
     the first failure: one view failing says nothing about the other views of
     the same episode, which are separate files, nor about later episodes.
     """
-    pytest.importorskip("lerobot", reason="lerobot is an optional extra")
+    pytest.importorskip("lerobot", reason="lerobot is not installed")
 
     import imageio.v3 as iio
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
