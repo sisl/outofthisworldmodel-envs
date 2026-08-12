@@ -20,9 +20,11 @@ from pydantic import ValidationError
 
 from owm_envs.datasets.hub import (
     _dataset_card,
+    _env_version,
     _run_env,
     _segments,
     _state_doc,
+    _transitions_tag,
     dataset_name,
     hub_namespace,
     push_preview,
@@ -150,6 +152,22 @@ def _column(card: str, name: str) -> str:
     another."""
     (row,) = [line for line in card.splitlines() if line.startswith(f"| `{name}` |")]
     return row
+
+
+def test_transitions_tag_rounds_to_a_compact_unit():
+    assert _transitions_tag(500_000) == "500k"
+    assert _transitions_tag(2_000_000) == "2m"
+    assert _transitions_tag(500_012) == "500k"  # actual counts floor to the thousand
+    assert _transitions_tag(12_345) == "12k"
+    assert _transitions_tag(630) == "630"
+    assert _transitions_tag(1_500_000) == "1500k"  # only whole millions earn the m
+
+
+def test_env_version_comes_from_the_gym_id():
+    assert _env_version("ISS-Docking-v1") == "v1"
+    assert _env_version("ISS-HCW-Docking-v12") == "v12"
+    with pytest.raises(ValueError, match="version"):
+        _env_version("ISS-Docking")
 
 
 def test_names_cover_the_matrix():

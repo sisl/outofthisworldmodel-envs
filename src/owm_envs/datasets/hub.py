@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -361,6 +362,31 @@ def _noise_tag(cfg: BaseTaskConfig) -> str:
         if cfg.sensor_noise == preset:
             return _NOISE_TAGS[preset_name]
     return "custom"
+
+
+def _transitions_tag(n: int) -> str:
+    """`n` transitions as a compact size tag: 500_000 -> 500k, 2_000_000 -> 2m.
+
+    A count that divides into neither unit floors to the thousand -- the tag
+    states the dataset's scale, not its exact row count, which the card and
+    the summary both carry in full.
+    """
+    if n >= 1_000_000 and n % 1_000_000 == 0:
+        return f"{n // 1_000_000}m"
+    if n >= 1_000:
+        return f"{n // 1_000}k"
+    return str(n)
+
+
+def _env_version(gym_id: str) -> str:
+    """The env's version tag, read off its gym id's `-v<N>` suffix."""
+    match = re.search(r"-v(\d+)$", gym_id)
+    if match is None:
+        raise ValueError(
+            f"gym id {gym_id!r} carries no -v<N> version suffix, so the published "
+            "dataset name cannot state which version of the environment made it"
+        )
+    return f"v{match.group(1)}"
 
 
 def dataset_name(env_cfg: BaseTaskConfig, env: str) -> str:
