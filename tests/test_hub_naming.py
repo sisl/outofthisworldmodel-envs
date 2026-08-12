@@ -20,9 +20,11 @@ from pydantic import ValidationError
 
 from owm_envs.datasets.hub import (
     _dataset_card,
+    _env_version,
     _run_env,
     _segments,
     _state_doc,
+    _transitions_tag,
     dataset_name,
     hub_namespace,
     push_preview,
@@ -47,12 +49,12 @@ ISS = CONFIGS / "iss"
 # Keyed by the file's stem under configs/iss/env/, which no longer repeats the
 # env: the directory carries it.
 VARIANT_NAMES = {
-    "nonoise_nogoal": "owm-iss-nonoise-nogoal-dt50ms",
-    "nonoise_goal": "owm-iss-nonoise-goal-dt50ms",
-    "coop_nogoal": "owm-iss-coop-nogoal-dt50ms",
-    "coop_goal": "owm-iss-coop-goal-dt50ms",
-    "noncoop_nogoal": "owm-iss-noncoop-nogoal-dt50ms",
-    "noncoop_goal": "owm-iss-noncoop-goal-dt50ms",
+    "nonoise_nogoal": "owm-iss-v1-nonoise-nogoal-dt50ms-500k",
+    "nonoise_goal": "owm-iss-v1-nonoise-goal-dt50ms-500k",
+    "coop_nogoal": "owm-iss-v1-coop-nogoal-dt50ms-500k",
+    "coop_goal": "owm-iss-v1-coop-goal-dt50ms-500k",
+    "noncoop_nogoal": "owm-iss-v1-noncoop-nogoal-dt50ms-500k",
+    "noncoop_goal": "owm-iss-v1-noncoop-goal-dt50ms-500k",
 }
 
 COMMIT = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
@@ -139,7 +141,7 @@ def _write_run(
 def _card(run: Path) -> str:
     env_spec, env_cfg, config_parsed = _run_env(run)
     return _dataset_card(
-        dataset_name(env_cfg, env=env_spec.name), run, env_spec, env_cfg, config_parsed
+        push_preview(run)[0], run, env_spec, env_cfg, config_parsed
     )
 
 
@@ -152,42 +154,71 @@ def _column(card: str, name: str) -> str:
     return row
 
 
+def test_transitions_tag_rounds_to_a_compact_unit():
+    assert _transitions_tag(500_000) == "500k"
+    assert _transitions_tag(2_000_000) == "2m"
+    assert _transitions_tag(500_012) == "500k"  # actual counts floor to the thousand
+    assert _transitions_tag(12_345) == "12k"
+    assert _transitions_tag(630) == "630"
+    assert _transitions_tag(1_500_000) == "1500k"  # only whole millions earn the m
+
+
+def test_env_version_comes_from_the_gym_id():
+    assert _env_version("ISS-Docking-v1") == "v1"
+    assert _env_version("ISS-HCW-Docking-v12") == "v12"
+    with pytest.raises(ValueError, match="version"):
+        _env_version("ISS-Docking")
+
+
 def test_names_cover_the_matrix():
-    assert dataset_name(ISSConfig(), env="iss") == "owm-iss-nonoise-nogoal-dt50ms"
+    assert dataset_name(
+        ISSConfig(), env="iss", version="v1", transitions=500_000
+    ) == "owm-iss-v1-nonoise-nogoal-dt50ms-500k"
     assert dataset_name(
         ISSConfig(sensor_noise=PRESETS["cooperative"],
                   observation=ObservationConfig(goal_error=True)),
-        env="iss",
-    ) == "owm-iss-coop-goal-dt50ms"
+        env="iss", version="v1", transitions=500_000,
+    ) == "owm-iss-v1-coop-goal-dt50ms-500k"
     assert dataset_name(
-        ISSConfig(sensor_noise=PRESETS["noncooperative"]), env="iss"
-    ) == "owm-iss-noncoop-nogoal-dt50ms"
+        ISSConfig(sensor_noise=PRESETS["noncooperative"]),
+        env="iss", version="v1", transitions=500_000,
+    ) == "owm-iss-v1-noncoop-nogoal-dt50ms-500k"
 
 
 def test_custom_noise_is_named_custom():
     cfg = ISSConfig(sensor_noise=SensorNoiseConfig(enabled=True, sigma_pos_m=9.9))
-    assert dataset_name(cfg, env="iss") == "owm-iss-custom-nogoal-dt50ms"
+    assert dataset_name(
+        cfg, env="iss", version="v1", transitions=500_000
+    ) == "owm-iss-v1-custom-nogoal-dt50ms-500k"
 
 
 def test_dt_tag_scales():
-    assert dataset_name(ISSConfig(dt=0.1), env="iss") == "owm-iss-nonoise-nogoal-dt100ms"
+    assert dataset_name(
+        ISSConfig(dt=0.1), env="iss", version="v1", transitions=500_000
+    ) == "owm-iss-v1-nonoise-nogoal-dt100ms-500k"
 
 
 def test_the_env_name_is_a_component_not_a_prefix():
-    assert dataset_name(ISSConfig(), env="lunar") == "owm-lunar-nonoise-nogoal-dt50ms"
+    assert dataset_name(
+        ISSConfig(), env="lunar", version="v1", transitions=500_000
+    ) == "owm-lunar-v1-nonoise-nogoal-dt50ms-500k"
 
 
 @pytest.mark.parametrize("config_name, expected", sorted(VARIANT_NAMES.items()))
 def test_each_committed_variant_names_its_published_dataset(config_name, expected):
     assert dataset_name(
-        ISSConfig.from_toml(ISS / "env" / f"{config_name}.toml"), env="iss"
+        ISSConfig.from_toml(ISS / "env" / f"{config_name}.toml"),
+        env="iss", version="v1", transitions=500_000,
     ) == expected
 
 
 def test_the_six_variants_get_six_distinct_names():
     # Two variants collapsing onto one name would publish one over the other.
     names = {
-        dataset_name(ISSConfig.from_toml(ISS / "env" / f"{c}.toml"), env="iss")
+        dataset_name(
+            ISSConfig.from_toml(ISS / "env" / f"{c}.toml"),
+            env="iss", version="v1", transitions=500_000,
+        )
         for c in VARIANT_NAMES
     }
     assert len(names) == len(VARIANT_NAMES)
@@ -207,7 +238,7 @@ def test_a_run_is_named_and_parsed_through_the_env_that_generated_it(tmp_path):
     assert env_spec.name == "iss-hcw"
     assert isinstance(env_cfg, HCWConfig)
     assert config_parsed
-    assert push_preview(run)[0] == "owm-iss-hcw-coop-nogoal-dt50ms"
+    assert push_preview(run)[0] == "owm-iss-hcw-v1-coop-nogoal-dt50ms-500k"
     # The card's own load example names the split the writer actually wrote.
     assert 'LeRobotDataset("iss-hcw/train"' in _card(run)
 
@@ -226,7 +257,26 @@ def test_a_run_the_registry_cannot_place_publishes_as_iss(tmp_path, recorded_env
         card["env"] = recorded_env
     (run / "dataset_card.json").write_text(json.dumps(card))
 
-    assert push_preview(run)[0] == "owm-iss-noncoop-goal-dt50ms"
+    assert push_preview(run)[0] == "owm-iss-v1-noncoop-goal-dt50ms-500k"
+
+
+def test_an_empty_name_falls_back_to_the_derived_one(tmp_path):
+    # A script interpolating an unset shell variable into --name must not
+    # target the malformed repo id `{namespace}/`.
+    run = _write_run(tmp_path)
+    assert push_preview(run, name="")[0] == "owm-iss-v1-noncoop-goal-dt50ms-500k"
+
+
+def test_an_episode_sized_run_is_named_by_its_actual_transitions(tmp_path):
+    # A split sized by num_episodes has no target; the realized count is the
+    # only size the run has.
+    run = _write_run(tmp_path)
+    card = json.loads((run / "dataset_card.json").read_text())
+    card["splits"]["train"]["min_transitions"] = None
+    card["splits"]["train"]["num_episodes_requested"] = 96
+    (run / "dataset_card.json").write_text(json.dumps(card))
+
+    assert push_preview(run)[0].endswith("-500k")  # 500_012 floors to 500k
 
 
 def test_a_card_naming_an_unknown_env_says_so_and_still_loads_its_own_split(tmp_path):
@@ -241,7 +291,7 @@ def test_a_card_naming_an_unknown_env_says_so_and_still_loads_its_own_split(tmp_
     assert "generated by the `iss-future` environment" in card
     assert "does not register" in card
     assert 'LeRobotDataset("iss-future/train"' in card
-    assert "# owm-iss-noncoop-goal-dt50ms" in card
+    assert "# owm-iss-v1-noncoop-goal-dt50ms-500k" in card
 
 
 def test_an_unknown_envs_own_config_fields_do_not_crash_the_publish_path(tmp_path):
@@ -261,7 +311,7 @@ def test_an_unknown_envs_own_config_fields_do_not_crash_the_publish_path(tmp_pat
     # keeps the repo name the run's own rather than a default's.
     assert env_cfg.dt == 0.1
     assert env_cfg.sensor_noise == PRESETS["cooperative"]
-    assert push_preview(run)[0] == "owm-iss-coop-nogoal-dt100ms"
+    assert push_preview(run)[0] == "owm-iss-v1-coop-nogoal-dt100ms-500k"
 
     card = _card(run)
     assert "generated by the `iss-future` environment" in card
@@ -656,7 +706,7 @@ def test_push_creates_the_repo_then_uploads_a_carded_folder(tmp_path, api):
     run = _write_run(tmp_path)
     repo_id = push_run(run)
 
-    assert repo_id == "acct/owm-iss-noncoop-goal-dt50ms"
+    assert repo_id == "acct/owm-iss-v1-noncoop-goal-dt50ms-500k"
     # The repo has to exist before anything is uploaded into it, and the card
     # has to be on disk before the upload or it is not in that upload.
     assert api.calls == ["whoami", "create_repo", "upload_folder"]
@@ -691,7 +741,7 @@ def test_push_applies_an_asked_for_visibility_before_uploading(tmp_path, api, pr
     # setting has to be applied on its own -- and applied before the data
     # lands, or a repo asked to be private is briefly world-readable.
     assert api.calls == ["whoami", "create_repo", "update_repo_settings", "upload_folder"]
-    assert api.settings_kwargs == {"repo_id": "acct/owm-iss-noncoop-goal-dt50ms",
+    assert api.settings_kwargs == {"repo_id": "acct/owm-iss-v1-noncoop-goal-dt50ms-500k",
                                    "repo_type": "dataset", "private": private}
 
 
@@ -708,7 +758,7 @@ def test_push_preview_names_the_repo_and_the_counts_a_push_would_replace(tmp_pat
     # it happens; asking must itself touch nothing, the Hub included -- a run
     # that cannot be read has to be distinguishable from a login that failed.
     repo_name, counts = push_preview(_write_run(tmp_path))
-    assert repo_name == "owm-iss-noncoop-goal-dt50ms"
+    assert repo_name == "owm-iss-v1-noncoop-goal-dt50ms-500k"
     assert counts["train"]["episodes"] == 96
     assert counts["val"]["transitions"] == 50_004
     assert api.calls == []

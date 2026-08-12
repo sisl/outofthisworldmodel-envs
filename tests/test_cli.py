@@ -1173,10 +1173,11 @@ def test_push_reports_the_dataset_url(tmp_path, recorded_push):
     )
 
     assert result.exit_code == 0, result.output
-    assert "https://huggingface.co/datasets/acct/owm-iss-coop-nogoal-dt50ms" in result.output
+    assert ("https://huggingface.co/datasets/acct/owm-iss-v1-coop-nogoal-dt50ms-500k"
+            in result.output)
     # The confirmed repo is passed back explicitly, so the upload cannot land
     # anywhere other than the target the confirmation named.
-    assert recorded_push == {"run_dir": run, "name": "owm-iss-coop-nogoal-dt50ms",
+    assert recorded_push == {"run_dir": run, "name": "owm-iss-v1-coop-nogoal-dt50ms-500k",
                              "namespace": "acct", "private": True}
 
     # Neither flag reaches push_run as None, not as False: "public" is a
@@ -1190,21 +1191,75 @@ def test_push_reports_the_dataset_url(tmp_path, recorded_push):
 def test_push_names_the_repo_and_the_split_sizes_before_confirming(
     tmp_path, monkeypatch, recorded_push
 ):
-    # The repo name is derived from the env config alone, so a trial run and
-    # the production run generated from the same variant TOML target the same
-    # repo -- and the upload mirrors, deleting what is there. What is about to
-    # be replaced, and by how much data, has to be on screen before the answer.
+    # The repo name is derived from the run's own config and target size, so
+    # a regenerated run of the same recipe targets the same repo -- and the
+    # upload mirrors, deleting what is there. What is about to be replaced,
+    # and by how much data, has to be on screen before the answer.
     monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
     result = runner.invoke(
-        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"], input="y\n"
+        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"],
+        input="\ny\n",
     )
     assert result.exit_code == 0, result.output
     prompt = result.output.split("Replace")[0]
-    assert "acct/owm-iss-coop-nogoal-dt50ms" in prompt
+    assert "acct/owm-iss-v1-coop-nogoal-dt50ms-500k" in prompt
     assert "train: 96 episodes, 500012 transitions" in prompt
     assert "val: 11 episodes, 50004 transitions" in prompt
     assert "MIRRORS" in prompt
-    assert recorded_push["name"] == "owm-iss-coop-nogoal-dt50ms"
+    assert recorded_push["name"] == "owm-iss-v1-coop-nogoal-dt50ms-500k"
+
+
+@pytest.fixture
+def hub_account(monkeypatch):
+    """A Hub whose token resolves to the account `acct`; nothing else works."""
+    import huggingface_hub
+
+    class _Api:
+        def whoami(self):
+            return {"name": "acct"}
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Api())
+
+
+def test_push_prompts_for_the_owner_and_the_name(
+    tmp_path, monkeypatch, recorded_push, hub_account
+):
+    # Enter keeps the token account and the derived name; typing redirects
+    # the push without memorizing flags.
+    monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
+    run = _pushable_run(tmp_path)
+
+    result = runner.invoke(app, ["push", str(run)], input="sislaboratory\n\ny\n")
+    assert result.exit_code == 0, result.output
+    assert "Push to owner [acct]:" in result.output
+    assert recorded_push["namespace"] == "sislaboratory"
+    assert recorded_push["name"] == "owm-iss-v1-coop-nogoal-dt50ms-500k"
+
+    result = runner.invoke(app, ["push", str(run)], input="\ncustom-name\ny\n")
+    assert result.exit_code == 0, result.output
+    assert recorded_push["namespace"] == "acct"
+    assert recorded_push["name"] == "custom-name"
+
+
+def test_push_flags_and_yes_suppress_the_prompts(
+    tmp_path, monkeypatch, recorded_push, hub_account
+):
+    monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
+    run = _pushable_run(tmp_path)
+
+    result = runner.invoke(
+        app, ["push", str(run), "--namespace", "org", "--name", "trial"], input="y\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "Push to owner" not in result.output
+    assert "Dataset name" not in result.output
+    assert recorded_push == {"run_dir": run, "name": "trial", "namespace": "org",
+                             "private": None}
+
+    result = runner.invoke(app, ["push", str(run), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Push to owner" not in result.output
+    assert recorded_push["namespace"] == "acct"
 
 
 def test_push_uploads_nothing_when_the_prompt_is_declined(
@@ -1212,7 +1267,8 @@ def test_push_uploads_nothing_when_the_prompt_is_declined(
 ):
     monkeypatch.setattr("owm_envs.cli._stdin_is_interactive", lambda: True)
     result = runner.invoke(
-        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"], input="n\n"
+        app, ["push", str(_pushable_run(tmp_path)), "--namespace", "acct"],
+        input="\nn\n",
     )
     assert result.exit_code != 0
     assert recorded_push == {}

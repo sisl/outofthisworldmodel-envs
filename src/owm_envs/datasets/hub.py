@@ -1,11 +1,14 @@
 """Publish a finished run directory to the HuggingFace Hub as one dataset repo.
 
-The repo name is derived from the run's OWN as-run config rather than taken
+The repo name is derived from the run's OWN artifacts rather than taken
 from a flag, so it cannot drift from the data it describes:
-`owm-{env}-{noise}-{goal}-dt{ms}ms`. The noise tag is the name of the PRESETS
-entry the config's sensor_noise equals, or "custom" when it equals none of
-them -- a hand-tuned sensor model therefore publishes under a name that says
-so rather than borrowing a preset's.
+`owm-{env}-{version}-{noise}-{goal}-dt{ms}ms-{size}`. The version is the
+env's gym id suffix, and the size the train split's targeted transition
+count (or, for a run sized by episodes, the count it actually recorded).
+The noise tag is the name of the PRESETS entry the config's sensor_noise
+equals, or "custom" when it equals none of them -- a hand-tuned sensor
+model therefore publishes under a name that says so rather than borrowing
+a preset's.
 
 The card is built the same way, out of the artifacts the run itself left:
 `summary.json` for the split sizes, `dataset_card.json` for the per-split
@@ -33,6 +36,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -363,15 +367,49 @@ def _noise_tag(cfg: BaseTaskConfig) -> str:
     return "custom"
 
 
-def dataset_name(env_cfg: BaseTaskConfig, env: str) -> str:
+def _transitions_tag(n: int) -> str:
+    """`n` transitions as a compact size tag: 500_000 -> 500k, 2_000_000 -> 2m.
+
+    A count that divides into neither unit floors to the thousand -- the tag
+    states the dataset's scale, not its exact row count, which the card and
+    the summary both carry in full.
+    """
+    if n >= 1_000_000 and n % 1_000_000 == 0:
+        return f"{n // 1_000_000}m"
+    if n >= 1_000:
+        return f"{n // 1_000}k"
+    return str(n)
+
+
+def _env_version(gym_id: str) -> str:
+    """The env's version tag, read off its gym id's `-v<N>` suffix."""
+    match = re.search(r"-v(\d+)$", gym_id)
+    if match is None:
+        raise ValueError(
+            f"gym id {gym_id!r} carries no -v<N> version suffix, so the published "
+            "dataset name cannot state which version of the environment made it"
+        )
+    return f"v{match.group(1)}"
+
+
+def dataset_name(
+    env_cfg: BaseTaskConfig, env: str, version: str, transitions: int
+) -> str:
     """The published repo name for a run of `env` made under `env_cfg`.
 
     `env` is required rather than defaulting to iss: the default was the last
     remaining path to an `owm-iss-*` name for a run that was not iss at all.
+    `version` is the env's own version tag (`_env_version`), and `transitions`
+    the run's targeted transition count, so two runs of the same variant at
+    different scales -- or under two versions of the env -- publish as two
+    datasets rather than one over the other.
     """
     goal = "goal" if env_cfg.observation.goal_error else "nogoal"
     dt_ms = round(env_cfg.dt * 1000)
-    return f"owm-{env}-{_noise_tag(env_cfg)}-{goal}-dt{dt_ms}ms"
+    return (
+        f"owm-{env}-{version}-{_noise_tag(env_cfg)}-{goal}"
+        f"-dt{dt_ms}ms-{_transitions_tag(transitions)}"
+    )
 
 
 def _unknown_env_note(env: str, config_parsed: bool) -> str:
@@ -787,6 +825,29 @@ def _summary(run_dir: Path) -> dict:
     return summary
 
 
+def _target_transitions(run_dir: Path, counts: dict) -> int:
+    """The transition count the run's name states its size with.
+
+    The train split's configured target (`min_transitions`, which the card
+    records) rather than the count it happened to land on, so a regenerated
+    run of the same recipe keeps its name. A run sized by episodes has no
+    target, and falls back to the transitions the train split actually
+    recorded -- the only size such a run has.
+    """
+    card = _read_json(run_dir / "dataset_card.json")
+    splits = card.get("splits") if isinstance(card, dict) else None
+    target = ((splits or {}).get("train") or {}).get("min_transitions")
+    if target is not None:
+        return target
+    try:
+        return counts["train"]["transitions"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"{run_dir} has no train split in its card or its summary, so the "
+            "dataset name cannot state a size; pass --name explicitly"
+        ) from exc
+
+
 def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dict]:
     """What a push of `run_dir` would write: its repo name and its split counts.
 
@@ -801,7 +862,18 @@ def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dic
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
     env_spec, env_cfg, _ = _run_env(run_dir)
-    return name or dataset_name(env_cfg, env=env_spec.name), counts
+    # Truthiness, not `is not None`: an empty --name (a script interpolating
+    # an unset variable) must fall back to the derived name rather than
+    # target the malformed repo id `{namespace}/`.
+    if name:
+        return name, counts
+    derived = dataset_name(
+        env_cfg,
+        env=env_spec.name,
+        version=_env_version(env_spec.gym_id),
+        transitions=_target_transitions(run_dir, counts),
+    )
+    return derived, counts
 
 
 def hub_namespace(namespace: str | None = None) -> str:
