@@ -227,7 +227,17 @@ def test_a_goal_augmented_hcw_batch_is_posed_at_its_own_state_width(monkeypatch)
 
 def test_parallel_matches_sequential():
     """Needs a real GPU renderer: the point is that a worker process renders
-    the same episode to the same bytes as the in-process path."""
+    the same episode as the in-process path.
+
+    To within one unit per channel, not to the byte. A worker forces JAX onto
+    the CPU because it replays stored states and steps no dynamics, while the
+    process that renders in-process holds whichever backend it started with;
+    the two lower the posing arithmetic differently, and a pose that differs
+    in its last bits moves a lit edge across a quantisation boundary here and
+    there. What the tolerance still pins down is that both paths draw the same
+    scene from the same states: a worker posing from the wrong row, or at the
+    wrong layout, is off by far more than a unit.
+    """
     batch = _scan_batch("off", goal_error=False)
     from owm_envs.render.iss_scene import RenderConfig
 
@@ -240,7 +250,14 @@ def test_parallel_matches_sequential():
     for seq, par in zip(sequential, parallel):
         assert set(seq) == set(par)
         for key in seq:
-            np.testing.assert_array_equal(seq[key], par[key])
+            # Signed, so a worker frame darker than the in-process one does
+            # not wrap around to 255 and pass.
+            drift = np.abs(seq[key].astype(np.int16) - par[key].astype(np.int16))
+            assert drift.max() <= 1, (
+                f"{key}: {int((drift > 1).sum())} of {drift.size} channels differ "
+                f"by more than one unit (worst {int(drift.max())}), which is more "
+                f"than backend rounding: the two paths are drawing different scenes"
+            )
 
 
 def test_abandoning_a_pool_iterator_returns_promptly():
