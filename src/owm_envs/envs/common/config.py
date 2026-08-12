@@ -167,21 +167,39 @@ class RewardWeights(ConfigModel):
     sum against non-negative errors, with no negation at the call site. Their
     magnitudes sum to 1, and each shaped term is normalised to ~1 at the edge
     of the operating envelope (see `RewardShapingConfig`), so a step flown
-    inside that envelope costs about 1. The envelope is a normalisation point,
-    not a bound: a full-authority chaser (1600 N against 12000 kg, 2000 N*m
-    against 50000 kg*m^2, over a 360 s horizon) reaches 48 m/s and 14.4 rad/s,
-    and the pseudo-Huber is asymptotically linear out there, so the worst step
-    it can actually reach costs -30.9, and a full 7200-step rollout of them
-    -222,500. That is what the normalisation buys: `collision` still leads the worst
-    whole rollout by 4.5x, so hitting the station stays strictly the worst
-    thing that can happen to an episode instead of being swamped by shaped
-    cost. The margin is a factor of a few, not orders of magnitude.
+    inside that envelope costs about 1 and a whole 7200-step horizon of them
+    -5,225 at the 225 m shell edge, -13,604 out at the 750 m domain bound.
+    `collision` leads those by 9.6x and 3.7x.
+
+    The envelope is a normalisation point, not a bound, and `collision` is
+    deliberately not sized against the bound. A full-authority chaser (1600 N
+    against 12000 kg, 2000 N*m against 50000 kg*m^2, over a 360 s horizon)
+    reaches 48 m/s and 14.4 rad/s, and the pseudo-Huber is asymptotically
+    linear out there, so its worst step costs -30.9 and a horizon of them
+    -222,501, 4.5x this weight. Even staying clear of the hull -- holding 5 m
+    off the port while spinning up at full torque for the whole horizon --
+    costs -101,442. Those are aims rather than accidents, but they are
+    reachable, so hitting the station is not arithmetically the worst thing an
+    episode can do.
+
+    What the weight is sized against is the choice a mid-training policy
+    faces, because that choice decides whether approach behaviour is learned
+    at all. Over 16 dock-policy episodes on the shipped iss-numerical config a
+    docked episode returns ~+9,500 and a collided one ~-50,500, of which only
+    -228 to -588 is shaped cost accrued before impact -- the weight is ~99% of
+    what a collision pays, so the outcome is unambiguous in the return.
+    Against the -3,190 a horizon of station-keeping at 225 m returns,
+    approaching is then worth up to a 21% chance of hitting. At -1,000,000 the
+    same arithmetic breaks even at 1.3%, under the collision rate of any policy
+    still learning to fly precisely, and loitering out of range is the
+    rational optimum instead.
 
     `dock_success` is positive and is the one term that is not a penalty. It
     exists because all four shaped terms bottom out at zero, so a chaser
     hovering just outside the success gate scores the same ~0 as one that
-    actually docks. It sits two orders below `collision`, so no approach risky
-    enough to be worth a crash is ever worth taking.
+    actually docks. It sits 5x below `collision`, so a coin-flip approach
+    still loses 20,000 in expectation and no approach more likely to hit than
+    to dock is worth taking.
 
     `escape` is its mirror, and exists because leaving the domain is
     ABSORBING: every env maps `events.escaped` onto terminated, so an
@@ -218,16 +236,18 @@ class RewardWeights(ConfigModel):
     aim, not an accident, since the escape test is a strict inequality and a
     metre of overshoot ends the episode. The weight is sized against what an
     episode can fall into, not against what one could be built to do. What it
-    holds against unconditionally is `collision`, which stays two orders below
-    it: even the whole escape return is ~84x smaller, so hitting the station
-    remains strictly the worst outcome an episode can have.
+    holds against is `collision`, 5x below it, on the same terms: an escape
+    plus the most a horizon of drifting can have cost it -- -13,604, a full
+    7200 steps at the domain bound -- still stays above hitting the station,
+    so no episode on its way out is better off in the hull. Against the aimed
+    rollouts above, which cost more than `collision` on their own, it is not.
     """
 
     position: float = -0.5
     velocity: float = -0.2
     attitude: float = -0.2
     body_rate: float = -0.1
-    collision: float = -1_000_000.0
+    collision: float = -50_000.0
     dock_success: float = 10_000.0
     escape: float = -10_000.0
 
@@ -330,7 +350,7 @@ class BaseTaskConfig(ConfigModel):
     # docking task. The ISS origin [0, 0, 0] is INSIDE the station's
     # collision hull (dock.position, ~24.63 m away, is not), so setting this
     # field to the origin would pull a controller toward a position it can
-    # never reach without incurring the -1e6 collision penalty. This field
+    # never reach without incurring the -50,000 collision penalty. This field
     # exists to deliberately target the origin (or some other point) for
     # callers who want that trade-off -- not because the origin is a
     # sensible target.

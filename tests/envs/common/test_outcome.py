@@ -169,7 +169,8 @@ def test_classification_matches_the_reward_the_dynamics_paid():
     # the SAME `Events` from the SAME `dynamics.step` call that ended the
     # episode, and every shaped term is normalised to |r| <= ~1, so a
     # final-step reward past +1e3 can only be the +10000 dock bonus and one
-    # past -1e5 only the -1e6 collision penalty. Classification and reward
+    # past -2e4 only the -50000 collision penalty -- the other terminal event,
+    # escape, pays -10000. Classification and reward
     # therefore cannot disagree unless the classification is wrong.
     #
     # iss-numerical specifically, and not iss: this env's state holds absolute
@@ -205,7 +206,7 @@ def test_classification_matches_the_reward_the_dynamics_paid():
     )
 
     assert [o.docked for o in outcomes] == (paid > 1e3).tolist()
-    assert [o.collided for o in outcomes] == (paid < -1e5).tolist()
+    assert [o.collided for o in outcomes] == (paid < -2e4).tolist()
     # Non-vacuous: this seed produces both outcomes, so neither assertion above
     # is comparing two all-False lists.
     assert any(o.docked for o in outcomes)

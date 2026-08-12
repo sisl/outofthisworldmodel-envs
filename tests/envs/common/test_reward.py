@@ -145,23 +145,24 @@ def test_a_step_of_shaped_cost_is_bounded_at_about_one_at_the_numerical_start_sh
 
 
 def test_collision_dominates_a_full_horizon_of_shaped_cost():
+    # ~-5,225 over the horizon against a -50,000 collision: a 9.6x margin.
     cfg = ISSConfig(dock=AT_ORIGIN)
     worst = state_at((225.0, 0.0, 0.0), vel=(5.0, 0.0, 0.0),
                      quat=(0.0, 1.0, 0.0, 0.0), omega=(0.05, 0.0, 0.0))
     per_step = abs(float(docking_reward(worst, ZERO_ACTION, NO_EVENTS, cfg)))
-    assert abs(cfg.reward_weights.collision) > 50.0 * per_step * cfg.max_steps
+    assert abs(cfg.reward_weights.collision) > 5.0 * per_step * cfg.max_steps
 
 
 def test_collision_dominates_a_full_horizon_at_the_domain_bound():
     # PhysicsConfig.start_radius_range_m reaches 500 m and max_range_m sits
     # at 750 m, well past the 225 m edge position_scale_m is tuned to. The
     # shaped cost is bigger out there (~1.89/step, ~-13,604/rollout) but
-    # collision -- at -1e6 -- still dominates by ~73x.
+    # collision -- at -50,000 -- still dominates by ~3.7x.
     cfg = ISSConfig(dock=AT_ORIGIN)
     worst = state_at((cfg.max_range_m, 0.0, 0.0), vel=(5.0, 0.0, 0.0),
                      quat=(0.0, 1.0, 0.0, 0.0), omega=(0.05, 0.0, 0.0))
     per_step = abs(float(docking_reward(worst, ZERO_ACTION, NO_EVENTS, cfg)))
-    assert abs(cfg.reward_weights.collision) > 50.0 * per_step * cfg.max_steps
+    assert abs(cfg.reward_weights.collision) > 3.0 * per_step * cfg.max_steps
 
 
 def test_collision_applies_the_full_penalty_weight():
@@ -238,11 +239,18 @@ def test_escaping_is_worse_than_riding_the_horizon_out_at_that_distance():
     assert escape < loiter
 
 
-def test_escaping_stays_far_less_bad_than_a_collision():
-    # Two orders apart, so no amount of shaped cost between them lets an
-    # episode confuse flying out of the domain with flying into the station.
-    w = ISSConfig(dock=AT_ORIGIN).reward_weights
-    assert abs(w.collision) > 50.0 * abs(w.escape)
+def test_escaping_stays_less_bad_than_a_collision():
+    # Both are absorbing, so the comparison is the penalty plus the horizon
+    # each one skips paying for. Even an escape charged with the most a
+    # drifting episode can have spent -- a full 7200 steps at the domain
+    # bound, ~-13,604 -- has to stay above a collision, or an episode on its
+    # way out of the domain would do better to fly into the hull instead.
+    cfg = ISSConfig(dock=AT_ORIGIN)
+    worst = state_at((cfg.max_range_m, 0.0, 0.0), vel=(5.0, 0.0, 0.0),
+                     quat=(0.0, 1.0, 0.0, 0.0), omega=(0.05, 0.0, 0.0))
+    skipped = abs(float(docking_reward(worst, ZERO_ACTION, NO_EVENTS, cfg))) * cfg.max_steps
+    w = cfg.reward_weights
+    assert abs(w.collision) > abs(w.escape) + skipped
 
 
 def test_docking_and_escaping_are_symmetric():
