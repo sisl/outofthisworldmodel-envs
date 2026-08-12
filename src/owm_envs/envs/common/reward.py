@@ -20,11 +20,11 @@ That normalisation is also what makes the collision penalty mean anything.
 The weights sum to 1 and `position_scale_m` is set to 225 m, the outer edge
 of the start shell the iss-numerical variants disperse over, so a step with
 every term at its own scale costs ~0.73 there and a 7200-step rollout of them
-~-5,225 against a -1e6 collision -- a 191x margin. This module is shared by
+~-5,225 against a -50,000 collision -- a 9.6x margin. This module is shared by
 all three envs, though, and `PhysicsConfig.start_radius_range_m` goes out to
 500 m with `max_range_m` at 750 m; the same envelope step at those radii costs
-~1.33 and ~1.89, ~-9,607 and ~-13,604 over a full rollout, still a 104x and
-73x margin. Those are envelope figures and not bounds -- full actuator
+~1.33 and ~1.89, ~-9,607 and ~-13,604 over a full rollout, still a 5.2x and
+3.7x margin. Those are envelope figures and not bounds -- full actuator
 authority reaches past every scale, and `RewardWeights` carries what the worst
 step and rollout an episode can actually reach cost.
 

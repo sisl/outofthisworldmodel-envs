@@ -59,7 +59,7 @@ position = -0.5
 velocity = -0.2
 attitude = -0.2
 body_rate = -0.1
-collision = -1000000.0
+collision = -50000.0
 dock_success = 10000.0
 escape = -10000.0
 
