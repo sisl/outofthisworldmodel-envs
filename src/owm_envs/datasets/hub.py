@@ -825,6 +825,29 @@ def _summary(run_dir: Path) -> dict:
     return summary
 
 
+def _target_transitions(run_dir: Path, counts: dict) -> int:
+    """The transition count the run's name states its size with.
+
+    The train split's configured target (`min_transitions`, which the card
+    records) rather than the count it happened to land on, so a regenerated
+    run of the same recipe keeps its name. A run sized by episodes has no
+    target, and falls back to the transitions the train split actually
+    recorded -- the only size such a run has.
+    """
+    card = _read_json(run_dir / "dataset_card.json")
+    splits = card.get("splits") if isinstance(card, dict) else None
+    target = ((splits or {}).get("train") or {}).get("min_transitions")
+    if target is not None:
+        return target
+    try:
+        return counts["train"]["transitions"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(
+            f"{run_dir} has no train split in its card or its summary, so the "
+            "dataset name cannot state a size; pass --name explicitly"
+        ) from exc
+
+
 def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dict]:
     """What a push of `run_dir` would write: its repo name and its split counts.
 
@@ -839,7 +862,15 @@ def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dic
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
     env_spec, env_cfg, _ = _run_env(run_dir)
-    return name or dataset_name(env_cfg, env=env_spec.name), counts
+    if name is not None:
+        return name, counts
+    derived = dataset_name(
+        env_cfg,
+        env=env_spec.name,
+        version=_env_version(env_spec.gym_id),
+        transitions=_target_transitions(run_dir, counts),
+    )
+    return derived, counts
 
 
 def hub_namespace(namespace: str | None = None) -> str:
