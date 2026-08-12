@@ -862,7 +862,10 @@ def push_preview(run_dir: str | Path, name: str | None = None) -> tuple[str, dic
     run_dir = Path(run_dir)
     counts = _summary(run_dir)["counts"]
     env_spec, env_cfg, _ = _run_env(run_dir)
-    if name is not None:
+    # Truthiness, not `is not None`: an empty --name (a script interpolating
+    # an unset variable) must fall back to the derived name rather than
+    # target the malformed repo id `{namespace}/`.
+    if name:
         return name, counts
     derived = dataset_name(
         env_cfg,

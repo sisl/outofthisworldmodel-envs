@@ -260,6 +260,13 @@ def test_a_run_the_registry_cannot_place_publishes_as_iss(tmp_path, recorded_env
     assert push_preview(run)[0] == "owm-iss-v1-noncoop-goal-dt50ms-500k"
 
 
+def test_an_empty_name_falls_back_to_the_derived_one(tmp_path):
+    # A script interpolating an unset shell variable into --name must not
+    # target the malformed repo id `{namespace}/`.
+    run = _write_run(tmp_path)
+    assert push_preview(run, name="")[0] == "owm-iss-v1-noncoop-goal-dt50ms-500k"
+
+
 def test_an_episode_sized_run_is_named_by_its_actual_transitions(tmp_path):
     # A split sized by num_episodes has no target; the realized count is the
     # only size the run has.
