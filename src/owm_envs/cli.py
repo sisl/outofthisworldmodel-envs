@@ -857,9 +857,12 @@ def _stdin_is_interactive() -> bool:
 def push(
     run_dir: Path = typer.Argument(..., help="Finished run directory (must contain summary.json)."),
     name: Optional[str] = typer.Option(
-        None, help="Repo name (default: derived owm-{env}-{noise}-{goal}-dt{ms}ms)."),
+        None, help="Repo name (default: derived "
+                   "owm-{env}-{version}-{noise}-{goal}-dt{ms}ms-{size}, "
+                   "editable at the prompt)."),
     namespace: Optional[str] = typer.Option(
-        None, help="Hub namespace (default: the HF_TOKEN account)."),
+        None, help="Hub namespace (default: the HF_TOKEN account, editable at "
+                   "the prompt)."),
     private: Optional[bool] = typer.Option(
         None, "--private/--public",
         help="Repo visibility. Given neither, a new repo is public and one that "
@@ -872,10 +875,10 @@ def push(
     """Upload a run directory to the HuggingFace Hub as a dataset repo.
 
     The upload MIRRORS the run onto the repo: everything already there and not
-    in this run is deleted. The repo name is derived from the run's env config
-    alone, so a trial run and the production run generated from the same config
-    target the same repo -- which is why the target and the sizes are printed
-    and confirmed before anything is uploaded.
+    in this run is deleted. The repo name is derived from the run's own env
+    config and target size, so a regenerated run of the same recipe targets
+    the same repo -- which is why the target and the sizes are printed and
+    confirmed before anything is uploaded.
     """
     from .datasets.hub import hub_namespace, push_preview, push_run
 
@@ -891,7 +894,17 @@ def push(
         raise typer.BadParameter(
             f"cannot read the run in {run_dir}: {exc}", param_hint="RUN_DIR"
         ) from exc
-    namespace = hub_namespace(namespace)
+    # Prompted, not just defaulted: a push usually goes to the token's own
+    # account under the derived name, but redirecting one to an org or
+    # renaming it should not require memorizing flags. A given flag, --yes,
+    # or a non-interactive stdin each keep the defaults silently.
+    prompting = _stdin_is_interactive() and not yes
+    if namespace is None and prompting:
+        namespace = typer.prompt("Push to owner", default=hub_namespace())
+    else:
+        namespace = hub_namespace(namespace)
+    if name is None and prompting:
+        repo_name = typer.prompt("Dataset name", default=repo_name)
     repo_id = f"{namespace}/{repo_name}"
 
     typer.echo(f"[push] {run_dir} -> {repo_id}")
