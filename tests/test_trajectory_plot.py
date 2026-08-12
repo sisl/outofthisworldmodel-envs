@@ -8,9 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import pytest
+from astrojax.constants import GM_EARTH
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "plot_trajectories_3d.py"
 sys.path.insert(0, str(SCRIPT.parent))
@@ -19,7 +21,12 @@ from plot_trajectories_3d import (  # noqa: E402
     classify_outcomes,
     dock_positions,
     policy_groups,
+    view_cells,
 )
+
+from owm_envs.envs import ENV_REGISTRY  # noqa: E402
+from owm_envs.envs.iss_numerical.config import NumericalConfig  # noqa: E402
+from owm_envs.envs.iss_numerical.dynamics import chaser_state_from_view  # noqa: E402
 
 
 def test_dock_positions_unpacks_the_nested_lerobot_cell():
@@ -96,6 +103,39 @@ def test_union_split_groups_episodes_by_recorded_policy_id():
 def test_non_union_split_is_one_group_named_by_its_policy():
     frame = _frame({"episode_index": [0, 1], "policy_id": [np.array([0])] * 2})
     assert policy_groups(frame, "dock") == {"dock": [0, 1]}
+
+
+def test_view_cells_map_a_numerical_state_to_the_relative_view():
+    # iss-numerical's state_vector holds [epoch | chief ECI | chaser ECI |
+    # q_bi | omega]; reading its first elements as a relative position would
+    # draw the epoch and the chief's ECI radius as a path. The cells have to
+    # come back as the 13D world-frame relative view.
+    view = np.array([10.0, -24.0, 5.0, 0.1, -0.05, 0.02,
+                     1.0, 0.0, 0.0, 0.0, 0.001, -0.002, 0.0005])
+    sma = 6.795e6
+    chief = jnp.asarray([sma, 0.0, 0.0, 0.0, float(np.sqrt(GM_EARTH / sma)), 0.0],
+                        jnp.float64)
+    chaser = chaser_state_from_view(chief, jnp.asarray(view, jnp.float64))
+    state = np.asarray(jnp.concatenate([jnp.asarray([2460000.5, 0.0]), chief, chaser]))
+
+    cells = view_cells(pd.Series([state]), "state_vector",
+                       ENV_REGISTRY["iss-numerical"], NumericalConfig())
+    np.testing.assert_allclose(cells[0], view, atol=1e-4)
+
+
+def test_view_cells_strip_the_epoch_prefix_of_a_relative_observation():
+    obs = np.arange(27.0, dtype=np.float32)
+    cells = view_cells(pd.Series([obs]), "observation_vector",
+                       ENV_REGISTRY["iss-numerical"], NumericalConfig())
+    np.testing.assert_array_equal(cells[0], obs[2:15])
+
+
+def test_view_cells_pass_vectors_through_without_an_env_spec():
+    # A run directory without configs still plots, reading the vectors as the
+    # 13D-first layout every run predating the card was written in.
+    state = _state((1.0, 2.0, 3.0))
+    cells = view_cells(pd.Series([state]), "state_vector", None, None)
+    np.testing.assert_array_equal(cells[0], state)
 
 
 @pytest.mark.parametrize("flag", ["--max-points", "--max-episodes"])

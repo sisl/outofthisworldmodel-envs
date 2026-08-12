@@ -31,11 +31,14 @@ Two checks on a generated run before it is published:
     uv run --extra datasets python scripts/check_sensor_noise.py logs/run1
     uv run --extra datasets python scripts/plot_trajectories_3d.py logs/run1 --out logs/run1_traj
 
-`check_sensor_noise.py` measures the residual between each frame's
-`observation_vector` and its `state_vector` -- the sensor-noise draw the
-simulator actually made -- and compares its RMS per channel against the sigmas
-in the run's `env_config.yaml`, exiting non-zero when any channel is off by
-more than `--tolerance` (default 10%). It also breaks position error down by
+`check_sensor_noise.py` measures the residual between the measured relative
+view in each frame's `observation_vector` and the view of its true
+`state_vector` -- the sensor-noise draw the simulator actually made -- and
+compares its RMS per channel against the sigmas in the run's
+`env_config.yaml`, exiting non-zero when any channel is off by more than
+`--tolerance` (default 10%). Both scripts resolve which env generated the run
+from its `dataset_card.json`, so they read `iss`, `iss-hcw` and
+`iss-numerical` runs alike. It also breaks position error down by
 true range, which is what shows whether the non-cooperative preset's
 range-proportional term landed. A run generated with noise disabled is held to
 exact zeros.
