@@ -1,11 +1,14 @@
 """Publish a finished run directory to the HuggingFace Hub as one dataset repo.
 
-The repo name is derived from the run's OWN as-run config rather than taken
+The repo name is derived from the run's OWN artifacts rather than taken
 from a flag, so it cannot drift from the data it describes:
-`owm-{env}-{noise}-{goal}-dt{ms}ms`. The noise tag is the name of the PRESETS
-entry the config's sensor_noise equals, or "custom" when it equals none of
-them -- a hand-tuned sensor model therefore publishes under a name that says
-so rather than borrowing a preset's.
+`owm-{env}-{version}-{noise}-{goal}-dt{ms}ms-{size}`. The version is the
+env's gym id suffix, and the size the train split's targeted transition
+count (or, for a run sized by episodes, the count it actually recorded).
+The noise tag is the name of the PRESETS entry the config's sensor_noise
+equals, or "custom" when it equals none of them -- a hand-tuned sensor
+model therefore publishes under a name that says so rather than borrowing
+a preset's.
 
 The card is built the same way, out of the artifacts the run itself left:
 `summary.json` for the split sizes, `dataset_card.json` for the per-split
@@ -389,15 +392,24 @@ def _env_version(gym_id: str) -> str:
     return f"v{match.group(1)}"
 
 
-def dataset_name(env_cfg: BaseTaskConfig, env: str) -> str:
+def dataset_name(
+    env_cfg: BaseTaskConfig, env: str, version: str, transitions: int
+) -> str:
     """The published repo name for a run of `env` made under `env_cfg`.
 
     `env` is required rather than defaulting to iss: the default was the last
     remaining path to an `owm-iss-*` name for a run that was not iss at all.
+    `version` is the env's own version tag (`_env_version`), and `transitions`
+    the run's targeted transition count, so two runs of the same variant at
+    different scales -- or under two versions of the env -- publish as two
+    datasets rather than one over the other.
     """
     goal = "goal" if env_cfg.observation.goal_error else "nogoal"
     dt_ms = round(env_cfg.dt * 1000)
-    return f"owm-{env}-{_noise_tag(env_cfg)}-{goal}-dt{dt_ms}ms"
+    return (
+        f"owm-{env}-{version}-{_noise_tag(env_cfg)}-{goal}"
+        f"-dt{dt_ms}ms-{_transitions_tag(transitions)}"
+    )
 
 
 def _unknown_env_note(env: str, config_parsed: bool) -> str:

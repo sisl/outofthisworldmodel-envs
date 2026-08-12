@@ -49,12 +49,12 @@ ISS = CONFIGS / "iss"
 # Keyed by the file's stem under configs/iss/env/, which no longer repeats the
 # env: the directory carries it.
 VARIANT_NAMES = {
-    "nonoise_nogoal": "owm-iss-nonoise-nogoal-dt50ms",
-    "nonoise_goal": "owm-iss-nonoise-goal-dt50ms",
-    "coop_nogoal": "owm-iss-coop-nogoal-dt50ms",
-    "coop_goal": "owm-iss-coop-goal-dt50ms",
-    "noncoop_nogoal": "owm-iss-noncoop-nogoal-dt50ms",
-    "noncoop_goal": "owm-iss-noncoop-goal-dt50ms",
+    "nonoise_nogoal": "owm-iss-v1-nonoise-nogoal-dt50ms-500k",
+    "nonoise_goal": "owm-iss-v1-nonoise-goal-dt50ms-500k",
+    "coop_nogoal": "owm-iss-v1-coop-nogoal-dt50ms-500k",
+    "coop_goal": "owm-iss-v1-coop-goal-dt50ms-500k",
+    "noncoop_nogoal": "owm-iss-v1-noncoop-nogoal-dt50ms-500k",
+    "noncoop_goal": "owm-iss-v1-noncoop-goal-dt50ms-500k",
 }
 
 COMMIT = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
@@ -171,41 +171,54 @@ def test_env_version_comes_from_the_gym_id():
 
 
 def test_names_cover_the_matrix():
-    assert dataset_name(ISSConfig(), env="iss") == "owm-iss-nonoise-nogoal-dt50ms"
+    assert dataset_name(
+        ISSConfig(), env="iss", version="v1", transitions=500_000
+    ) == "owm-iss-v1-nonoise-nogoal-dt50ms-500k"
     assert dataset_name(
         ISSConfig(sensor_noise=PRESETS["cooperative"],
                   observation=ObservationConfig(goal_error=True)),
-        env="iss",
-    ) == "owm-iss-coop-goal-dt50ms"
+        env="iss", version="v1", transitions=500_000,
+    ) == "owm-iss-v1-coop-goal-dt50ms-500k"
     assert dataset_name(
-        ISSConfig(sensor_noise=PRESETS["noncooperative"]), env="iss"
-    ) == "owm-iss-noncoop-nogoal-dt50ms"
+        ISSConfig(sensor_noise=PRESETS["noncooperative"]),
+        env="iss", version="v1", transitions=500_000,
+    ) == "owm-iss-v1-noncoop-nogoal-dt50ms-500k"
 
 
 def test_custom_noise_is_named_custom():
     cfg = ISSConfig(sensor_noise=SensorNoiseConfig(enabled=True, sigma_pos_m=9.9))
-    assert dataset_name(cfg, env="iss") == "owm-iss-custom-nogoal-dt50ms"
+    assert dataset_name(
+        cfg, env="iss", version="v1", transitions=500_000
+    ) == "owm-iss-v1-custom-nogoal-dt50ms-500k"
 
 
 def test_dt_tag_scales():
-    assert dataset_name(ISSConfig(dt=0.1), env="iss") == "owm-iss-nonoise-nogoal-dt100ms"
+    assert dataset_name(
+        ISSConfig(dt=0.1), env="iss", version="v1", transitions=500_000
+    ) == "owm-iss-v1-nonoise-nogoal-dt100ms-500k"
 
 
 def test_the_env_name_is_a_component_not_a_prefix():
-    assert dataset_name(ISSConfig(), env="lunar") == "owm-lunar-nonoise-nogoal-dt50ms"
+    assert dataset_name(
+        ISSConfig(), env="lunar", version="v1", transitions=500_000
+    ) == "owm-lunar-v1-nonoise-nogoal-dt50ms-500k"
 
 
 @pytest.mark.parametrize("config_name, expected", sorted(VARIANT_NAMES.items()))
 def test_each_committed_variant_names_its_published_dataset(config_name, expected):
     assert dataset_name(
-        ISSConfig.from_toml(ISS / "env" / f"{config_name}.toml"), env="iss"
+        ISSConfig.from_toml(ISS / "env" / f"{config_name}.toml"),
+        env="iss", version="v1", transitions=500_000,
     ) == expected
 
 
 def test_the_six_variants_get_six_distinct_names():
     # Two variants collapsing onto one name would publish one over the other.
     names = {
-        dataset_name(ISSConfig.from_toml(ISS / "env" / f"{c}.toml"), env="iss")
+        dataset_name(
+            ISSConfig.from_toml(ISS / "env" / f"{c}.toml"),
+            env="iss", version="v1", transitions=500_000,
+        )
         for c in VARIANT_NAMES
     }
     assert len(names) == len(VARIANT_NAMES)
