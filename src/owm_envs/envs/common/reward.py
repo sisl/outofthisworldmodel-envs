@@ -103,6 +103,7 @@ def docking_reward(
     events: Events,
     cfg: BaseTaskConfig,
     dock_pose: jnp.ndarray | None = None,
+    prev_state: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     """Per-step reward. Returns a float32 scalar (or a batch under vmap).
 
@@ -122,6 +123,12 @@ def docking_reward(
     reward toward some other point, which says nothing about what attitude to
     hold on arrival, so the quaternion still comes from `dock_pose` or
     `DockConfig`.
+
+    `prev_state` is the same 13D view one step earlier, read only by the
+    optional `RewardWeights.progress` term -- the one part of this function
+    that is not pointwise in the current state. Required whenever that weight
+    is non-zero, ignored otherwise; passing None with the weight set raises
+    rather than silently dropping a term the config asked for.
     """
     w = cfg.reward_weights
     shaping = cfg.reward_shaping
@@ -135,6 +142,15 @@ def docking_reward(
     if cfg.reward_goal_position is not None:
         goal_position = jnp.asarray(cfg.reward_goal_position, dtype=jnp.float32)
 
+    # Checked at trace time on a static Python value, so a config asking for
+    # progress shaping from a call site that cannot supply the previous state
+    # fails here rather than training against a reward missing a term.
+    if w.progress != 0.0 and prev_state is None:
+        raise ValueError(
+            "reward_weights.progress is set but docking_reward got no "
+            "prev_state; the progress term needs the previous step's view"
+        )
+
     distance = jnp.linalg.norm(state[0:3] - goal_position)
     speed = jnp.linalg.norm(state[3:6])
     attitude_error = quat_angle_between(state[6:10], goal_quaternion)
@@ -143,6 +159,14 @@ def docking_reward(
     rotation_gate = shaping.rotation_gate_far + (1.0 - shaping.rotation_gate_far) / (
         1.0 + (distance / shaping.rotation_gate_range_m) ** 2
     )
+
+    # Normalised by the same scale as the absolute position term, so the two
+    # weights read in the same units: closing the whole envelope is worth
+    # `progress` once, paid out over the steps that close it.
+    progress = jnp.asarray(0.0, dtype=jnp.float32)
+    if w.progress != 0.0:
+        previous = jnp.linalg.norm(jnp.asarray(prev_state)[0:3] - goal_position)
+        progress = w.progress * (distance - previous) / shaping.position_scale_m
 
     return (
         w.position
@@ -158,6 +182,7 @@ def docking_reward(
             + w.body_rate
             * _pseudo_huber(body_rate, shaping.rate_delta_rad_s, shaping.rate_scale_rad_s)
         )
+        + progress
         + w.collision * events.collision.astype(jnp.float32)
         + w.dock_success * events.docked.astype(jnp.float32)
         + w.escape * events.escaped.astype(jnp.float32)

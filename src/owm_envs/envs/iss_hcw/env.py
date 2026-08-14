@@ -138,6 +138,7 @@ class HCWEnv(PortGoalMixin, gym.Env):
         reward = float(
             docking_reward(
                 HCW_LAYOUT.slice_view(next_state), action_j, events, self.cfg, self._dock_pose,
+                HCW_LAYOUT.slice_view(self._state),
             )
         )
 

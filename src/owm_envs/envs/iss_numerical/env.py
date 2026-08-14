@@ -191,6 +191,7 @@ class NumericalEnv(PortGoalMixin, gym.Env):
         reward = float(
             docking_reward(
                 relative_view(next_state), action_j, events, self.cfg, self._dock_pose,
+                relative_view(self._state),
             )
         )
 

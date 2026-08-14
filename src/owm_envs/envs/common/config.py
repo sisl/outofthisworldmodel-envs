@@ -262,6 +262,30 @@ class RewardWeights(ConfigModel):
     collision: float = -50_000.0
     dock_success: float = 10_000.0
     escape: float = -10_000.0
+    # Optional fifth shaped term, OFF at 0.0, and the only one that reads more
+    # than the current state: it charges the CHANGE in range to the port,
+    # normalised by `RewardShapingConfig.position_scale_m`, so closing a metre
+    # pays the moment it is closed instead of slowly through `position`.
+    #
+    # It exists because the absolute terms make the first step of an approach
+    # cost more than it earns. Moving pays `velocity` immediately and earns
+    # `position` back only as range falls: at the shipped weights a 1 m/s
+    # commitment costs ~0.01 a step against ~0.004 a step recovered, so it has
+    # to persist for hundreds of steps before it turns a profit, and undirected
+    # exploration never sustains a direction that long. A progress term makes
+    # that trade positive on the first step -- at -2.0 a metre closed is worth
+    # 2.0/225 = 0.0089, which covers the velocity cost on its own.
+    #
+    # It does NOT participate in the "four weights sum to 1" normalisation the
+    # other shaped terms keep, and it is not a fifth opinion on range: it
+    # telescopes over an episode to `progress * (start_range - end_range) /
+    # position_scale_m`, i.e. potential-based shaping in the sense of Ng et al.
+    # It therefore leaves the optimal policy alone and changes only how early
+    # the credit for closing arrives -- which is the entire problem here.
+    #
+    # Dunlap et al. (JAIS 20(1), 2023) shape their docking reward this way,
+    # with -0.0005 per metre against a +1 dock bonus.
+    progress: float = 0.0
 
 
 class RewardShapingConfig(ConfigModel):
