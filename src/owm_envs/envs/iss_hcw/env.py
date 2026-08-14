@@ -147,7 +147,9 @@ class HCWEnv(PortGoalMixin, gym.Env):
         collision = bool(events.collision)
         docked = bool(events.docked)
         escaped = bool(events.escaped)
-        terminated = collision or docked or escaped
+        # collision only ends the episode when the keep-out zone is a hard
+        # constraint; see BaseTaskConfig.collision_terminates.
+        terminated = (collision and self.cfg.collision_terminates) or docked or escaped
         truncated = (not terminated) and self._step_index >= self.cfg.max_steps
 
         return (

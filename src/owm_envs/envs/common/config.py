@@ -241,6 +241,18 @@ class RewardWeights(ConfigModel):
     7200 steps at the domain bound -- still stays above hitting the station,
     so no episode on its way out is better off in the hull. Against the aimed
     rollouts above, which cost more than `collision` on their own, it is not.
+
+    EVERY FIGURE ABOVE ASSUMES `collision_terminates` IS TRUE, because all of
+    them price an event that ends the episode. Under a soft keep-out zone
+    (`BaseTaskConfig.collision_terminates = False`) `collision` is charged once
+    per step spent inside the hull instead of once at impact, and the sizing
+    problem inverts: the weight is no longer set against what an episode's
+    whole remaining horizon is worth, but against the shaped cost of a single
+    step, which the normalisation above puts at ~1 inside the envelope. A
+    weight in the tens of thousands would then charge a hundred million for a
+    second of contact, and every consideration above -- the 21% approach odds,
+    the 5x margin to `escape` -- is computed for the wrong quantity. Values of
+    order 1 to 10 are the ones that mean anything there.
     """
 
     position: float = -0.5
@@ -336,6 +348,26 @@ class BaseTaskConfig(ConfigModel):
     # reachable state outside the domain, and inf/NaN describe no boundary at
     # all -- None is how the bound is turned off.
     max_range_m: float | None = Field(default=750.0, gt=0, allow_inf_nan=False)
+    # Whether hitting the station ends the episode. True is the physical
+    # reading and the default: a chaser that strikes the hull has crashed.
+    #
+    # False makes the keep-out zone a SOFT constraint. `events.collision` still
+    # raises on every step the swept path intersects a box, so
+    # `RewardWeights.collision` is charged once per step spent inside the hull
+    # rather than once at impact, and the episode flies on. That is a training
+    # device, not a physical claim. An absorbing collision is the harshest
+    # possible credit assignment for the one manoeuvre the task requires: the
+    # port sits ON the hull, so every approach that could succeed passes
+    # within metres of the thing that ends the episode, and the steps that
+    # would teach the difference between a near miss and a hit are exactly the
+    # ones never collected. Broida and Linares (AAS 19-462) took the soft
+    # route for this reason -- to "teach the agent to stay away from the keep
+    # out zone, while still allowing it to collect useful data whenever it
+    # entered that space" -- and reached centimetre docking accuracy.
+    #
+    # Sizing `RewardWeights.collision` for this mode is a different problem
+    # from sizing it for the absorbing one; see that field.
+    collision_terminates: bool = True
 
     physics: PhysicsConfig = Field(default_factory=PhysicsConfig)
     control: ControlConfig = Field(default_factory=ControlConfig)
