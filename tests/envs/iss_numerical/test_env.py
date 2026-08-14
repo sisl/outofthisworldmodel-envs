@@ -10,7 +10,7 @@ from owm_envs.envs.common.config import DockConfig, PhysicsConfig, dock_target
 from owm_envs.envs.common.docking_ports import PORTS_BY_NAME, port_pose
 from owm_envs.envs.common.goal import dock_goal_error
 from owm_envs.envs.common.sensing import PRESETS
-from owm_envs.envs.iss_numerical.config import OBS_MODE_DIM, NumericalConfig
+from owm_envs.envs.iss_numerical.config import NUM_LAYOUT, OBS_MODE_DIM, NumericalConfig
 from owm_envs.envs.iss_numerical.dynamics import relative_view
 from owm_envs.envs.iss_numerical.env import NumericalEnv
 from owm_envs.envs.iss_numerical.vector_env import NumericalVectorEnv
@@ -370,3 +370,55 @@ def test_vector_autoreset_redraws_only_the_lane_that_reset():
         assert info["dock_port_index"][1] == lane1_port
         lane0_history.append(info["dock_port_index"][0])
     assert len(set(lane0_history)) > 1
+
+
+def _env_at_the_iss_origin(**cfg_overrides) -> tuple[NumericalEnv, np.ndarray]:
+    """An env whose chaser has been driven onto the chief, inside the hull."""
+    cfg = NumericalConfig(max_steps=100, **cfg_overrides)
+    env = NumericalEnv(cfg)
+    env.reset(seed=0)
+    state = np.array(env._state)
+    # The chaser's ECI position set to the chief's puts it at the station
+    # origin, which sits inside the collision hull by construction.
+    state[NUM_LAYOUT.pos] = state[NUM_LAYOUT.chief][0:3]
+    state[NUM_LAYOUT.vel] = state[NUM_LAYOUT.chief][3:6]
+    env._state = jnp.asarray(state, dtype=env._state.dtype)
+    return env, np.zeros(6, dtype=np.float32)
+
+
+def test_a_collision_ends_the_episode_when_the_keep_out_zone_is_hard():
+    env, noop = _env_at_the_iss_origin(collision_terminates=True)
+
+    _, _, terminated, truncated, info = env.step(noop)
+
+    assert info["collision"] is True
+    assert terminated is True
+    assert truncated is False
+
+
+def test_a_collision_keeps_flying_when_the_keep_out_zone_is_soft():
+    # The point of the soft constraint: the step is still charged, but the
+    # episode goes on collecting data instead of being cut off at the one
+    # place the task requires the policy to fly.
+    env, noop = _env_at_the_iss_origin(collision_terminates=False)
+
+    _, reward, terminated, truncated, info = env.step(noop)
+
+    assert info["collision"] is True
+    assert terminated is False
+    assert truncated is False
+    # Charged, not merely tolerated: the weight lands on this step's reward.
+    assert reward < env.cfg.reward_weights.collision + 1.0
+
+
+def test_a_soft_keep_out_zone_charges_every_step_inside_the_hull():
+    # Once per step, not once at impact -- that is what makes a per-step
+    # weight the right size rather than an absorbing one.
+    env, noop = _env_at_the_iss_origin(collision_terminates=False)
+
+    hits = 0
+    for _ in range(5):
+        _, _, terminated, _, info = env.step(noop)
+        hits += bool(info["collision"])
+        assert terminated is False
+    assert hits == 5
