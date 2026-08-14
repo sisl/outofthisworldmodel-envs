@@ -1,6 +1,6 @@
 """Downsample full-globe equirectangular Earth maps from high-resolution sources.
 
-Used by `owm_envs.render.earth` for tier-2 downsampling, and by
+Used by `owm_envs.render.earth` for tier-3 downsampling, and by
 `scripts/downsample_earth_maps.py` as a standalone CLI. The high-resolution
 sources are large (gigabytes) and are not committed to this repository.
 

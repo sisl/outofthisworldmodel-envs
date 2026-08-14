@@ -1,29 +1,27 @@
-"""Earth texture resolution: local full maps, downsampling, committed fallbacks.
+"""Earth texture resolution: hosted maps, local downsampling, committed fallbacks.
 
-Three-tier strategy:
-1. A locally-downsampled full-resolution map exists -- return it. These are
-   too large to commit, so they are gitignored and only present on a machine
-   that has downsampled them.
-2. A high-resolution source is present on disk -- downsample the full map
-   from it (via `owm_envs.render.downsample`). When `allow_download` is set
-   and the source is missing, fetch it from the mirror first; any failure
-   warns and falls through.
-3. The committed reasonable-resolution fallback map. Always present in a
+Four tiers, cheapest first:
+1. A full-resolution map is already on disk -- return it. These are too large
+   to commit, so they are gitignored and present only where one has been
+   fetched or generated.
+2. `allow_download` is set -- fetch the finished map from the asset dataset on
+   the Hub (see `owm_envs.render.asset_hub`). ~48 MB for all three, landing
+   at the tier-1 path. Any failure warns and falls through.
+3. A high-resolution source is present on disk -- downsample the full map from
+   it, via `owm_envs.render.downsample`. This is the offline maintainer path;
+   `regenerate_map` forces it for a source that has just been replaced.
+4. The committed reasonable-resolution fallback map. Always present in a
    clone, so rendering works offline out of the box.
 """
 
 from __future__ import annotations
 
-import os
-import urllib.request
 import warnings
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
 
 from owm_envs.render import resources_dir
-
-_EARTH_ASSET_BASE_URL = "https://s3.us-west-004.backblazeb2.com/outofthisworldmodel-iss"
+from owm_envs.render.asset_hub import download_asset
 
 TextureKind = Literal["color", "clouds", "bump"]
 
@@ -32,6 +30,8 @@ _SOURCE_NAMES = {
     "clouds": "Earth-40K-Clouds.tif",
     "bump": "Earth-40K-Bump.tif",
 }
+
+TEXTURE_KINDS: tuple[TextureKind, ...] = ("color", "clouds", "bump")
 
 # Full-globe equirectangular downsample targets (width; height is width/2).
 # color/clouds at 16384 keep ~2.4 km/texel at the equator; bump stays at
@@ -69,21 +69,7 @@ def _source_dir() -> Path:
     return resources_dir() / "earth" / "sources"
 
 
-def _downsample_map(kind: TextureKind) -> Path | None:
-    """Tier 2: downsample a fresh map from a high-resolution source on disk, if present."""
-    source_dir = _source_dir()
-    source = source_dir / _SOURCE_NAMES[kind]
-    if not source.exists():
-        if source_dir.is_dir() and any(source_dir.iterdir()):
-            # A source directory exists but nothing in it matches the expected
-            # filename -- silently skipping tier 2 here would leave a
-            # maintainer's dropped-in file never picked up, with no clue why.
-            warnings.warn(
-                f"{source_dir} has files but none named {_SOURCE_NAMES[kind]!r}; "
-                f"tier-2 downsample for {kind!r} skipped"
-            )
-        return None
-
+def _run_downsample(kind: TextureKind, source: Path) -> Path:
     from owm_envs.render.downsample import downsample_full_map
 
     output = _maps_dir() / _MAP_NAMES[kind]
@@ -91,33 +77,50 @@ def _downsample_map(kind: TextureKind) -> Path | None:
     return output
 
 
-def _ensure_earth_source(name: str) -> Path | None:
-    """Fetch a high-resolution Earth source. Returns None if unavailable.
-
-    Never raises and never blocks rendering: the committed fallback maps are
-    always there, and this is an optional quality upgrade.
-    """
-    dest = _source_dir() / name
-    if dest.exists():
-        return dest
-    # Per-download name: parallel render workers each resolve their own
-    # textures, and a shared temporary lets one worker's cleanup delete
-    # another's live download.
-    tmp = dest.with_suffix(f"{dest.suffix}.{uuid4().hex}.part")
-    try:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        warnings.warn(f"fetching {name} from {_EARTH_ASSET_BASE_URL}; this is a large file")
-        urllib.request.urlretrieve(f"{_EARTH_ASSET_BASE_URL}/{name}", tmp)
-        os.replace(tmp, dest)  # atomic: a crash mid-download leaves no false complete file
-        return dest
-    except Exception as exc:  # HTTPError, URLError, OSError, cap exceeded...
-        tmp.unlink(missing_ok=True)
-        warnings.warn(f"could not fetch {name} ({exc}); using the fallback Earth map")
+def _downsample_map(kind: TextureKind) -> Path | None:
+    """Tier 3: downsample a fresh map from a high-resolution source on disk, if present."""
+    source_dir = _source_dir()
+    source = source_dir / _SOURCE_NAMES[kind]
+    if not source.exists():
+        if source_dir.is_dir() and any(source_dir.iterdir()):
+            # A source directory exists but nothing in it matches the expected
+            # filename -- silently skipping tier 3 here would leave a
+            # maintainer's dropped-in file never picked up, with no clue why.
+            warnings.warn(
+                f"{source_dir} has files but none named {_SOURCE_NAMES[kind]!r}; "
+                f"tier-3 downsample for {kind!r} skipped"
+            )
         return None
+    return _run_downsample(kind, source)
+
+
+def regenerate_map(kind: TextureKind) -> Path:
+    """Downsample the full map from the local source, replacing any existing map.
+
+    Unlike tier 3 this is unconditional: it is how a maintainer who has just
+    replaced a source gets a map from it, rather than the hosted one tier 2
+    would otherwise serve.
+    """
+    source = _source_dir() / _SOURCE_NAMES[kind]
+    if not source.exists():
+        raise FileNotFoundError(
+            f"{source} is missing; fetch it with `owm-envs earth pull-sources`"
+        )
+    return _run_downsample(kind, source)
+
+
+def map_relpath(kind: TextureKind) -> str:
+    """Repo-relative path of a full map in the asset dataset."""
+    return f"maps/{_MAP_NAMES[kind]}"
+
+
+def source_relpath(kind: TextureKind) -> str:
+    """Repo-relative path of a high-resolution source in the asset dataset."""
+    return f"sources/{_SOURCE_NAMES[kind]}"
 
 
 def earth_texture_path(kind: TextureKind, *, allow_download: bool = False) -> Path:
-    """Resolve an Earth texture through the three-tier strategy.
+    """Resolve an Earth texture through the four-tier strategy.
 
     Never raises on a download failure -- it falls back to the committed
     fallback map, which exists in every clone.
@@ -129,8 +132,10 @@ def earth_texture_path(kind: TextureKind, *, allow_download: bool = False) -> Pa
     if full.exists():
         return full
 
-    if allow_download and not (_source_dir() / _SOURCE_NAMES[kind]).exists():
-        _ensure_earth_source(_SOURCE_NAMES[kind])  # warns and returns None on failure
+    if allow_download:
+        downloaded = download_asset(map_relpath(kind))  # warns and returns None on failure
+        if downloaded is not None:
+            return downloaded
 
     downsampled = _downsample_map(kind)
     if downsampled is not None:
