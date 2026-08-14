@@ -4,6 +4,7 @@
     owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
     owm-envs push logs/run1
     owm-envs list
+    owm-envs earth push
 
 `--driver auto` selects the fused JAX path when the backend supports it and
 falls back to the generic VectorEnv path otherwise, so the same command works

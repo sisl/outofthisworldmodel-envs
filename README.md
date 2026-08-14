@@ -134,14 +134,22 @@ shipped maps are downsampled from was collected from these four:
 Which specific source produced each shipped map was not recorded per file, so
 anyone assessing terms should check all four.
 
-The three `*_fallback` maps above are the only Earth imagery this repository
-ships, and each is a full-globe equirectangular downsample of a much larger
-source image. Neither that source imagery nor the full-resolution maps
-downsampled from it are redistributed here: both are gitignored, and
-`scripts/downsample_earth_maps.py` (or the renderer's own auto-download of the
-sources) regenerates the full maps — 16384×8192 for colour and clouds,
-8192×4096 for the bump height map — on the machine that renders. The renderer
-uses the committed fallbacks whenever those local full maps are absent.
+The three `*_fallback` maps above are the only Earth imagery committed to this
+repository; both the full-resolution maps and the source imagery are gitignored.
+Both are mirrored in the
+[`sislaboratory/owm-earth-textures`](https://huggingface.co/datasets/sislaboratory/owm-earth-textures)
+dataset, which carries the same provenance and licence disclosure as this
+section. The renderer fetches the ~48 MB of full maps from it automatically
+when a scene is built with texture downloading enabled; nothing else is
+fetched at render time.
+
+To regenerate the maps at a different width, fetch the sources first:
+
+    uv run owm-envs earth pull-sources        # several gigabytes
+    uv run owm-envs earth regenerate --kind color,clouds,bump
+
+Resolution prefers a hosted map over downsampling a local source, so
+`regenerate` is how a replaced source reaches the renderer.
 
 **Before public release.** Licence terms were not recorded for any asset, and
 two provenance gaps remain: which of the four Earth sources produced each map,
