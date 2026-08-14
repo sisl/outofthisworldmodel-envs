@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from owm_envs.render import asset_hub, earth, resources_dir
-from owm_envs.render.earth import _downsample_map, earth_texture_path
+from owm_envs.render.earth import _downsample_map, earth_texture_path, regenerate_map
 
 KINDS = ["color", "clouds", "bump"]
 
@@ -227,6 +227,7 @@ def test_committed_fallbacks_resolve_with_no_sources_and_no_network(
     for name in earth._FALLBACK_NAMES.values():
         (maps / name).symlink_to(real_maps / name)
     monkeypatch.setattr(earth, "resources_dir", lambda: tmp_path)
+    monkeypatch.setattr(asset_hub, "resources_dir", lambda: tmp_path)
 
     assert earth_texture_path(kind).exists()
     assert network_calls == []
@@ -234,6 +235,22 @@ def test_committed_fallbacks_resolve_with_no_sources_and_no_network(
     with pytest.warns(UserWarning):
         assert earth_texture_path(kind, allow_download=True).exists()
     assert len(network_calls) == 1
+
+
+def test_regenerate_map_overwrites_an_existing_map_with_a_fresh_downsample(fake_resources):
+    # A maintainer who has just replaced a source needs the map rebuilt from
+    # it unconditionally, not the stale file (or the hosted map) left in place.
+    _write_source(fake_resources / "earth" / "sources" / "EarthColorMap-80k.tif", "RGB")
+    stale = fake_resources / "earth" / "maps" / "earth_color_full.jpg"
+    Image.new("RGB", (8, 4)).save(stale)
+    path = regenerate_map("color")
+    assert path == stale
+    assert Image.open(path).size == (64, 32)  # the patched MAP_WIDTHS, not the stale (8, 4)
+
+
+def test_regenerate_map_raises_when_the_source_is_missing(fake_resources):
+    with pytest.raises(FileNotFoundError, match="pull-sources"):
+        regenerate_map("color")
 
 
 def test_tier2_miss_warns_when_source_dir_has_unmatched_files(fake_resources):

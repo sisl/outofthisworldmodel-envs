@@ -978,10 +978,10 @@ def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
     tmp_path, monkeypatch
 ):
     """Every worker's scene resolves the Earth textures itself, and a miss
-    downloads and bakes a full map from a 9.6 GB source. Resolving them once
-    here leaves the workers three finished files to open: N concurrent decodes
-    cannot exhaust memory, and no two workers can settle on different tiers and
-    mix resolutions within one dataset."""
+    fetches the finished map from the Hub. Resolving them once here leaves
+    the workers three finished files to open: N concurrent decodes cannot
+    exhaust memory, and no two workers can settle on different tiers and mix
+    resolutions within one dataset."""
     pytest.importorskip("lerobot", reason="--render requires the datasets extra")
     import owm_envs.datasets.video as video
 
