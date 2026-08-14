@@ -1,5 +1,6 @@
 """The Hub-backed Earth asset mirror: where files land, and how failure behaves."""
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,8 @@ def test_download_replicates_the_repo_path_under_earth_dir(fake_resources, monke
         return str(dest)
 
     monkeypatch.setattr(asset_hub, "hf_hub_download", fake_download)
-    with pytest.warns(UserWarning, match="fetching"):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         path = download_asset("maps/earth_color_full.jpg")
 
     assert path == fake_resources / "earth" / "maps" / "earth_color_full.jpg"

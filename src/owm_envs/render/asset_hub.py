@@ -37,7 +37,6 @@ def download_asset(relpath: str) -> Path | None:
     rather than a failure.
     """
     try:
-        warnings.warn(f"fetching {relpath} from {EARTH_REPO_ID}")
         return Path(
             hf_hub_download(
                 repo_id=EARTH_REPO_ID,
