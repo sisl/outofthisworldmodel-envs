@@ -1650,16 +1650,35 @@ _EARTH_RELPATHS = [
 ]
 
 
-def _seed_earth_assets(tmp_path):
+def _seed_earth_assets(resources_root):
     # A minimal, machine-independent stand-in for the real 2.1 GB of Earth
     # assets: the `earth push` tests care about which paths are named, not
     # what is in them, and asserting against real assets would make the
     # suite pass only on a machine that happens to have them on disk.
+    # Nested under "earth" because that is what `earth_dir()` -- in both
+    # `owm_envs.render.asset_hub` and `owm_envs.cli` -- actually resolves to
+    # once `resources_dir` is redirected here (`resources_dir() / "earth"`).
+    earth_root = resources_root / "earth"
     for relpath in _EARTH_RELPATHS:
-        path = tmp_path / relpath
+        path = earth_root / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"")
-    return tmp_path
+    return earth_root
+
+
+def _patch_earth_dir(monkeypatch, asset_hub, tmp_path):
+    # `earth_dir()` is looked up twice, independently: once by `earth_push`
+    # in `owm_envs.cli` (its own `from ... import earth_dir` binding) and
+    # once by `upload_assets` in `owm_envs.render.asset_hub` (its own
+    # `resources_dir` binding). Patching only the former leaves
+    # `upload_assets` resolving `folder_path` against the real machine
+    # resources -- the same by-value-binding hazard documented in
+    # `tests/render/test_earth.py`'s `fake_resources` fixture. Both must be
+    # redirected to the same seeded tree.
+    earth_root = _seed_earth_assets(tmp_path)
+    monkeypatch.setattr(asset_hub, "resources_dir", lambda: tmp_path)
+    monkeypatch.setattr("owm_envs.cli.earth_dir", lambda: earth_root)
+    return earth_root
 
 
 def test_earth_push_uploads_only_the_named_assets_and_never_mirrors(monkeypatch, tmp_path):
@@ -1684,11 +1703,12 @@ def test_earth_push_uploads_only_the_named_assets_and_never_mirrors(monkeypatch,
             calls["folder"] = kwargs
 
     monkeypatch.setattr(asset_hub, "HfApi", FakeApi)
-    monkeypatch.setattr("owm_envs.cli.earth_dir", lambda: _seed_earth_assets(tmp_path))
+    earth_root = _patch_earth_dir(monkeypatch, asset_hub, tmp_path)
     result = runner.invoke(app, ["earth", "push", "--yes"])
 
     assert result.exit_code == 0, result.output
     assert calls["create"][0] == "sislaboratory/owm-earth-textures"
+    assert calls["folder"]["folder_path"] == str(earth_root)
     assert "delete_patterns" not in calls["folder"]
     assert "maps/earth_color_full.jpg" in calls["folder"]["allow_patterns"]
     assert "sources/EarthColorMap-80k.tif" in calls["folder"]["allow_patterns"]
@@ -1716,7 +1736,7 @@ def test_earth_push_writes_the_licence_card_before_the_assets(monkeypatch, tmp_p
             order.append("folder")
 
     monkeypatch.setattr(asset_hub, "HfApi", FakeApi)
-    monkeypatch.setattr("owm_envs.cli.earth_dir", lambda: _seed_earth_assets(tmp_path))
+    _patch_earth_dir(monkeypatch, asset_hub, tmp_path)
     result = runner.invoke(app, ["earth", "push", "--yes"])
 
     assert result.exit_code == 0, result.output
@@ -1731,7 +1751,7 @@ def test_earth_push_refuses_unconfirmed_when_stdin_is_not_a_terminal(monkeypatch
             raise AssertionError("must not reach the Hub unconfirmed")
 
     monkeypatch.setattr(asset_hub, "HfApi", FakeApi)
-    monkeypatch.setattr("owm_envs.cli.earth_dir", lambda: _seed_earth_assets(tmp_path))
+    _patch_earth_dir(monkeypatch, asset_hub, tmp_path)
     result = runner.invoke(app, ["earth", "push"])
     assert result.exit_code != 0
     assert "--yes" in result.output
