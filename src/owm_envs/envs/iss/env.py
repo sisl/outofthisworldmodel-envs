@@ -140,6 +140,7 @@ class ISSEnv(PortGoalMixin, gym.Env):
         reward = float(
             docking_reward(
                 next_state, action_j, events, self.cfg, self._dock_pose,
+                self._state,
             )
         )
 

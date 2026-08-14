@@ -67,7 +67,10 @@ class HCWVectorEnv(VectorEnv):
         self._batched_reset = jax.jit(jax.vmap(self.dynamics.reset))
         self._batched_reward = jax.jit(
             jax.vmap(
-                lambda s, a, e: docking_reward(HCW_LAYOUT.slice_view(s), a, e, self.cfg)
+                lambda s, a, e, prev: docking_reward(
+                    HCW_LAYOUT.slice_view(s), a, e, self.cfg, None,
+                    HCW_LAYOUT.slice_view(prev),
+                )
             )
         )
         self._batched_noise = (
@@ -106,7 +109,12 @@ class HCWVectorEnv(VectorEnv):
         self._lane_ports: np.ndarray | None = None
         self._lane_targets: jnp.ndarray | None = None
         self._batched_reward_to = jax.jit(
-            jax.vmap(lambda s, a, e, p: docking_reward(HCW_LAYOUT.slice_view(s), a, e, self.cfg, p))
+            jax.vmap(
+                lambda s, a, e, p, prev: docking_reward(
+                    HCW_LAYOUT.slice_view(s), a, e, self.cfg, p,
+                    HCW_LAYOUT.slice_view(prev),
+                )
+            )
         )
         self._batched_dock_goal_error_to = (
             jax.jit(
@@ -210,7 +218,8 @@ class HCWVectorEnv(VectorEnv):
         if self._lane_targets is None:
             next_states, events = self._batched_step(self._states, actions_j)
             rewards = np.array(
-                self._batched_reward(next_states, actions_j, events), dtype=np.float32
+                self._batched_reward(next_states, actions_j, events, self._states),
+                dtype=np.float32,
             )
         else:
             # Same vmapped step; handing it a third batched argument is a
@@ -220,7 +229,7 @@ class HCWVectorEnv(VectorEnv):
             )
             rewards = np.array(
                 self._batched_reward_to(
-                    next_states, actions_j, events, self._lane_targets
+                    next_states, actions_j, events, self._lane_targets, self._states
                 ),
                 dtype=np.float32,
             )

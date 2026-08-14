@@ -33,7 +33,7 @@ def state_at(pos, vel=(0.0, 0.0, 0.0), quat=IDENTITY, omega=(0.0, 0.0, 0.0)) -> 
 def only(**weights) -> RewardWeights:
     """Weights with everything zeroed but the named terms."""
     zeroed = dict(position=0.0, velocity=0.0, attitude=0.0, body_rate=0.0,
-                  collision=0.0, dock_success=0.0, escape=0.0)
+                  collision=0.0, dock_success=0.0, escape=0.0, progress=0.0)
     return RewardWeights(**{**zeroed, **weights})
 
 
@@ -369,3 +369,60 @@ def test_penalties_are_negative_rewards():
     far = docking_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     near = docking_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
     assert float(far) < float(near) < 0.0
+
+
+def test_progress_is_off_by_default_and_prev_state_is_ignored():
+    cfg = ISSConfig(dock=AT_ORIGIN)
+    here, there = state_at((0.0, 0.0, 60.0)), state_at((0.0, 0.0, 200.0))
+    assert cfg.reward_weights.progress == 0.0
+    assert float(docking_reward(here, ZERO_ACTION, NO_EVENTS, cfg)) == pytest.approx(
+        float(docking_reward(here, ZERO_ACTION, NO_EVENTS, cfg, None, there))
+    )
+
+
+def test_closing_the_range_pays_on_the_step_that_closes_it():
+    # The whole point: the absolute terms make the first step of an approach
+    # cost more than it earns, so closing has to pay immediately.
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(progress=-2.0))
+    near, far = state_at((0.0, 0.0, 60.0)), state_at((0.0, 0.0, 200.0))
+
+    closing = float(docking_reward(near, ZERO_ACTION, NO_EVENTS, cfg, None, far))
+    opening = float(docking_reward(far, ZERO_ACTION, NO_EVENTS, cfg, None, near))
+    holding = float(docking_reward(near, ZERO_ACTION, NO_EVENTS, cfg, None, near))
+
+    assert closing > 0.0 > opening
+    assert holding == pytest.approx(0.0, abs=1e-6)
+    assert closing == pytest.approx(-opening, rel=1e-5)
+
+
+def test_progress_is_the_normalised_change_in_range():
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(progress=-2.0))
+    r = docking_reward(
+        state_at((0.0, 0.0, 60.0)), ZERO_ACTION, NO_EVENTS, cfg, None,
+        state_at((0.0, 0.0, 200.0)),
+    )
+    assert float(r) == pytest.approx(-2.0 * (60.0 - 200.0) / 225.0, rel=1e-5)
+
+
+def test_progress_telescopes_so_it_cannot_be_farmed_by_cycling():
+    # Potential-based in the sense of Ng et al.: the sum over a path depends
+    # only on its endpoints, so flying in and out repeatedly earns nothing and
+    # the optimal policy is unchanged.
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(progress=-2.0))
+    ranges = [300.0, 180.0, 250.0, 40.0]
+    views = [state_at((0.0, 0.0, r)) for r in ranges]
+
+    total = sum(
+        float(docking_reward(here, ZERO_ACTION, NO_EVENTS, cfg, None, prev))
+        for prev, here in zip(views, views[1:])
+    )
+
+    assert total == pytest.approx(-2.0 * (ranges[-1] - ranges[0]) / 225.0, rel=1e-5)
+
+
+def test_a_progress_weight_with_no_prev_state_is_refused():
+    # Silently dropping the term would train against a reward the config did
+    # not ask for, and every loss curve would look perfectly healthy.
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(progress=-2.0))
+    with pytest.raises(ValueError, match="prev_state"):
+        docking_reward(state_at((0.0, 0.0, 60.0)), ZERO_ACTION, NO_EVENTS, cfg)
