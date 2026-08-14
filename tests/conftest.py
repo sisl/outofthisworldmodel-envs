@@ -1,11 +1,11 @@
 """Keep the whole test suite off the network, and off the GPU.
 
 Scene construction resolves Earth textures with `allow_download=True`, so on
-a machine without the high-resolution sources on disk an unguarded run would
-pull gigabytes from the asset mirror. Any test that builds a scene reaches
-that path -- `tests/envs/iss` constructs render-mode environments too -- so
-the guard lives at the root rather than beside the render tests. Every test
-must be satisfiable by the committed fallback maps.
+a machine without the full-resolution maps on disk an unguarded run would
+pull them from the asset dataset on the Hub. Any test that builds a scene
+reaches that path -- `tests/envs/iss` constructs render-mode environments
+too -- so the guard lives at the root rather than beside the render tests.
+Every test must be satisfiable by the committed fallback maps.
 
 The suite computes on the CPU backend for two reasons. The golden rollouts
 assert bit identity, and a backend is free to lower the same arithmetic
@@ -30,7 +30,7 @@ import pytest  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    def refuse(url, *args, **kwargs):
-        raise OSError(f"tests must not download: {url}")
+    def refuse(**kwargs):
+        raise OSError(f"tests must not download: {kwargs.get('filename')}")
 
-    monkeypatch.setattr("urllib.request.urlretrieve", refuse)
+    monkeypatch.setattr("owm_envs.render.asset_hub.hf_hub_download", refuse)

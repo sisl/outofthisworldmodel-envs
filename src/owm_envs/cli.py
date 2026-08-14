@@ -4,6 +4,7 @@
     owm-envs generate --out logs/run2 --split train:512:0 --noise noncooperative
     owm-envs push logs/run1
     owm-envs list
+    owm-envs earth push
 
 `--driver auto` selects the fused JAX path when the backend supports it and
 falls back to the generic VectorEnv path otherwise, so the same command works
@@ -38,6 +39,14 @@ from .envs.common.docking_ports import PORT_NAMES
 from .envs.common.outcome import classify_batch
 from .envs.common.policies import DockParams, PolicyConfig
 from .envs.common.sensing import PRESETS
+from .render.asset_hub import (
+    EARTH_REPO_ID,
+    EARTH_REPO_OWNER,
+    download_asset,
+    earth_dir,
+    upload_assets,
+)
+from .render.earth import TEXTURE_KINDS, map_relpath, regenerate_map, source_relpath
 
 app = typer.Typer(add_completion=False, help="Generate world-model training datasets.")
 
@@ -928,6 +937,98 @@ def push(
     # named above.
     repo_id = push_run(run_dir, name=repo_name, namespace=namespace, private=private)
     typer.echo(f"[push] https://huggingface.co/datasets/{repo_id}")
+
+
+earth_app = typer.Typer(add_completion=False, help="Publish and retrieve the Earth texture assets.")
+app.add_typer(earth_app, name="earth")
+
+
+@earth_app.command("push")
+def earth_push(
+    namespace: Optional[str] = typer.Option(
+        None, help=f"Hub namespace (default: the {EARTH_REPO_ID} owner)."),
+    private: Optional[bool] = typer.Option(
+        None, "--private/--public",
+        help="Repo visibility. Given neither, a new repo is public and one that "
+             "already exists keeps the visibility it has."),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Confirm the upload up front, skipping the prompt. Required when "
+             "stdin is not a terminal."),
+) -> None:
+    """Upload the Earth maps and sources to the asset dataset repo.
+
+    The upload is additive: it replaces the files it names and leaves every
+    other file in the repo alone.
+    """
+    relpaths = [map_relpath(k) for k in TEXTURE_KINDS]
+    relpaths += [source_relpath(k) for k in TEXTURE_KINDS]
+    present = [p for p in relpaths if (earth_dir() / p).exists()]
+    if not present:
+        raise typer.BadParameter(
+            f"none of the Earth assets are present under {earth_dir()}; there is "
+            "nothing to publish"
+        )
+
+    typer.echo(f"[earth] publishing to {namespace or EARTH_REPO_OWNER}")
+    for relpath in present:
+        size = (earth_dir() / relpath).stat().st_size / 1e6
+        typer.echo(f"[earth]   {relpath} ({size:.0f} MB)")
+    if not yes:
+        if not _stdin_is_interactive():
+            raise typer.BadParameter(
+                "refusing to publish unconfirmed: stdin is not a terminal, so the "
+                "prompt cannot be answered. Check the file list above, then pass --yes.",
+                param_hint="--yes",
+            )
+        typer.confirm("Publish these files?", abort=True)
+
+    repo_id = upload_assets(present, namespace=namespace, private=private)
+    typer.echo(f"[earth] https://huggingface.co/datasets/{repo_id}")
+
+
+@earth_app.command("pull-sources")
+def earth_pull_sources() -> None:
+    """Fetch the high-resolution sources needed to regenerate the maps.
+
+    Several gigabytes. The renderer never needs these -- it reads the maps.
+    """
+    for kind in TEXTURE_KINDS:
+        relpath = source_relpath(kind)
+        path = download_asset(relpath)
+        if path is None:
+            raise typer.BadParameter(f"could not fetch {relpath} from {EARTH_REPO_ID}")
+        typer.echo(f"[earth] {path}")
+
+
+@earth_app.command("regenerate")
+def earth_regenerate(
+    kind: str = typer.Option(
+        ",".join(TEXTURE_KINDS), "--kind",
+        help="Comma-separated texture kinds to downsample."),
+) -> None:
+    """Downsample the full maps from the local sources, replacing existing maps.
+
+    This is how a source that has just been replaced reaches the renderer:
+    resolution otherwise prefers the hosted map over downsampling.
+    """
+    kinds = [k.strip() for k in kind.split(",") if k.strip()]
+    unknown = [k for k in kinds if k not in TEXTURE_KINDS]
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown texture kind(s): {', '.join(unknown)}. "
+            f"Choose from {', '.join(TEXTURE_KINDS)}.",
+            param_hint="--kind",
+        )
+    for k in kinds:
+        typer.echo(f"[earth] downsampling {k}...")
+        try:
+            typer.echo(f"[earth] {regenerate_map(k)}")
+        except FileNotFoundError as exc:
+            raise typer.BadParameter(
+                f"{exc}. Fetch the sources with `owm-envs earth pull-sources`.",
+                param_hint="--kind",
+            ) from exc
 
 
 def _simulation_fps(dt: float) -> int | None:

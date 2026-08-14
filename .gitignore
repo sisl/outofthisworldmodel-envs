@@ -226,6 +226,8 @@ src/owm_envs/render/resources/earth/sources/
 src/owm_envs/render/resources/earth/maps/*_full.*
 # temporaries from an interrupted downsample
 src/owm_envs/render/resources/earth/maps/*.part
+# huggingface_hub download metadata, created beside the assets it fetches
+src/owm_envs/render/resources/earth/.cache/
 
 # Data Outputs
 logs/

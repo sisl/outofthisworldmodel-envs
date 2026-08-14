@@ -978,10 +978,10 @@ def test_earth_textures_are_resolved_in_the_parent_before_the_worker_pool(
     tmp_path, monkeypatch
 ):
     """Every worker's scene resolves the Earth textures itself, and a miss
-    downloads and bakes a full map from a 9.6 GB source. Resolving them once
-    here leaves the workers three finished files to open: N concurrent decodes
-    cannot exhaust memory, and no two workers can settle on different tiers and
-    mix resolutions within one dataset."""
+    fetches the finished map from the Hub. Resolving them once here leaves
+    the workers three finished files to open: N concurrent decodes cannot
+    exhaust memory, and no two workers can settle on different tiers and mix
+    resolutions within one dataset."""
     pytest.importorskip("lerobot", reason="--render requires the datasets extra")
     import owm_envs.datasets.video as video
 
@@ -1638,3 +1638,170 @@ def test_a_later_splits_port_mismatch_stops_before_any_split_generates(
     # The load-bearing assertion: no driver was ever built, so no rollout ran.
     assert resolved == []
     assert not (tmp_path / "run").exists()
+
+
+_EARTH_RELPATHS = [
+    "maps/earth_color_full.jpg",
+    "maps/earth_clouds_full.jpg",
+    "maps/earth_bump_full.png",
+    "sources/EarthColorMap-80k.tif",
+    "sources/Earth-40K-Clouds.tif",
+    "sources/Earth-40K-Bump.tif",
+]
+
+
+def _seed_earth_assets(resources_root):
+    # A minimal, machine-independent stand-in for the real 2.1 GB of Earth
+    # assets: the `earth push` tests care about which paths are named, not
+    # what is in them, and asserting against real assets would make the
+    # suite pass only on a machine that happens to have them on disk.
+    # Nested under "earth" because that is what `earth_dir()` -- in both
+    # `owm_envs.render.asset_hub` and `owm_envs.cli` -- actually resolves to
+    # once `resources_dir` is redirected here (`resources_dir() / "earth"`).
+    earth_root = resources_root / "earth"
+    for relpath in _EARTH_RELPATHS:
+        path = earth_root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"")
+    return earth_root
+
+
+def _patch_earth_dir(monkeypatch, asset_hub, tmp_path):
+    # `earth_dir()` is looked up twice, independently: once by `earth_push`
+    # in `owm_envs.cli` (its own `from ... import earth_dir` binding) and
+    # once by `upload_assets` in `owm_envs.render.asset_hub` (its own
+    # `resources_dir` binding). Patching only the former leaves
+    # `upload_assets` resolving `folder_path` against the real machine
+    # resources -- the same by-value-binding hazard documented in
+    # `tests/render/test_earth.py`'s `fake_resources` fixture. Both must be
+    # redirected to the same seeded tree.
+    earth_root = _seed_earth_assets(tmp_path)
+    monkeypatch.setattr(asset_hub, "resources_dir", lambda: tmp_path)
+    monkeypatch.setattr("owm_envs.cli.earth_dir", lambda: earth_root)
+    return earth_root
+
+
+def test_earth_push_uploads_only_the_named_assets_and_never_mirrors(monkeypatch, tmp_path):
+    # A maps-only re-push must not delete the 2.1 GB of sources, so this
+    # upload is additive: allow_patterns names the files, and there is no
+    # delete_patterns. `push_run`'s mirroring semantics are wrong here.
+    from owm_envs.render import asset_hub
+
+    calls = {}
+
+    class FakeApi:
+        def create_repo(self, repo_id, **kwargs):
+            calls["create"] = (repo_id, kwargs)
+
+        def update_repo_settings(self, repo_id, **kwargs):
+            calls["settings"] = (repo_id, kwargs)
+
+        def upload_file(self, **kwargs):
+            calls["file"] = kwargs
+
+        def upload_folder(self, **kwargs):
+            calls["folder"] = kwargs
+
+    monkeypatch.setattr(asset_hub, "HfApi", FakeApi)
+    earth_root = _patch_earth_dir(monkeypatch, asset_hub, tmp_path)
+    result = runner.invoke(app, ["earth", "push", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert calls["create"][0] == "sislaboratory/owm-earth-textures"
+    assert calls["folder"]["folder_path"] == str(earth_root)
+    assert "delete_patterns" not in calls["folder"]
+    assert "maps/earth_color_full.jpg" in calls["folder"]["allow_patterns"]
+    assert "sources/EarthColorMap-80k.tif" in calls["folder"]["allow_patterns"]
+    # The committed fallbacks are already in git-lfs and are not mirrored.
+    assert not any("fallback" in p for p in calls["folder"]["allow_patterns"])
+
+
+def test_earth_push_writes_the_licence_card_before_the_assets(monkeypatch, tmp_path):
+    # The repo is public and carries imagery whose upstream terms were not
+    # recorded, so the disclosure must never be absent while the files are up.
+    from owm_envs.render import asset_hub
+
+    order = []
+
+    class FakeApi:
+        def create_repo(self, repo_id, **kwargs):
+            order.append("create")
+
+        def upload_file(self, **kwargs):
+            order.append("file")
+            assert kwargs["path_in_repo"] == "README.md"
+            assert b"were not recorded" in kwargs["path_or_fileobj"]
+
+        def upload_folder(self, **kwargs):
+            order.append("folder")
+
+    monkeypatch.setattr(asset_hub, "HfApi", FakeApi)
+    _patch_earth_dir(monkeypatch, asset_hub, tmp_path)
+    result = runner.invoke(app, ["earth", "push", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert order == ["create", "file", "folder"]
+
+
+def test_earth_push_refuses_unconfirmed_when_stdin_is_not_a_terminal(monkeypatch, tmp_path):
+    from owm_envs.render import asset_hub
+
+    class FakeApi:
+        def create_repo(self, *a, **k):
+            raise AssertionError("must not reach the Hub unconfirmed")
+
+    monkeypatch.setattr(asset_hub, "HfApi", FakeApi)
+    _patch_earth_dir(monkeypatch, asset_hub, tmp_path)
+    result = runner.invoke(app, ["earth", "push"])
+    assert result.exit_code != 0
+    assert "--yes" in result.output
+
+
+def test_earth_pull_sources_fetches_every_source(monkeypatch, tmp_path):
+    from owm_envs.render import asset_hub
+
+    fetched = []
+
+    def fake_download(relpath):
+        fetched.append(relpath)
+        return tmp_path / relpath
+
+    monkeypatch.setattr("owm_envs.cli.download_asset", fake_download)
+    result = runner.invoke(app, ["earth", "pull-sources"])
+
+    assert result.exit_code == 0, result.output
+    assert fetched == [
+        "sources/EarthColorMap-80k.tif",
+        "sources/Earth-40K-Clouds.tif",
+        "sources/Earth-40K-Bump.tif",
+    ]
+
+
+def test_earth_regenerate_downsamples_the_named_kinds(monkeypatch, tmp_path):
+    done = []
+    monkeypatch.setattr(
+        "owm_envs.cli.regenerate_map",
+        lambda kind: done.append(kind) or (tmp_path / kind),
+    )
+    result = runner.invoke(app, ["earth", "regenerate", "--kind", "color,bump"])
+
+    assert result.exit_code == 0, result.output
+    assert done == ["color", "bump"]
+
+
+def test_earth_regenerate_rejects_an_unknown_kind():
+    result = runner.invoke(app, ["earth", "regenerate", "--kind", "infrared"])
+    assert result.exit_code != 0
+    assert "infrared" in result.output
+
+
+def test_earth_regenerate_reports_a_missing_source_as_a_usage_error(monkeypatch):
+    # The realistic cause is a machine that never pulled the sources, which is
+    # the caller's situation to fix, not a traceback.
+    def missing(kind):
+        raise FileNotFoundError("EarthColorMap-80k.tif is missing")
+
+    monkeypatch.setattr("owm_envs.cli.regenerate_map", missing)
+    result = runner.invoke(app, ["earth", "regenerate", "--kind", "color"])
+    assert result.exit_code != 0
+    assert "pull-sources" in result.output
