@@ -70,34 +70,44 @@ Full 500k run: same, with the 500k gen-config and output directory:
         --render --render-workers 16 --gpu-index 1
     done
 
-Port sweep -- 3 noise variants x 8 ports x 3 successful docked episodes each,
-covering the five ports the train split uses (`harmony_fwd_pma2`,
-`harmony_nadir_cbm`, `zvezda_aft`, `pirs_nadir`, `rassvet_nadir`) and the
-three held out of it (`harmony_zenith_cbm`, `poisk_zenith`,
-`unity_nadir_cbm`):
+Port sweep -- 3 noise variants x 8 ports x 3 successful docked episodes each.
+`--port all` splits `--episodes` across the eight ports and holds each to its
+own quota, so one call per variant covers the five ports the train split uses
+(`harmony_fwd_pma2`, `harmony_nadir_cbm`, `zvezda_aft`, `pirs_nadir`,
+`rassvet_nadir`) and the three held out of it (`harmony_zenith_cbm`,
+`poisk_zenith`, `unity_nadir_cbm`) at a fixed number of docks each, rather
+than at whatever mix uniform port draws and `--require-dock` rejection leave:
 
-    PORTS="harmony_fwd_pma2 harmony_zenith_cbm harmony_nadir_cbm zvezda_aft \
-           poisk_zenith pirs_nadir rassvet_nadir unity_nadir_cbm"
     for v in nonoise coop noncoop; do
-      for p in $PORTS; do
-        uv run owm-envs rollout --out outputs/rollouts/${v}/${p} \
-          --env iss-numerical --env-config configs/iss-numerical/env/${v}_goal.toml \
-          --policy dock --port ${p} --episodes 3 --require-dock \
-          --render-views fpv,dragon_iso --render-workers 3 --gpu-index 1
-      done
+      uv run owm-envs rollout --out outputs/rollouts/${v} \
+        --env iss-numerical --env-config configs/iss-numerical/env/${v}_goal.toml \
+        --policy dock --port all --episodes 24 --require-dock \
+        --render-views fpv,dragon_iso --render-workers 16 --gpu-index 1
     done
 
-`--render-workers` fans out across episodes, not frames: a 3-episode rollout
-gets no benefit from more than 3 workers, and a 1-episode rollout gets no
-speedup at all. Parallelise a sweep by running several `rollout` invocations
-concurrently, not by raising `--render-workers` above the episode count --
-which is why the command above uses 3, not the 16 that suits `generate`'s
-many-episode splits. Rendering costs about 0.094 s per frame per view; a
-docked `iss-numerical` episode is roughly 6300 steps, so one 3-episode,
-2-view invocation above takes roughly 20 minutes (the 3 episodes render in
-parallel across the 3 workers). The sweep issues 24 such invocations -- 72
-episodes total across 3 variants x 8 ports x 3 episodes -- about 8 hours if
-run one after another.
+Each call writes a LeRobot dataset under `<out>/rollout` beside the review
+clips in `<out>/media/<view>/rollout/`, both encoded from one render pass.
+`rollout.json` names the port, seed and outcome of every episode in the order
+the dataset holds them; inside the dataset, `dock_target` is the goal pose the
+episode flew to. Pass `--no-lerobot` for clips alone.
+
+`--require-dock` retries per port, and per-port dock rates differ widely --
+under the cooperative preset they run from 22% at `unity_nadir_cbm` to 53% at
+`zvezda_aft` -- so each port gets its own `--max-attempts` cap (20x its quota
+by default) and one hard port cannot spend the whole sweep's budget. An
+attempt costs about the same whatever its lane count, since the lanes are
+vectorised but the horizon is sequential, so the retries are the floor on how
+fast a sweep can run.
+
+`--render-workers` fans out across episodes, not frames, so it pays in
+proportion to how many episodes one invocation keeps: the 24-episode call
+above uses 16, where a 1-episode rollout gets no speedup at all. Each worker
+materialises a whole episode's clips and `iter_batch_frames` submits
+`workers + 1` episodes before consuming any, so peak memory is roughly
+`(workers + 1)` episodes of video -- about 10 GB each at 512x512 over two
+views and ~6300 frames. Rendering costs about 0.094 s per frame per view, so
+one 24-episode, 2-view call is about 8 GPU-hours, near half an hour of wall
+clock across 16 workers, and the three variants about 1.5 hours in sequence.
 
 Still sequence -- a single docked episode at `harmony_fwd_pma2`, with a
 frame written every 6 s (`--frame-stride 120` at dt=0.05):
