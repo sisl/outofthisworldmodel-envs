@@ -907,7 +907,6 @@ def rollout(
     # optional and the defaults it falls back to move with the package, so a
     # clip is only reproducible from the config it was actually flown under.
     manifest = (
-        json.dumps(
             {
                 "env": env,
                 "policy": policy,
@@ -947,10 +946,7 @@ def rollout(
                     for position, (port_name, episode_seed, wanted, index, _, outcome)
                     in enumerate(kept)
                 ],
-            },
-            indent=2,
-        )
-        + "\n"
+            }
     )
 
     frames = None
@@ -992,8 +988,23 @@ def rollout(
         # encoded once and lands both as a dataset feature and as a per-episode
         # clip under media/. The writer takes one episode at a time, which is
         # what keeps a long sweep's video off the heap.
-        write_lerobot_split(out / "rollout", f"{env}/rollout", kept_batch,
-                            fps=resolved_fps, frames=frames)
+        split_root = write_lerobot_split(out / "rollout", f"{env}/rollout", kept_batch,
+                                         fps=resolved_fps, frames=frames)
+        # Read back rather than assumed: this is the split as it landed, and
+        # recording it is what lets a reader tell this manifest apart from one
+        # written before the dataset existed. A short split with a manifest
+        # claiming the full count is the failure the whole marker exists to
+        # prevent, so it is refused here rather than described.
+        written = json.loads(
+            (split_root / "meta" / "info.json").read_text()
+        )["total_episodes"]
+        if written != kept_batch.num_episodes:
+            raise typer.BadParameter(
+                f"the split under {split_root} holds {written} episodes, not the "
+                f"{kept_batch.num_episodes} that were rolled; the rollout is not "
+                f"being recorded as complete"
+            )
+        manifest["dataset_episodes"] = written
         typer.echo(f"[rollout] wrote LeRobot split to {out / 'rollout'}")
     elif render:
         # The tees are pass-through generators, so with no dataset writer
@@ -1005,8 +1016,15 @@ def rollout(
         # one-episode bound both tees are built to keep.
         deque(frames, maxlen=0)
 
+    # `dataset_episodes` is set only above, only once the split is on disk and
+    # counted, and is null for a --no-lerobot run that wrote none. Its
+    # PRESENCE is what marks the manifest as one written after the outputs it
+    # describes: a manifest from before this ordering existed carries the full
+    # episode list whether or not the run that wrote it ever finished, so a
+    # reader that only counted episodes would take that partial for a whole.
+    manifest.setdefault("dataset_episodes", None)
     cfg.to_toml(out / "env_config.toml")
-    (out / "rollout.json").write_text(manifest)
+    (out / "rollout.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     typer.echo(f"[done] {out}")
 

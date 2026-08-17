@@ -226,6 +226,30 @@ def run_with_dataset(*args):
     return runner.invoke(app, ["rollout", "--env", "iss", "--no-render", *args])
 
 
+def test_the_manifest_records_the_split_it_wrote(tmp_path):
+    # Read back from the split rather than assumed, and present only on a run
+    # that reached the end: a manifest written before the dataset existed
+    # carries the same episode list whether or not its run finished, so this
+    # key is what tells the two apart on disk.
+    result = run_with_dataset("--out", str(tmp_path), "--policy", "dock",
+                              "--port", "zvezda_aft", "--episodes", "2",
+                              "--steps", "200")
+    assert result.exit_code == 0, result.output
+    manifest = json.loads((tmp_path / "rollout.json").read_text())
+    assert manifest["dataset_episodes"] == len(manifest["episodes"]) == 2
+
+
+def test_a_rollout_with_no_split_records_none(tmp_path):
+    result = run("--out", str(tmp_path), "--policy", "dock", "--port",
+                 "zvezda_aft", "--episodes", "1", "--steps", "200")
+    assert result.exit_code == 0, result.output
+    manifest = json.loads((tmp_path / "rollout.json").read_text())
+    # Present and null, not absent: the key is what dates the manifest, and a
+    # --no-lerobot run is still a run that finished.
+    assert "dataset_episodes" in manifest
+    assert manifest["dataset_episodes"] is None
+
+
 def test_a_lerobot_split_is_written_by_default(tmp_path):
     result = run_with_dataset("--out", str(tmp_path), "--policy", "dock",
                               "--port", "zvezda_aft,poisk_zenith",
