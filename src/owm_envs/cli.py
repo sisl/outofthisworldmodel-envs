@@ -74,6 +74,64 @@ def _policy_config(policy: str, observe: str, ports: str) -> PolicyConfig:
     return PolicyConfig(type=policy, observe=observe, dock=DockParams(ports=names))
 
 
+def _rollout_ports(spec: str) -> tuple[str, ...]:
+    """`--port` -> the ports to fly, in the order their episodes are rolled.
+
+    Empty is a portless rollout, which flies the single pose in the env
+    config's dock section. "all" is every entry of `PORT_NAMES` in that
+    table's order; anything else is a comma- or plus-joined list, kept in the
+    order it was written.
+    """
+    if not spec:
+        return ()
+    if spec == "all":
+        return PORT_NAMES
+    names = tuple(spec.replace("+", ",").split(","))
+    if not all(names):
+        # Dropping the empty pieces instead would make "," a portless rollout
+        # and "zvezda_aft," a one-port one, both under a --port the manifest
+        # still records verbatim -- a run claiming a port set it did not fly.
+        raise typer.BadParameter(
+            f"--port '{spec}' has an empty entry between its separators; write "
+            "the ports as a comma-joined list with no leading, trailing or "
+            "doubled separators, or pass no --port at all to fly the env "
+            "config's own dock pose."
+        )
+    unknown = [name for name in names if name not in PORT_NAMES]
+    if unknown:
+        raise typer.BadParameter(
+            f"unknown port(s) {', '.join(unknown)}; one of: {', '.join(PORT_NAMES)}"
+        )
+    repeated = [name for name in dict.fromkeys(names) if names.count(name) > 1]
+    if repeated:
+        # The list is what sets each port's share of --episodes, so a repeat
+        # would quietly hand that port a double quota under a spelling that
+        # reads as a plain list.
+        raise typer.BadParameter(
+            f"port(s) {', '.join(repeated)} named more than once; each port's "
+            "share of --episodes comes from this list, so a repeat would "
+            "double it. Name each port once."
+        )
+    return names
+
+
+def _port_quotas(ports: tuple[str, ...], episodes: int) -> list[tuple[str, int]]:
+    """Split `episodes` across `ports` as evenly as the total allows.
+
+    The remainder goes to the earlier ports, so five episodes across three
+    ports is 2/2/1 rather than a refusal: a sweep asks for a round total and
+    wants it spread as evenly as that total permits. A portless rollout is one
+    lot of every episode, under the empty port name.
+    """
+    if not ports:
+        return [("", episodes)]
+    base, remainder = divmod(episodes, len(ports))
+    return [
+        (name, base + (1 if index < remainder else 0))
+        for index, name in enumerate(ports)
+    ]
+
+
 def _check_dock_ports_agree(
     cfg: BaseTaskConfig, policy_cfg: PolicyConfig, context: str
 ) -> None:
@@ -581,11 +639,15 @@ def rollout(
              "environment's own defaults."),
     policy: str = typer.Option("dock", help="dock | orbit | random. 'union' is a "
                                "training mixture, not a behaviour worth filming."),
-    port: str = typer.Option("", help="Docking port to fly to. Dock policy only; "
-                             f"one of {', '.join(PORT_NAMES)}. Empty keeps the "
+    port: str = typer.Option("", help="Docking port(s) to fly to. Dock policy only; "
+                             f"'all' or a comma-joined list of {', '.join(PORT_NAMES)}. "
+                             "Several ports split --episodes between them as evenly as "
+                             "the total allows, each flown to its own quota, which is "
+                             "how one call sweeps a whole station. Empty keeps the "
                              "single pose in the env config's dock section."),
-    episodes: int = typer.Option(1, help="Episodes to keep."),
-    seed: int = typer.Option(0, help="Seed for the first attempt; retries advance it."),
+    episodes: int = typer.Option(1, help="Episodes to keep, across every --port named."),
+    seed: int = typer.Option(0, help="Seed for the first attempt; retries and further "
+                                     "ports advance it."),
     steps: int = typer.Option(7200, help="Max steps per episode."),
     require_dock: bool = typer.Option(
         False, "--require-dock/--no-require-dock",
@@ -593,9 +655,16 @@ def rollout(
              "--episodes of them exist. Off by default: a rollout of whatever "
              "happened is the more common thing to want."),
     max_attempts: Optional[int] = typer.Option(
-        None, help="Cap on episodes rolled while retrying (default: 20x --episodes). "
-                   "A port that cannot be reached under a given noise preset is a "
-                   "finding, not something to loop on."),
+        None, help="Cap on episodes rolled while retrying ONE port (default: 20x that "
+                   "port's quota). A port that cannot be reached under a given noise "
+                   "preset is a finding, not something to loop on, and capping each "
+                   "port separately is what stops one unreachable port from spending "
+                   "the whole sweep's budget."),
+    lerobot: bool = typer.Option(
+        True, "--lerobot/--no-lerobot",
+        help="Write the kept episodes as a LeRobot dataset under <out>/rollout, "
+             "beside the clips. On by default: the states, actions and rewards are "
+             "what makes a rollout trainable rather than only watchable."),
     render: bool = typer.Option(True, "--render/--no-render",
                                 help="Render video. On by default -- video is the point."),
     render_views: str = typer.Option(
@@ -608,13 +677,15 @@ def rollout(
         None, help="GPU this run uses, for the rollout as well as the renderer."
     ),
 ) -> None:
-    """Roll out a few episodes and write their video, for review or figures.
+    """Roll out episodes with a chosen outcome, and write their video and data.
 
-    Unlike `generate`, which fills a transition budget and writes a LeRobot
-    dataset, this produces a handful of clips and no dataset. It is also the
-    only path that can insist on a particular OUTCOME: `--require-dock` keeps
-    drawing seeds until it has the requested number of successful docks, which
-    is what a port-by-port sweep of docking footage needs.
+    Unlike `generate`, which fills a transition budget from whatever the policy
+    happens to do, this is the path that can insist on a particular OUTCOME:
+    `--require-dock` keeps drawing seeds until it has the requested number of
+    successful docks. Naming several `--port`s splits `--episodes` between
+    them and holds each to its own quota, so one call sweeps a whole station
+    at a fixed number of docks per port rather than at whatever mix uniform
+    port draws and rejection happen to leave.
     """
     # Every argument check comes first, before the env config is read, before
     # the GPU is probed -- which pins a device for the whole process -- and
@@ -642,9 +713,16 @@ def rollout(
         raise typer.BadParameter(f"--steps must be >= 1, got {steps}")
     if render_workers < 1:
         raise typer.BadParameter(f"--render-workers must be >= 1, got {render_workers}")
-    if port and port not in PORT_NAMES:
+    ports = _rollout_ports(port)
+    if len(ports) > episodes:
+        # Silently dropping the tail would report an eight-port sweep that
+        # flew four, which is exactly the claim this command exists to make
+        # truthfully.
         raise typer.BadParameter(
-            f"unknown port '{port}'; one of: {', '.join(PORT_NAMES)}"
+            f"--episodes {episodes} is fewer than the {len(ports)} ports named, "
+            f"so {len(ports) - episodes} of them would fly nothing while the run "
+            f"still reported a {len(ports)}-port sweep. Raise --episodes to at "
+            f"least {len(ports)}, or name fewer ports."
         )
     if port and policy != "dock":
         # Refused rather than ignored: the '{policy}' policy never regulates to
@@ -665,13 +743,26 @@ def rollout(
             "drop --no-render."
         )
     view_keys = keys_for_names(_parse_render_views(render_views))
-    attempts_cap = max_attempts if max_attempts is not None else 20 * episodes
-    if attempts_cap < episodes:
+    quotas = _port_quotas(ports, episodes)
+    largest_quota = max(quota for _, quota in quotas)
+    if max_attempts is not None and max_attempts < largest_quota:
         raise typer.BadParameter(
-            f"--max-attempts {attempts_cap} is below --episodes {episodes}, so "
-            f"the requested number of episodes cannot be reached however they "
-            f"turn out; raise it to at least {episodes}."
+            f"--max-attempts {max_attempts} is below the {largest_quota} episodes "
+            f"wanted from a single port, so that port's quota cannot be reached "
+            f"however the episodes turn out; raise it to at least {largest_quota}."
         )
+    if lerobot:
+        # An environment missing lerobot otherwise hits ModuleNotFoundError deep
+        # inside write_lerobot_split -- which under --require-dock is an hour of
+        # retries away, taking every episode rolled in the meantime with it.
+        try:
+            import lerobot  # noqa: F401
+        except ModuleNotFoundError as exc:
+            raise typer.BadParameter(
+                "lerobot is not installed; the datasets stack ships in the base "
+                "install, so rebuild the environment with 'uv sync' -- or pass "
+                "--no-lerobot"
+            ) from exc
     # Created up front rather than at write time: an unwritable path, or one
     # that is already a file, is the caller naming the wrong directory, and
     # under --require-dock the first write comes an hour of retries later --
@@ -682,6 +773,20 @@ def rollout(
         raise typer.BadParameter(
             f"cannot write --out {out}: {exc}", param_hint="--out"
         ) from exc
+    # Refused here rather than left to the writer, which refuses it too but
+    # only at the very end: by then this run has replaced rollout.json,
+    # env_config.toml and the first clip, so what the failure leaves behind is
+    # a manifest describing episodes the surviving split does not hold. The
+    # rollout is the expensive part and the overwrite is the destructive one,
+    # and both come before the writer ever looks.
+    if lerobot and (out / "rollout").exists():
+        raise typer.BadParameter(
+            f"{out / 'rollout'} already holds a LeRobot split, which cannot be "
+            f"written over. Remove {out} and roll again -- a partial split "
+            f"cannot be resumed either, so there is nothing there to keep -- or "
+            f"name a different --out.",
+            param_hint="--out",
+        )
 
     env_spec = ENV_REGISTRY[env]
     try:
@@ -710,15 +815,19 @@ def rollout(
 
     _check_dock_ports_agree(cfg, policy_cfg, "rollout")
 
+    # Resolved before the rollout, exactly as generate does it and for the
+    # same reason: with --require-dock the outputs are not reached until an
+    # hour of retries is already spent, and a dt with no whole frame rate to
+    # stamp them at may not be discovered there. Both the clips and the
+    # dataset carry it, so it is wanted whenever either is written.
+    resolved_fps = _resolve_fps(None, cfg.dt) if render or lerobot else 0
+
     if render:
         from .render.device import check_gpu_index, select_gpu
 
-        # Both of these resolve before the rollout, exactly as generate does
-        # them and for the same reason: with --require-dock the clips are not
-        # reached until an hour of retries is already spent, and neither an
-        # unusable --gpu-index nor a dt with no whole frame rate to write the
-        # clips at may be discovered there.
-        resolved_fps = _resolve_fps(None, cfg.dt)
+        # An unusable --gpu-index is refused here for that same reason: it
+        # pins a device for the whole process, and discovering it after the
+        # retries would take every episode rolled in the meantime with it.
         try:
             if render_workers == 1:
                 select_gpu(gpu_index)
@@ -727,42 +836,55 @@ def rollout(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
 
-    # Seeds are retried whole batches at a time: an attempt rolls as many
-    # episodes as are still wanted, keeps whichever qualify, and the next
-    # attempt asks for the shortfall under the next seed.
-    driver_seed, attempted, kept = seed, 0, []
-    while len(kept) < episodes and attempted < attempts_cap:
-        wanted = min(episodes - len(kept), attempts_cap - attempted)
-        chosen = _resolve_driver("auto", cfg, policy_cfg, wanted, env_spec)
-        batch = chosen.driver.generate(
-            RolloutSpec(num_episodes=wanted, max_steps=steps, seed=driver_seed)
-        )
-        outcomes = classify_batch(batch, cfg, env_spec)
-        for index, outcome in enumerate(outcomes):
-            if len(kept) == episodes:
-                break
-            if require_dock and not outcome.docked:
-                continue
-            kept.append((driver_seed, wanted, index, batch, outcome))
-        attempted += batch.num_episodes
-        typer.echo(
-            f"[rollout] seed={driver_seed}: {batch.num_episodes} episode(s), "
-            f"{sum(o.docked for o in outcomes)} docked, "
-            f"{len(kept)}/{episodes} kept ({attempted}/{attempts_cap} rolled)"
-        )
-        driver_seed += 1
+    # One port at a time, each held to its own quota and its own attempt cap,
+    # so a port that docks rarely spends only its own retries rather than the
+    # sweep's. Within a port, seeds are retried whole batches at a time: an
+    # attempt rolls as many episodes as are still wanted there, keeps whichever
+    # qualify, and the next attempt asks for the shortfall under the next seed.
+    # The seed advances across ports as well as across retries -- restarting it
+    # per port would fly every port from the same initial conditions.
+    driver_seed, kept = seed, []
+    for port_name, quota in quotas:
+        try:
+            port_policy_cfg = _policy_config(policy, "measurement", port_name)
+        except Exception as exc:  # pydantic rejects unknown policies and ports
+            raise typer.BadParameter(f"invalid policy '{policy}': {exc}") from exc
+        cap = max_attempts if max_attempts is not None else 20 * quota
+        label = f"{port_name} " if port_name else ""
+        attempted, port_kept = 0, []
+        while len(port_kept) < quota and attempted < cap:
+            wanted = min(quota - len(port_kept), cap - attempted)
+            chosen = _resolve_driver("auto", cfg, port_policy_cfg, wanted, env_spec)
+            batch = chosen.driver.generate(
+                RolloutSpec(num_episodes=wanted, max_steps=steps, seed=driver_seed)
+            )
+            outcomes = classify_batch(batch, cfg, env_spec)
+            for index, outcome in enumerate(outcomes):
+                if len(port_kept) == quota:
+                    break
+                if require_dock and not outcome.docked:
+                    continue
+                port_kept.append((port_name, driver_seed, wanted, index, batch, outcome))
+            attempted += batch.num_episodes
+            typer.echo(
+                f"[rollout] {label}seed={driver_seed}: {batch.num_episodes} episode(s), "
+                f"{sum(o.docked for o in outcomes)} docked, "
+                f"{len(port_kept)}/{quota} kept ({attempted}/{cap} rolled)"
+            )
+            driver_seed += 1
 
-    if len(kept) < episodes:
-        raise typer.BadParameter(
-            f"only {len(kept)} of {attempted} episodes docked, short of the "
-            f"{episodes} requested. Raise --max-attempts, or check whether "
-            f"{'port ' + port if port else 'this dock pose'} is reachable under "
-            f"this config's sensor noise."
-        )
+        if len(port_kept) < quota:
+            raise typer.BadParameter(
+                f"only {len(port_kept)} of {attempted} episodes docked at "
+                f"{'port ' + port_name if port_name else 'this dock pose'}, short "
+                f"of the {quota} wanted there. Raise --max-attempts, or check "
+                f"whether it is reachable under this config's sensor noise."
+            )
+        kept.extend(port_kept)
 
-    source = kept[0][3]
+    source = kept[0][4]
     kept_batch = pack_episodes(
-        [_episode_row(batch, index) for _, _, index, batch, _ in kept],
+        [_episode_row(batch, index) for _, _, _, index, batch, _ in kept],
         obs_dim=source.observations.shape[2],
         act_dim=source.actions.shape[2],
         records_policy_ids=source.policy_ids is not None,
@@ -772,16 +894,27 @@ def rollout(
         records_terminal_events=source.terminal_events is not None,
     )
 
+    # Built now so a batch that cannot be described fails before anything is
+    # rendered, but flushed last, exactly as generate does with its own run
+    # metadata: these two files are what mark the rollout complete, so a
+    # failure in the render or the dataset write must not leave them behind.
+    # Nothing lerobot writes can serve as that marker -- it creates
+    # meta/info.json with the dataset, updates it as episodes are saved, and
+    # flushes meta/episodes every ten of them -- so a reader has no other way
+    # to tell a finished rollout from an abandoned one.
+    #
     # The config as run, not the file that was passed: --env-config is
     # optional and the defaults it falls back to move with the package, so a
     # clip is only reproducible from the config it was actually flown under.
-    cfg.to_toml(out / "env_config.toml")
-    (out / "rollout.json").write_text(
-        json.dumps(
+    manifest = (
             {
                 "env": env,
                 "policy": policy,
+                # `port` as it was asked for, so a single-port manifest reads
+                # exactly as it always has; `ports` is what that expanded to,
+                # which is the only place "all" is resolved to a list.
                 "port": port,
+                "ports": list(ports),
                 "require_dock": require_dock,
                 # The horizon flown, which the env config cannot supply: an
                 # episode ends at min(--steps, cfg.max_steps), so a lowered
@@ -798,23 +931,25 @@ def rollout(
                 # clip and its stills directory carry; `batch_index` is the
                 # position within the attempt that rolled it, and the two
                 # differ whenever an attempt's earlier episodes were dropped.
+                # `port` is per episode and not only per run: a multi-port
+                # rollout is one dataset, and which port an episode flew to is
+                # not recoverable from its position in it.
                 "episodes": [
                     {
                         "episode": position,
+                        "port": port_name or None,
                         "seed": episode_seed,
                         "wanted": wanted,
                         "batch_index": index,
                         **asdict(outcome),
                     }
-                    for position, (episode_seed, wanted, index, _, outcome)
+                    for position, (port_name, episode_seed, wanted, index, _, outcome)
                     in enumerate(kept)
                 ],
-            },
-            indent=2,
-        )
-        + "\n"
+            }
     )
 
+    frames = None
     if render:
         from .datasets.video import (
             iter_batch_frames,
@@ -845,14 +980,51 @@ def rollout(
         frames = tee_episode_clips(frames, out / "media", "rollout", resolved_fps)
         if frame_stride:
             frames = tee_episode_stills(frames, out / "frames", frame_stride)
-        # Both tees are pass-through generators, and unlike generate there is
-        # no dataset writer downstream to pull them, so nothing renders unless
-        # this drains the stream itself. Drained through a zero-length deque
-        # rather than a `for` loop: a loop variable is bound until the NEXT
-        # next() returns, holding the episode just written while the pool
-        # renders the one after it -- two episodes of every view at once,
-        # which is the one-episode bound both tees are built to keep.
+
+    if lerobot:
+        from .datasets.lerobot_writer import write_lerobot_split
+
+        # The tees hang off the same stream the writer pulls, so every view is
+        # encoded once and lands both as a dataset feature and as a per-episode
+        # clip under media/. The writer takes one episode at a time, which is
+        # what keeps a long sweep's video off the heap.
+        split_root = write_lerobot_split(out / "rollout", f"{env}/rollout", kept_batch,
+                                         fps=resolved_fps, frames=frames)
+        # Read back rather than assumed: this is the split as it landed, and
+        # recording it is what lets a reader tell this manifest apart from one
+        # written before the dataset existed. A short split with a manifest
+        # claiming the full count is the failure the whole marker exists to
+        # prevent, so it is refused here rather than described.
+        written = json.loads(
+            (split_root / "meta" / "info.json").read_text()
+        )["total_episodes"]
+        if written != kept_batch.num_episodes:
+            raise typer.BadParameter(
+                f"the split under {split_root} holds {written} episodes, not the "
+                f"{kept_batch.num_episodes} that were rolled; the rollout is not "
+                f"being recorded as complete"
+            )
+        manifest["dataset_episodes"] = written
+        typer.echo(f"[rollout] wrote LeRobot split to {out / 'rollout'}")
+    elif render:
+        # The tees are pass-through generators, so with no dataset writer
+        # downstream to pull them nothing renders unless this drains the
+        # stream itself. Drained through a zero-length deque rather than a
+        # `for` loop: a loop variable is bound until the NEXT next() returns,
+        # holding the episode just written while the pool renders the one
+        # after it -- two episodes of every view at once, which is the
+        # one-episode bound both tees are built to keep.
         deque(frames, maxlen=0)
+
+    # `dataset_episodes` is set only above, only once the split is on disk and
+    # counted, and is null for a --no-lerobot run that wrote none. Its
+    # PRESENCE is what marks the manifest as one written after the outputs it
+    # describes: a manifest from before this ordering existed carries the full
+    # episode list whether or not the run that wrote it ever finished, so a
+    # reader that only counted episodes would take that partial for a whole.
+    manifest.setdefault("dataset_episodes", None)
+    cfg.to_toml(out / "env_config.toml")
+    (out / "rollout.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     typer.echo(f"[done] {out}")
 
