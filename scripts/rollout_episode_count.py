@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Print how many episodes a finished rollout holds; 0 if it did not finish.
+"""Print how many episodes a finished rollout's dataset holds; else 0.
+
+Every caller publishes a LeRobot dataset, so a rollout that wrote no split is
+not a candidate however cleanly it finished -- counting its episodes would let
+a push mirror a dataset repo that contains no dataset.
 
 Stdlib only, so the generation and push scripts can call it per directory
 without paying an environment resolve each time.
@@ -22,6 +26,12 @@ directory predates the guarantee and cannot be trusted to hold what it claims.
 
 When the key is present it is the split's own episode count, read back from
 disk after the write, or null for a `--no-lerobot` run that wrote no split.
+Null counts as nothing here for the reason above: the run finished, but not
+with the thing these scripts exist to publish.
+
+So the count is printed only when the key is present, is not null, and agrees
+with the episode list. Everything else -- no manifest, no key, a null, or a
+disagreement -- is 0.
 """
 
 import json
@@ -32,9 +42,7 @@ manifest = pathlib.Path(sys.argv[1]) / "rollout.json"
 try:
     run = json.loads(manifest.read_text())
     episodes = len(run["episodes"])
-    if "dataset_episodes" not in run:
-        raise KeyError("dataset_episodes")
-    written = run["dataset_episodes"]
-    print(episodes if written is None or written == episodes else 0)
+    written = run["dataset_episodes"]  # KeyError dates a pre-marker manifest
+    print(episodes if written == episodes else 0)
 except (OSError, ValueError, KeyError, TypeError):
     print(0)
