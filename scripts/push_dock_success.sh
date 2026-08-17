@@ -24,8 +24,9 @@ repo_id="$NAMESPACE/$REPO_NAME"
 
 # Refuse a partial upload, for the reason push refuses one: the upload is a
 # mirror, so a half-finished run silently deletes the previous complete one.
-# Counted rather than merely found: meta/info.json exists from the moment the
-# dataset is created, so a killed run leaves one behind reading zero episodes.
+# Counted rather than merely found, and only for a finalized split:
+# meta/info.json exists from the moment the dataset is created and updates as
+# episodes are saved, so a killed run leaves one behind looking healthy.
 have=$(python3 scripts/split_episode_count.py "$OUT/rollout")
 if [ "$have" -ne "$EPISODES" ]; then
   echo "[refusing] $OUT/rollout holds $have of $EPISODES episodes; generate it first with:"

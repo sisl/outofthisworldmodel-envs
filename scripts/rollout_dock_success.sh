@@ -37,11 +37,13 @@ LOG=${LOG:-$LOG_DIR/dock_success_${EPISODES}ep.log}
 
 mkdir -p "$LOG_DIR"
 
-# The split's episode COUNT is the completion marker, not the presence of its
-# meta/info.json: that file exists from the moment the dataset is created, so
-# a killed run leaves one behind reading zero episodes. A killed run also
-# leaves a corrupt parquet tail and cannot be resumed, which is why anything
-# short of the full count is deleted rather than continued.
+# How many episodes the split can be LOADED for, which is what completion
+# means here: the helper counts only a finalized split, since the presence of
+# meta/info.json says nothing -- it exists from the moment the dataset is
+# created and updates as episodes are saved, so a killed run leaves one behind
+# looking healthy. A killed run also leaves a corrupt parquet tail and cannot
+# be resumed, which is why anything short of the full count is deleted rather
+# than continued.
 have=$(python3 scripts/split_episode_count.py "$OUT/rollout")
 if [ "$have" -eq "$EPISODES" ]; then
   echo "[skip] $OUT already holds $EPISODES episodes"

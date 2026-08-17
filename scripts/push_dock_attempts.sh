@@ -33,8 +33,9 @@ fi
 
 # Refuse a partial upload, for the reason push refuses one: the upload is a
 # mirror, so a half-finished tree silently deletes the previous complete one.
-# Counted rather than merely found: meta/info.json exists from the moment the
-# dataset is created, so a killed pair leaves one behind reading zero episodes.
+# Counted rather than merely found, and only for a finalized split:
+# meta/info.json exists from the moment the dataset is created and updates as
+# episodes are saved, so a killed pair leaves one behind looking healthy.
 shopt -s nullglob  # an unmatched glob must count as no dirs, not as one literal
 missing=0
 for d in "$OUT_ROOT"/*/*/; do

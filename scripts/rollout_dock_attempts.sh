@@ -66,9 +66,10 @@ done | xargs -P "$JOBS" -L 1 bash -c '
   set -uo pipefail
   m=$1; p=$2; req=$3
   out="$OUT_ROOT/$m/$p"
-  # The episode COUNT in the split is the completion marker, not the presence
-  # of its meta/info.json: that file exists from the moment the dataset is
-  # created, so a killed pair leaves one behind reading zero episodes.
+  # How many episodes the split can be LOADED for: the helper counts only a
+  # finalized split, since meta/info.json exists from the moment the dataset
+  # is created and updates as episodes are saved, so a killed pair leaves one
+  # behind looking healthy.
   # No apostrophes in this body -- it is single-quoted for xargs.
   have=$(python3 scripts/split_episode_count.py "$out/rollout")
   if [ "$have" -eq "$EPISODES" ]; then echo "[skip] $m/$p"; exit 0; fi
