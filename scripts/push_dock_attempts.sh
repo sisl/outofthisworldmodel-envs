@@ -33,10 +33,16 @@ fi
 
 # Refuse a partial upload, for the reason push refuses one: the upload is a
 # mirror, so a half-finished tree silently deletes the previous complete one.
+# Counted rather than merely found: meta/info.json exists from the moment the
+# dataset is created, so a killed pair leaves one behind reading zero episodes.
 shopt -s nullglob  # an unmatched glob must count as no dirs, not as one literal
 missing=0
 for d in "$OUT_ROOT"/*/*/; do
-  [ -f "$d/rollout/meta/info.json" ] || { echo "[incomplete] $d"; missing=$((missing + 1)); }
+  have=$(python3 scripts/split_episode_count.py "$d/rollout")
+  [ "$have" -eq "$EPISODES" ] || {
+    echo "[incomplete] $d holds $have of $EPISODES episodes"
+    missing=$((missing + 1))
+  }
 done
 count=$(find "$OUT_ROOT" -mindepth 2 -maxdepth 2 -type d | wc -l)
 if [ "$missing" -ne 0 ] || [ "$count" -ne "$PAIRS" ]; then
