@@ -894,11 +894,19 @@ def rollout(
         records_terminal_events=source.terminal_events is not None,
     )
 
+    # Built now so a batch that cannot be described fails before anything is
+    # rendered, but flushed last, exactly as generate does with its own run
+    # metadata: these two files are what mark the rollout complete, so a
+    # failure in the render or the dataset write must not leave them behind.
+    # Nothing lerobot writes can serve as that marker -- it creates
+    # meta/info.json with the dataset, updates it as episodes are saved, and
+    # flushes meta/episodes every ten of them -- so a reader has no other way
+    # to tell a finished rollout from an abandoned one.
+    #
     # The config as run, not the file that was passed: --env-config is
     # optional and the defaults it falls back to move with the package, so a
     # clip is only reproducible from the config it was actually flown under.
-    cfg.to_toml(out / "env_config.toml")
-    (out / "rollout.json").write_text(
+    manifest = (
         json.dumps(
             {
                 "env": env,
@@ -996,6 +1004,9 @@ def rollout(
         # after it -- two episodes of every view at once, which is the
         # one-episode bound both tees are built to keep.
         deque(frames, maxlen=0)
+
+    cfg.to_toml(out / "env_config.toml")
+    (out / "rollout.json").write_text(manifest)
 
     typer.echo(f"[done] {out}")
 

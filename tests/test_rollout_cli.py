@@ -276,6 +276,28 @@ def test_render_without_lerobot_stays_allowed(tmp_path, monkeypatch):
     assert isinstance(result.exception, RuntimeError), result.output
 
 
+def test_a_failed_dataset_write_leaves_no_manifest(tmp_path, monkeypatch):
+    """rollout.json is the completion marker, so a failure must not write one.
+
+    Nothing lerobot writes can serve as that marker: it creates meta/info.json
+    with the dataset, updates the count as episodes are saved, and flushes
+    meta/episodes every ten of them. So a reader that wants to know whether a
+    rollout finished has only this file to go on, and it must mean it.
+    """
+    from owm_envs.datasets import lerobot_writer as writer
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("writer exploded")
+
+    monkeypatch.setattr(writer, "write_lerobot_split", boom)
+    result = run_with_dataset("--out", str(tmp_path), "--policy", "dock",
+                              "--port", "zvezda_aft", "--episodes", "1",
+                              "--steps", "200")
+    assert result.exit_code != 0
+    assert not (tmp_path / "rollout.json").exists()
+    assert not (tmp_path / "env_config.toml").exists()
+
+
 def test_an_out_holding_a_split_is_refused_before_anything_is_overwritten(tmp_path):
     # The writer refuses an existing split, but only once the rollout is spent
     # and the manifest already replaced -- which leaves rollout.json describing
