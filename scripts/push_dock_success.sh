@@ -30,10 +30,11 @@ if [ ! -f "$OUT/rollout/meta/info.json" ]; then
   exit 1
 fi
 
-uv run python - "$OUT" "$REPO_NAME" "$EPISODES" <<'PY'
+uv run python - "$OUT" "$REPO_NAME" "$EPISODES" "$repo_id" <<'PY'
 import collections, json, pathlib, sys
 
 root, repo_name, episodes = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+repo_id = sys.argv[4]
 run = json.loads((root / "rollout.json").read_text())
 rows = run["episodes"]
 if len(rows) != episodes:
@@ -99,10 +100,18 @@ episode in the order the dataset holds them.
 
 ## Loading
 
+The LeRobot files live under `rollout/` rather than at the repo root, which is
+how the `owm-envs` datasets are laid out -- each split is a self-contained
+LeRobot dataset in its own directory. So the repo is fetched first and opened
+from that subdirectory; the id passed to `LeRobotDataset` is the one the split
+was written with, not the Hub repo.
+
 ```python
+from huggingface_hub import snapshot_download
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-ds = LeRobotDataset("{repo_name}", root="rollout")
+local = snapshot_download("{repo_id}", repo_type="dataset")
+ds = LeRobotDataset("iss-numerical/rollout", root=f"{{local}}/rollout")
 ```
 
 ## Reproducing one episode

@@ -44,10 +44,11 @@ if [ "$missing" -ne 0 ] || [ "$count" -ne "$PAIRS" ]; then
   exit 1
 fi
 
-uv run python - "$OUT_ROOT" "$REPO_NAME" "$EPISODES" <<'PY'
+uv run python - "$OUT_ROOT" "$REPO_NAME" "$EPISODES" "$repo_id" <<'PY'
 import json, pathlib, sys
 
 root, repo_name, episodes = pathlib.Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+repo_id = sys.argv[4]
 occupied = {"dragon": "harmony_fwd_pma2", "cygnus": "unity_nadir_cbm",
             "soyuz": "zvezda_aft"}
 
@@ -124,11 +125,22 @@ first-person camera, under `observation.images.fpv`.
 
 ## Loading one pair
 
+Each pair is a self-contained LeRobot dataset under its own
+`<model>/<port>/rollout/`, so the repo is fetched first and opened from the
+pair's subdirectory; the id passed to `LeRobotDataset` is the one the split
+was written with, not the Hub repo.
+
 ```python
+from huggingface_hub import snapshot_download
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-ds = LeRobotDataset("{repo_name}", root="dragon/harmony_fwd_pma2/rollout")
+local = snapshot_download("{repo_id}", repo_type="dataset")
+ds = LeRobotDataset("iss-numerical/rollout",
+                    root=f"{{local}}/dragon/harmony_fwd_pma2/rollout")
 ```
+
+To fetch one pair rather than all {len(pairs)}, pass
+`allow_patterns="dragon/harmony_fwd_pma2/*"` to `snapshot_download`.
 
 ## Reproducing one episode
 
