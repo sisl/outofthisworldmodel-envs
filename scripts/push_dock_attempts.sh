@@ -33,13 +33,14 @@ fi
 
 # Refuse a partial upload, for the reason push refuses one: the upload is a
 # mirror, so a half-finished tree silently deletes the previous complete one.
-# Counted rather than merely found, and only for a finalized split:
-# meta/info.json exists from the moment the dataset is created and updates as
-# episodes are saved, so a killed pair leaves one behind looking healthy.
+# Read from rollout.json, which `rollout` writes last, after the render and
+# the dataset write. Nothing lerobot writes says the same thing: it creates
+# meta/info.json with the dataset and flushes meta/episodes every ten
+# episodes, so both look healthy in a pair killed halfway.
 shopt -s nullglob  # an unmatched glob must count as no dirs, not as one literal
 missing=0
 for d in "$OUT_ROOT"/*/*/; do
-  have=$(python3 scripts/split_episode_count.py "$d/rollout")
+  have=$(python3 scripts/rollout_episode_count.py "$d")
   [ "$have" -eq "$EPISODES" ] || {
     echo "[incomplete] $d holds $have of $EPISODES episodes"
     missing=$((missing + 1))

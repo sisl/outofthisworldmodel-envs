@@ -24,10 +24,11 @@ repo_id="$NAMESPACE/$REPO_NAME"
 
 # Refuse a partial upload, for the reason push refuses one: the upload is a
 # mirror, so a half-finished run silently deletes the previous complete one.
-# Counted rather than merely found, and only for a finalized split:
-# meta/info.json exists from the moment the dataset is created and updates as
-# episodes are saved, so a killed run leaves one behind looking healthy.
-have=$(python3 scripts/split_episode_count.py "$OUT/rollout")
+# Read from rollout.json, which `rollout` writes last, after the render and
+# the dataset write. Nothing lerobot writes says the same thing: it creates
+# meta/info.json with the dataset and flushes meta/episodes every ten
+# episodes, so both look healthy in a run killed halfway.
+have=$(python3 scripts/rollout_episode_count.py "$OUT")
 if [ "$have" -ne "$EPISODES" ]; then
   echo "[refusing] $OUT/rollout holds $have of $EPISODES episodes; generate it first with:"
   echo "    EPISODES=$EPISODES ./scripts/rollout_dock_success.sh"

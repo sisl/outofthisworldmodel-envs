@@ -66,12 +66,12 @@ done | xargs -P "$JOBS" -L 1 bash -c '
   set -uo pipefail
   m=$1; p=$2; req=$3
   out="$OUT_ROOT/$m/$p"
-  # How many episodes the split can be LOADED for: the helper counts only a
-  # finalized split, since meta/info.json exists from the moment the dataset
-  # is created and updates as episodes are saved, so a killed pair leaves one
-  # behind looking healthy.
+  # Completion is read from rollout.json, which rollout writes last, after
+  # the render and the dataset write. Nothing lerobot writes says the same:
+  # meta/info.json is created with the dataset and meta/episodes is flushed
+  # every ten episodes, so both look healthy in a pair killed halfway.
   # No apostrophes in this body -- it is single-quoted for xargs.
-  have=$(python3 scripts/split_episode_count.py "$out/rollout")
+  have=$(python3 scripts/rollout_episode_count.py "$out")
   if [ "$have" -eq "$EPISODES" ]; then echo "[skip] $m/$p"; exit 0; fi
   if [ "$have" -ne 0 ]; then echo "[clean] $m/$p holds $have of $EPISODES"; fi
   if [ "$DRY_RUN" = 1 ]; then

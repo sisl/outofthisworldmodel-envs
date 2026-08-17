@@ -37,14 +37,14 @@ LOG=${LOG:-$LOG_DIR/dock_success_${EPISODES}ep.log}
 
 mkdir -p "$LOG_DIR"
 
-# How many episodes the split can be LOADED for, which is what completion
-# means here: the helper counts only a finalized split, since the presence of
-# meta/info.json says nothing -- it exists from the moment the dataset is
-# created and updates as episodes are saved, so a killed run leaves one behind
-# looking healthy. A killed run also leaves a corrupt parquet tail and cannot
-# be resumed, which is why anything short of the full count is deleted rather
-# than continued.
-have=$(python3 scripts/split_episode_count.py "$OUT/rollout")
+# Completion is read from rollout.json, which `rollout` writes last, after the
+# render and the dataset write. Nothing lerobot writes says the same thing:
+# meta/info.json is created with the dataset and its count climbs as episodes
+# are saved, and meta/episodes is flushed every ten episodes, so all of them
+# look healthy in a run killed halfway. A killed run also leaves a corrupt
+# parquet tail and cannot be resumed, which is why anything short of the full
+# count is deleted rather than continued.
+have=$(python3 scripts/rollout_episode_count.py "$OUT")
 if [ "$have" -eq "$EPISODES" ]; then
   echo "[skip] $OUT already holds $EPISODES episodes"
   exit 0
