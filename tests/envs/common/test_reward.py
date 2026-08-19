@@ -260,16 +260,102 @@ def test_docking_and_escaping_are_symmetric():
     assert w.escape == pytest.approx(-w.dock_success)
 
 
-def test_reward_does_not_depend_on_the_action():
-    # `action` is accepted for terms that may come back (fuel, actuator wear)
-    # and is deliberately unread today. Pin that so nobody "fixes" the unused
-    # parameter by deleting it, and so a future term arrives with its own test.
+def test_reward_does_not_depend_on_the_action_with_effort_off():
+    # `effort` is the only term that reads the action, and it defaults to off.
+    # Pin that so every recorded run trained without it replays unchanged.
     cfg = ISSConfig(dock=AT_ORIGIN)
     state = state_at((4.0, 1.0, 0.0), vel=(0.2, 0.0, 0.0), omega=(0.01, 0.0, 0.0))
     big = jnp.asarray([1600.0, -1600.0, 900.0, 2000.0, -2000.0, 500.0], dtype=jnp.float32)
     assert float(docking_reward(state, big, NO_EVENTS, cfg)) == float(
         docking_reward(state, ZERO_ACTION, NO_EVENTS, cfg)
     )
+
+
+def test_terminal_shaping_terms_are_off_by_default():
+    # proximity, alignment and effort all default to weight 0, so a config
+    # written before they existed produces bit-identical rewards.
+    w = RewardWeights()
+    assert w.proximity == 0.0
+    assert w.alignment == 0.0
+    assert w.effort == 0.0
+
+
+def test_proximity_pays_most_at_the_port_and_nothing_far_away():
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(proximity=0.5))
+    at = float(docking_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg))
+    near = float(docking_reward(state_at((1.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg))
+    far = float(docking_reward(state_at((100.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg))
+    assert at == pytest.approx(0.5)
+    assert at > near > far
+    assert far == pytest.approx(0.0, abs=1e-6)
+
+
+def test_proximity_is_the_exponential_of_range_over_its_scale():
+    cfg = ISSConfig(
+        dock=AT_ORIGIN,
+        reward_weights=only(proximity=0.5),
+        reward_shaping=RewardShapingConfig(proximity_scale_m=2.0),
+    )
+    r = docking_reward(state_at((3.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    assert float(r) == pytest.approx(0.5 * np.exp(-3.0 / 2.0), rel=1e-5)
+
+
+def test_alignment_pays_only_close_and_pointed():
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(alignment=0.5))
+    quarter = (0.7071068, 0.7071068, 0.0, 0.0)
+    both = float(docking_reward(state_at((0.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg))
+    close_misaligned = float(
+        docking_reward(state_at((0.0, 0.0, 0.0), quat=quarter), ZERO_ACTION, NO_EVENTS, cfg)
+    )
+    far_aligned = float(
+        docking_reward(state_at((100.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    )
+    assert both == pytest.approx(0.5)
+    assert close_misaligned == pytest.approx(0.0, abs=1e-4)
+    assert far_aligned == pytest.approx(0.0, abs=1e-6)
+
+
+def test_alignment_is_the_product_of_range_and_attitude_exponentials():
+    cfg = ISSConfig(
+        dock=AT_ORIGIN,
+        reward_weights=only(alignment=1.0),
+        reward_shaping=RewardShapingConfig(
+            proximity_scale_m=2.0, alignment_attitude_scale_rad=0.2
+        ),
+    )
+    quarter = (0.7071068, 0.7071068, 0.0, 0.0)
+    r = docking_reward(state_at((1.0, 0.0, 0.0), quat=quarter), ZERO_ACTION, NO_EVENTS, cfg)
+    assert float(r) == pytest.approx(
+        np.exp(-1.0 / 2.0) * np.exp(-(np.pi / 2.0) / 0.2), rel=1e-4
+    )
+
+
+def test_effort_is_zero_at_zero_action():
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(effort=-0.05))
+    r = docking_reward(state_at((10.0, 0.0, 0.0)), ZERO_ACTION, NO_EVENTS, cfg)
+    assert float(r) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_effort_charges_the_normalised_force_and_torque_norms():
+    # ||F|| over the force limit plus ||tau|| over the torque limit, so a
+    # full-authority translation step costs exactly the weight, whatever the
+    # limits are configured to.
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(effort=-0.05))
+    f_lim = cfg.control.limit_force_n
+    t_lim = cfg.control.limit_torque_nm
+    action = jnp.asarray([f_lim, 0.0, 0.0, 0.0, t_lim, 0.0], dtype=jnp.float32)
+    r = docking_reward(state_at((10.0, 0.0, 0.0)), action, NO_EVENTS, cfg)
+    assert float(r) == pytest.approx(-0.05 * 2.0, rel=1e-5)
+
+
+def test_effort_scales_with_the_action_norm():
+    cfg = ISSConfig(dock=AT_ORIGIN, reward_weights=only(effort=-0.05))
+    half = jnp.asarray([800.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+    full = jnp.asarray([1600.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+    r_half = float(docking_reward(state_at((10.0, 0.0, 0.0)), half, NO_EVENTS, cfg))
+    r_full = float(docking_reward(state_at((10.0, 0.0, 0.0)), full, NO_EVENTS, cfg))
+    assert r_full == pytest.approx(2.0 * r_half, rel=1e-5)
+    assert r_full < r_half < 0.0
 
 
 def test_default_weights_combine_every_shaped_term():
