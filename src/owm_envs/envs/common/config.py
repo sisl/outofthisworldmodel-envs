@@ -286,6 +286,45 @@ class RewardWeights(ConfigModel):
     # Dunlap et al. (JAIS 20(1), 2023) shape their docking reward this way,
     # with -0.0005 per metre against a +1 dock bonus.
     progress: float = 0.0
+    # Optional terminal-shaping bonuses and an effort cost, all OFF at 0.0.
+    # They exist because the four shaped penalties above go FLAT where the
+    # dock gate is decided: `position` through its pseudo-Huber is worth
+    # ~0.0016 a step between 1 m and 0.1 m at the shipped shaping, which is
+    # below the advantage noise of any on-policy learner, and `dock_success`
+    # pays only through a four-way conjunction of tight gates that a policy
+    # exploring in kilonewtons never samples. Policies trained on the
+    # penalties alone learn the approach and then hold a standoff wherever
+    # their zero-force point lands, because the last metre is not worth
+    # anything they can measure.
+    #
+    # `proximity` is a POSITIVE bonus, `+ proximity * exp(-d /
+    # proximity_scale_m)`: bounded by the weight, ~zero beyond a few scales,
+    # and steepest exactly where the pseudo-Huber is flattest. Unlike
+    # `progress` it does not telescope -- it pays per step spent close, so it
+    # prices the hold as well as the closure: a policy holding at 1 m earns
+    # e^-1 of it every step while one at 6 m earns nothing, which is the
+    # difference the standoff equilibria hide from `position`.
+    #
+    # `alignment` is the same bonus shape multiplied by an attitude
+    # exponential, `+ alignment * exp(-d / proximity_scale_m) * exp(-theta /
+    # alignment_attitude_scale_rad)`: a smooth precursor of the dock event
+    # itself, paying only when close AND pointed. It exists apart from
+    # `attitude` because that term is range-gated and 30x below `position` at
+    # shipped weights, so a multi-port policy can buy its whole attitude bill
+    # by learning the majority port attitude -- the bonus makes the correct
+    # terminal pose worth holding at every port.
+    #
+    # `effort` is a NEGATIVE weight on the commanded action, `+ effort *
+    # (|F| / limit_force_n + |tau| / limit_torque_nm)` -- the one term that
+    # reads `action`. A reward with no effort cost prices a 1 kN alternating
+    # hold the same as a quiet one, and the position jitter that chatter
+    # produces at a 1 s control step is alone wider than a 0.1 m dock gate.
+    # Sized in normalised units so a full-authority translation step costs
+    # exactly the weight; values well below the per-step shaped cost (~1 in
+    # the envelope) price smoothness without making thrust itself the story.
+    proximity: float = 0.0
+    alignment: float = 0.0
+    effort: float = 0.0
 
 
 class RewardShapingConfig(ConfigModel):
@@ -324,6 +363,15 @@ class RewardShapingConfig(ConfigModel):
     # far out) and one (no gating) are both meaningful settings.
     rotation_gate_far: float = Field(default=0.1, ge=0, le=1, allow_inf_nan=False)
     rotation_gate_range_m: float = Field(default=25.0, gt=0, allow_inf_nan=False)
+    # e-folding scales of the `RewardWeights.proximity` and `alignment`
+    # bonuses. The range scale serves both bonuses and sets where "close"
+    # begins: at 1 m the bonus is worth e^-1 of its weight at 1 m out and
+    # ~nothing beyond 5 m. The attitude scale is alignment's own; at 0.1 rad
+    # a pose good to the 5 deg (0.087 rad) dock gate keeps ~42% of the bonus
+    # and one flown at the majority-port attitude a quarter-turn off keeps
+    # ~10^-7 of it.
+    proximity_scale_m: float = Field(default=1.0, gt=0, allow_inf_nan=False)
+    alignment_attitude_scale_rad: float = Field(default=0.1, gt=0, allow_inf_nan=False)
 
 
 class ObservationConfig(ConfigModel):

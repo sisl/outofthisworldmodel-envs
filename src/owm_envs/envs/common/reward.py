@@ -111,10 +111,9 @@ def docking_reward(
     `[pos, vel, q_bw, omega]` -- which for the iss env is the state itself,
     and for an env with a wider state is what that env's `view` derives.
 
-    `action` is accepted but not read. No term depends on it since the control
-    effort penalty was dropped; it stays in the signature because a fuel or
-    actuator-wear term is a plausible thing to want back, and adding one should
-    be a change to this function rather than to seven call sites.
+    `action` is the commanded `[force, torque]` in physical units, read only
+    by the optional `RewardWeights.effort` term and ignored when that weight
+    is zero.
 
     `dock_pose` is this episode's `(7,)` `[position, quaternion]` goal -- the
     target row `policies.dock_target_selector` resolved for it. Omitted, the
@@ -168,6 +167,18 @@ def docking_reward(
         previous = jnp.linalg.norm(jnp.asarray(prev_state)[0:3] - goal_position)
         progress = w.progress * (distance - previous) / shaping.position_scale_m
 
+    # Shared range factor of the two terminal bonuses: 1 at the port, e^-1 at
+    # the scale, ~0 a few scales out. Computed unconditionally -- it is two
+    # transcendentals -- and switched by its weights like every other term.
+    closeness = jnp.exp(-distance / shaping.proximity_scale_m)
+    pointedness = jnp.exp(-attitude_error / shaping.alignment_attitude_scale_rad)
+
+    # Commanded effort in normalised units: force norm over the force limit
+    # plus torque norm over the torque limit, so a full-authority translation
+    # step costs `effort` exactly, whatever the limits are configured to.
+    force = jnp.linalg.norm(action[0:3]) / cfg.control.limit_force_n
+    torque = jnp.linalg.norm(action[3:6]) / cfg.control.limit_torque_nm
+
     return (
         w.position
         * _pseudo_huber(distance, shaping.position_delta_m, shaping.position_scale_m)
@@ -183,6 +194,9 @@ def docking_reward(
             * _pseudo_huber(body_rate, shaping.rate_delta_rad_s, shaping.rate_scale_rad_s)
         )
         + progress
+        + w.proximity * closeness
+        + w.alignment * closeness * pointedness
+        + w.effort * (force + torque)
         + w.collision * events.collision.astype(jnp.float32)
         + w.dock_success * events.docked.astype(jnp.float32)
         + w.escape * events.escaped.astype(jnp.float32)
