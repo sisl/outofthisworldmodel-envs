@@ -34,7 +34,7 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 from gymnasium.envs.registration import load_env_creator  # noqa: E402
 
-from owm_envs.datasets.trajectory import Trajectory  # noqa: E402
+from owm_envs.datasets.trajectory import Trajectory, start_fingerprint  # noqa: E402
 from owm_envs.envs import ENV_REGISTRY  # noqa: E402
 
 
@@ -64,15 +64,15 @@ def fly_zero_action(steps: int, seed: int = 0, port: str = "harmony_fwd_pma2") -
     obs, info = env.reset(seed=seed)
     limits = np.array([cfg.control.limit_force_n] * 3 + [cfg.control.limit_torque_nm] * 3,
                       dtype=np.float32)
-    states = [np.asarray(info["state"], dtype=np.float32)]
-    measured = [np.asarray(info["measured_state"], dtype=np.float32)]
+    states = [np.asarray(info["state"], dtype=np.float64)]
+    measured = [np.asarray(info["measured_state"], dtype=np.float64)]
     observations = [np.asarray(obs, dtype=np.float32)]
     actions, rewards, collisions = [], [], []
     for _ in range(steps):
         action = np.zeros(6, dtype=np.float32)
         obs, reward, term, trunc, info = env.step(action)
-        states.append(np.asarray(info["state"], dtype=np.float32))
-        measured.append(np.asarray(info["measured_state"], dtype=np.float32))
+        states.append(np.asarray(info["state"], dtype=np.float64))
+        measured.append(np.asarray(info["measured_state"], dtype=np.float64))
         observations.append(np.asarray(obs, dtype=np.float32))
         actions.append(action)
         rewards.append(float(reward))
@@ -81,11 +81,12 @@ def fly_zero_action(steps: int, seed: int = 0, port: str = "harmony_fwd_pma2") -
             break
     env.close()
     state = np.stack(states)
-    rel_view = np.asarray(jax.vmap(spec.view)(jnp.asarray(state, jnp.float64)))
+    rel_view = np.asarray(jax.vmap(spec.view)(jnp.asarray(state, jnp.float64)),
+                          dtype=np.float64)
     action_norm = np.stack(actions)
     goal = np.asarray(info["goal_pose"], dtype=np.float64)
     return Trajectory(
-        epoch=state[:, 0:2].astype(np.float64),
+        epoch=state[:, 0:2],
         state=state,
         rel_view=rel_view,
         measured_state=np.stack(measured),
@@ -108,7 +109,7 @@ def fly_zero_action(steps: int, seed: int = 0, port: str = "harmony_fwd_pma2") -
             "outcome": "truncated",
             "ever_collided": bool(np.any(collisions)),
             "min_range_m": float(np.min(np.linalg.norm(rel_view[:, 0:3] - goal[0:3], axis=1))),
-            "start_fingerprint": "",
+            "start_fingerprint": start_fingerprint(state[0]),
             "lighting": "unknown",
             "produced_by": "tests/conftest.py",
         },

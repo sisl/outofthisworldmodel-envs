@@ -97,9 +97,7 @@ def render_trajectory_clips(
         stack.callback(renderer.close)
         for row in rows:
             action = traj.action_phys[row - 1] if row > 0 else None
-            rendered = renderer.render_views(
-                adapter(traj.state[row].astype(np.float32), action), views=draw
-            )
+            rendered = renderer.render_views(adapter(traj.state[row], action), views=draw)
             for key in keys:
                 if key == COMPOSITE_KEY:
                     frame = tile_views(rendered, renderer.cfg.image_height, renderer.cfg.image_width)
