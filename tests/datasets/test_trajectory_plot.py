@@ -31,3 +31,25 @@ def test_video_has_one_frame_per_output_tick(short_trajectory, tmp_path):
     # 6 steps at dt=0.05 is 0.3 s: at 10 fps that is 4 ticks (0, 0.1, 0.2, 0.3).
     assert frames.shape[0] == 4
     assert frames.shape[1] % 2 == 0 and frames.shape[2] % 2 == 0
+    assert list(tmp_path.glob("*.part.*")) == []
+
+
+def test_video_opens_on_the_start_state_with_no_path_drawn(short_trajectory, tmp_path):
+    """The first tick is the reset state: a point flown from, not a path."""
+    import imageio.v3 as iio
+
+    path = plot_trajectory_video(short_trajectory, tmp_path / "test_traj.mp4", fps=10)
+    frames = iio.imread(path)
+    assert not np.array_equal(frames[0], frames[1])
+
+
+def test_a_failed_video_leaves_no_partial_file(short_trajectory, tmp_path, monkeypatch):
+    import matplotlib.pyplot as plt
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("canvas is gone")
+
+    monkeypatch.setattr(plt.Figure, "draw", explode)
+    with pytest.raises(RuntimeError, match="canvas is gone"):
+        plot_trajectory_video(short_trajectory, tmp_path / "test_traj.mp4", fps=10)
+    assert sorted(p.name for p in tmp_path.iterdir()) == []

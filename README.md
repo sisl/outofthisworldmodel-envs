@@ -135,7 +135,9 @@ the file at the file's own frame rate (20 fps for a 20 Hz run); `--fps` picks
 nearest rows for a slower clip and `--stride N` thins frames for a quick
 check. `plot-trajectory` writes `<method>_traj.png` (the full path, coloured
 by speed, against the 313-box station hull) and `<method>_traj.mp4` (the same
-path growing in step with the episode clock, at `--fps`, default 10).
+path growing in step with the episode clock, at `--fps`, default 10). That
+video redraws the station hull for every frame, so a full 360 s episode at 10
+fps takes minutes -- lower `--fps` for a quick look.
 
 Two harnesses that reset the same env config at the same `(port, seed)` fly
 from a bit-identical start, so their files render and plot side by side.

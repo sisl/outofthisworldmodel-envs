@@ -49,3 +49,17 @@ def test_render_trajectory_rejects_fps_faster_than_rows(short_trajectory, tmp_pa
     result = runner.invoke(app, ["render-trajectory", str(tmp_path), "--fps", "60"])
     assert result.exit_code != 0
     assert "--fps" in result.output
+
+
+def test_render_trajectory_rejects_a_non_positive_fps(short_trajectory, tmp_path, monkeypatch):
+    save_trajectory(short_trajectory, tmp_path)
+
+    def _unreached(*args, **kwargs):
+        raise AssertionError("probe reached")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", _unreached)
+    for value in ("0", "-5", "nan", "inf"):
+        result = runner.invoke(app, ["render-trajectory", str(tmp_path), "--fps", value])
+        assert result.exit_code != 0, value
+        assert "--fps" in result.output
+        assert "finite and > 0" in result.output, value

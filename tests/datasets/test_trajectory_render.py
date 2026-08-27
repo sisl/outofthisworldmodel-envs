@@ -43,3 +43,31 @@ def test_render_writes_one_clip_per_view(short_trajectory, tmp_path):
         frames = iio.imread(path)
         assert frames.shape[0] == len(frame_indices(short_trajectory.steps, 0.05, None, 3))
         assert frames.shape[-1] == 3
+    assert list(tmp_path.glob("*.part.mp4")) == []
+
+
+def test_frame_indices_refuse_a_non_positive_fps():
+    with pytest.raises(ValueError, match="fps must be finite"):
+        frame_indices(steps=5, dt=0.05, fps=0.0, stride=1)
+    with pytest.raises(ValueError, match="fps must be finite"):
+        frame_indices(steps=5, dt=0.05, fps=-2.0, stride=1)
+
+
+def test_frame_indices_refuse_a_non_finite_fps():
+    with pytest.raises(ValueError, match="fps must be finite"):
+        frame_indices(steps=5, dt=0.05, fps=float("nan"), stride=1)
+    with pytest.raises(ValueError, match="fps must be finite"):
+        frame_indices(steps=5, dt=0.05, fps=float("inf"), stride=1)
+
+
+def test_a_failed_render_leaves_no_partial_clips(short_trajectory, tmp_path, monkeypatch):
+    """A renderer that dies mid-episode must not leave half-written mp4s behind."""
+    from owm_envs.datasets.trajectory_render import render_trajectory_clips
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("no GPU today")
+
+    monkeypatch.setattr("owm_envs.render.renderer.ISSRenderer", explode)
+    with pytest.raises(RuntimeError, match="no GPU today"):
+        render_trajectory_clips(short_trajectory, tmp_path, "fpv,dragon_iso")
+    assert sorted(p.name for p in tmp_path.iterdir()) == []

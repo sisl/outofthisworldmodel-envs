@@ -14,6 +14,7 @@ unchanged for a future non-JAX environment.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections import deque
 from dataclasses import asdict
@@ -1058,6 +1059,10 @@ def render_trajectory(
             f"env '{traj.meta['env']}' has no render adapter, so it cannot be drawn",
             param_hint="DIRECTORY",
         )
+    if fps is not None and (not math.isfinite(fps) or fps <= 0.0):
+        raise typer.BadParameter(
+            f"--fps must be finite and > 0, got {fps}", param_hint="--fps"
+        )
     if fps is not None and fps > 1.0 / traj.dt + 1e-9:
         raise typer.BadParameter(
             f"--fps {fps} is faster than the file's {1.0 / traj.dt:g} Hz rows; a clip "
@@ -1070,10 +1075,7 @@ def render_trajectory(
         select_gpu(gpu_index)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
-    try:
-        written = render_trajectory_clips(traj, directory, view_names, fps=fps, stride=stride)
-    except ValueError as exc:
-        raise typer.BadParameter(str(exc), param_hint="DIRECTORY") from exc
+    written = render_trajectory_clips(traj, directory, view_names, fps=fps, stride=stride)
     for short, path in written.items():
         typer.echo(f"[render-trajectory] {short}: {path}")
 

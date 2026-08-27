@@ -8,6 +8,7 @@ station all follow from the file, not from a render setting.
 
 from __future__ import annotations
 
+import os
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Sequence
@@ -42,6 +43,8 @@ def frame_indices(steps: int, dt: float, fps: float | None, stride: int) -> np.n
     """
     if stride < 1:
         raise ValueError(f"stride must be >= 1, got {stride}")
+    if fps is not None and (not np.isfinite(fps) or fps <= 0.0):
+        raise ValueError(f"fps must be finite and > 0, got {fps}")
     source_rate = 1.0 / dt
     if fps is None:
         rows = np.arange(steps + 1)
@@ -79,30 +82,53 @@ def render_trajectory_clips(
     draw = views_for(keys)
 
     rows = frame_indices(traj.steps, traj.dt, fps, stride)
-    clip_fps = max(1, int(round(output_fps(traj.dt, fps) / stride)))
+    # Fractional on purpose: a strided clip plays back over exactly the wall
+    # time the rows it kept span, which rounding to a whole rate would stretch.
+    clip_fps = output_fps(traj.dt, fps) / stride
+    if clip_fps <= 0.0:
+        raise ValueError(
+            f"a {1.0 / traj.dt:g} Hz file thinned by stride {stride} leaves no frames "
+            "per second to write"
+        )
 
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     method = traj.meta["method"]
     written: dict[str, Path] = {}
     writers: dict[str, object] = {}
-    with ExitStack() as stack:
-        for key in keys:
-            short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
-            path = directory / f"{method}_{short}.mp4"
-            writers[key] = stack.enter_context(iio.get_writer(path, fps=clip_fps, **ENCODE))
-            written[short] = path
-
-        renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))
-        stack.callback(renderer.close)
-        for row in rows:
-            action = traj.action_phys[row - 1] if row > 0 else None
-            rendered = renderer.render_views(adapter(traj.state[row], action), views=draw)
+    # Every clip is written under a `.part.mp4` name and renamed only once all
+    # of them closed cleanly, so a run that dies mid-episode -- a lost GPU, a
+    # full disk -- leaves no half-written clip where a whole one used to be,
+    # and no partial file for a later reader to mistake for output.
+    partials: list[tuple[Path, Path]] = []
+    try:
+        with ExitStack() as stack:
             for key in keys:
-                if key == COMPOSITE_KEY:
-                    frame = tile_views(rendered, renderer.cfg.image_height, renderer.cfg.image_width)
-                else:
-                    frame = rendered[KEY_VIEWS[key]]
-                writers[key].append_data(frame)
+                short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
+                final = directory / f"{method}_{short}.mp4"
+                partial = final.with_suffix(".part.mp4")
+                partials.append((partial, final))
+                writers[key] = stack.enter_context(iio.get_writer(partial, fps=clip_fps, **ENCODE))
+                written[short] = final
 
+            renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))
+            stack.callback(renderer.close)
+            for row in rows:
+                action = traj.action_phys[row - 1] if row > 0 else None
+                rendered = renderer.render_views(adapter(traj.state[row], action), views=draw)
+                for key in keys:
+                    if key == COMPOSITE_KEY:
+                        frame = tile_views(
+                            rendered, renderer.cfg.image_height, renderer.cfg.image_width
+                        )
+                    else:
+                        frame = rendered[KEY_VIEWS[key]]
+                    writers[key].append_data(frame)
+    except BaseException:
+        for partial, _ in partials:
+            partial.unlink(missing_ok=True)
+        raise
+
+    for partial, final in partials:
+        os.replace(partial, final)
     return written

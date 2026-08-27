@@ -7,6 +7,7 @@ so it can play beside the rendered camera views.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import matplotlib
@@ -93,13 +94,20 @@ def _path_collection(traj: Trajectory, upto: int):
 
 def plot_trajectory_png(traj: Trajectory, path: str | Path) -> Path:
     traj.validate()
-    fig, ax = _axes(traj)
-    collection = _path_collection(traj, traj.steps)
-    ax.add_collection3d(collection)
-    fig.colorbar(collection, ax=ax, shrink=0.6, pad=0.1, label="speed (m/s)")
     path = Path(path)
-    fig.savefig(path, dpi=DPI)
-    plt.close(fig)
+    partial = path.with_suffix(".part" + path.suffix)
+    fig, ax = _axes(traj)
+    try:
+        collection = _path_collection(traj, traj.steps)
+        ax.add_collection3d(collection)
+        fig.colorbar(collection, ax=ax, shrink=0.6, pad=0.1, label="speed (m/s)")
+        fig.savefig(partial, dpi=DPI)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    finally:
+        plt.close(fig)
+    os.replace(partial, path)
     return path
 
 
@@ -110,20 +118,31 @@ def plot_trajectory_video(traj: Trajectory, path: str | Path, fps: int = 10) -> 
     duration = traj.steps * traj.dt
     ticks = np.arange(0.0, duration + 1e-9, 1.0 / fps)
     rows = np.minimum(np.rint(ticks / traj.dt).astype(int), traj.steps)
-    fig, ax = _axes(traj)
-    full = _path_collection(traj, traj.steps)
-    fig.colorbar(full, ax=ax, shrink=0.6, pad=0.1, label="speed (m/s)")
     path = Path(path)
+    partial = path.with_suffix(".part" + path.suffix)
+    fig, ax = _axes(traj)
     collection = None
-    with iio.get_writer(path, fps=fps, codec="libx264",
-                         pixelformat="yuv420p", macro_block_size=2) as writer:
-        for row in rows:
-            if collection is not None:
-                collection.remove()
-            collection = _path_collection(traj, max(int(row), 1))
-            ax.add_collection3d(collection)
-            fig.canvas.draw()
-            rgba = np.asarray(fig.canvas.buffer_rgba())
-            writer.append_data(rgba[..., :3])
-    plt.close(fig)
+    try:
+        full = _path_collection(traj, traj.steps)
+        fig.colorbar(full, ax=ax, shrink=0.6, pad=0.1, label="speed (m/s)")
+        with iio.get_writer(partial, fps=fps, codec="libx264",
+                             pixelformat="yuv420p", macro_block_size=2) as writer:
+            for row in rows:
+                if collection is not None:
+                    collection.remove()
+                    collection = None
+                # The first tick is the reset state: one point, no path flown
+                # yet, so there is no segment to draw.
+                if row > 0:
+                    collection = _path_collection(traj, int(row))
+                    ax.add_collection3d(collection)
+                fig.canvas.draw()
+                rgba = np.asarray(fig.canvas.buffer_rgba())
+                writer.append_data(rgba[..., :3])
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    finally:
+        plt.close(fig)
+    os.replace(partial, path)
     return path
