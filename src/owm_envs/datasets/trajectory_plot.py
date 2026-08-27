@@ -93,6 +93,11 @@ def _path_collection(traj: Trajectory, upto: int):
 
 
 def plot_trajectory_png(traj: Trajectory, path: str | Path) -> Path:
+    """Draw the whole path as a still.
+
+    Written under a `.part` name and renamed into place only once the figure
+    saved, so a failure leaves no partial file and no stale one half-replaced.
+    """
     traj.validate()
     path = Path(path)
     partial = path.with_suffix(".part" + path.suffix)
@@ -107,14 +112,25 @@ def plot_trajectory_png(traj: Trajectory, path: str | Path) -> Path:
         raise
     finally:
         plt.close(fig)
-    os.replace(partial, path)
+    try:
+        os.replace(partial, path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     return path
 
 
 def plot_trajectory_video(traj: Trajectory, path: str | Path, fps: int = 10) -> Path:
+    """Draw the path growing in step with the episode clock, as an mp4.
+
+    Written under a `.part` name and renamed into place only once the writer
+    closed, so a failure leaves no partial file and no stale one half-replaced.
+    """
     import imageio.v2 as iio
 
     traj.validate()
+    if not np.isfinite(fps) or fps <= 0:
+        raise ValueError(f"fps must be finite and > 0, got {fps}")
     duration = traj.steps * traj.dt
     ticks = np.arange(0.0, duration + 1e-9, 1.0 / fps)
     rows = np.minimum(np.rint(ticks / traj.dt).astype(int), traj.steps)
@@ -144,5 +160,9 @@ def plot_trajectory_video(traj: Trajectory, path: str | Path, fps: int = 10) -> 
         raise
     finally:
         plt.close(fig)
-    os.replace(partial, path)
+    try:
+        os.replace(partial, path)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     return path

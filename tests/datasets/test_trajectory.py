@@ -167,3 +167,11 @@ def test_validate_rejects_an_env_config_that_cannot_rebuild_the_env(short_trajec
     broken = _broken(short_trajectory, meta=meta)
     with pytest.raises(ValueError, match="does not rebuild iss-numerical's config"):
         broken.validate()
+
+
+def test_validate_accepts_a_dt_that_round_tripped_through_float32(short_trajectory):
+    """A writer that stored dt narrow is not a writer that used a different dt."""
+    narrowed = float(np.float32(short_trajectory.meta["dt"]))
+    assert narrowed != short_trajectory.meta["dt"]
+    meta = {**short_trajectory.meta, "dt": narrowed}
+    Trajectory(**{**short_trajectory.__dict__, "meta": meta}).validate()

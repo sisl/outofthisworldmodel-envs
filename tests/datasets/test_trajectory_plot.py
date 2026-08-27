@@ -53,3 +53,22 @@ def test_a_failed_video_leaves_no_partial_file(short_trajectory, tmp_path, monke
     with pytest.raises(RuntimeError, match="canvas is gone"):
         plot_trajectory_video(short_trajectory, tmp_path / "test_traj.mp4", fps=10)
     assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_video_refuses_a_non_positive_or_non_finite_fps(short_trajectory, tmp_path):
+    for value in (0, -5, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="fps must be finite"):
+            plot_trajectory_video(short_trajectory, tmp_path / "test_traj.mp4", fps=value)
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_a_failed_png_rename_leaves_no_partial_file(short_trajectory, tmp_path, monkeypatch):
+    import os
+
+    def refuse(src, dst):
+        raise OSError("rename refused")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError, match="rename refused"):
+        plot_trajectory_png(short_trajectory, tmp_path / "test_traj.png")
+    assert sorted(p.name for p in tmp_path.iterdir()) == []

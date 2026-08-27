@@ -29,10 +29,6 @@ from .video import (
 ENCODE = dict(codec="libx264", pixelformat="yuv420p", macro_block_size=2)
 
 
-def output_fps(dt: float, fps: float | None) -> int:
-    return int(round(1.0 / dt)) if fps is None else int(round(fps))
-
-
 def frame_indices(steps: int, dt: float, fps: float | None, stride: int) -> np.ndarray:
     """Row indices (into the T+1 states) drawn for a clip at `fps`, thinned by `stride`.
 
@@ -67,7 +63,12 @@ def render_trajectory_clips(
     fps: float | None = None,
     stride: int = 1,
 ) -> dict[str, Path]:
-    """Write `<method>_<short>.mp4` under `directory` for each view; return the paths."""
+    """Write `<method>_<short>.mp4` under `directory` for each view; return the paths.
+
+    Publication is atomic per file: each clip is renamed into place only once
+    every writer closed, and a rename that fails removes the `.part` files
+    still waiting rather than leaving them beside the clips already published.
+    """
     from ..render.iss_scene import RenderConfig
     from ..render.renderer import ISSRenderer
     import imageio.v2 as iio
@@ -82,14 +83,12 @@ def render_trajectory_clips(
     draw = views_for(keys)
 
     rows = frame_indices(traj.steps, traj.dt, fps, stride)
-    # Fractional on purpose: a strided clip plays back over exactly the wall
-    # time the rows it kept span, which rounding to a whole rate would stretch.
-    clip_fps = output_fps(traj.dt, fps) / stride
-    if clip_fps <= 0.0:
-        raise ValueError(
-            f"a {1.0 / traj.dt:g} Hz file thinned by stride {stride} leaves no frames "
-            "per second to write"
-        )
+    # No rounding anywhere: the clip is written at exactly the rate its rows
+    # were selected at, so `--fps 7.5` plays at 7.5 and a fps below 1 is a
+    # rate rather than a zero. `frame_indices` has already refused a fps that
+    # is not positive and finite, and `validate()` a dt that is not, so this
+    # is positive by construction.
+    clip_fps = (1.0 / traj.dt if fps is None else float(fps)) / stride
 
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -129,6 +128,11 @@ def render_trajectory_clips(
             partial.unlink(missing_ok=True)
         raise
 
-    for partial, final in partials:
-        os.replace(partial, final)
+    try:
+        for partial, final in partials:
+            os.replace(partial, final)
+    except BaseException:
+        for partial, _ in partials:
+            partial.unlink(missing_ok=True)
+        raise
     return written

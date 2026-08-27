@@ -16,12 +16,17 @@ module can put side by side.
 The dtypes are part of that agreement, and `validate()` enforces them. The
 truth channels -- `epoch`, `state`, `measured_state`, `rel_view`, `reward`
 and `dock_target` -- are float64, because they are what one harness's episode
-is compared against another's: the epoch prefix alone carries a Julian date
-near 2.46e6, which float32 cannot hold to better than a tenth of a second,
-and the ECI positions a relative view is differenced from are ~6.8e6 m, where
-float32 costs a quarter of a metre. `observation`, `action_norm` and
-`action_phys` are float32, which is what a policy saw and emitted, and
-`collision` is bool.
+is compared against another's, and float32 is nowhere near wide enough to
+hold them: at a Julian day of ~2.46e6 the float32 grid is 0.25 day apart
+(six hours), at the epoch's seconds column of ~4.3e4 it is ~3.9 ms, and at
+the ~6.8e6 m ECI positions a relative view is differenced from it is 0.5 m.
+
+Uniform storage is the point, not recovered precision. The environment hands
+back `measured_state` and `goal_pose` at float32 already, so a writer widens
+those on the way in: the file says what a reader may assume about every
+array's dtype, and does not claim the bits below float32 mean anything for
+the two that arrive narrow. `observation`, `action_norm` and `action_phys`
+stay float32, which is what a policy saw and emitted, and `collision` is bool.
 """
 
 from __future__ import annotations
@@ -246,7 +251,7 @@ class Trajectory:
         config_dt = self.meta["env_config"].get("dt")
         if config_dt is None:
             raise ValueError("meta.json env_config carries no dt")
-        if abs(dt - float(config_dt)) >= 1e-12:
+        if not np.isclose(dt, float(config_dt), rtol=1e-7, atol=1e-12):
             raise ValueError(
                 f"meta.json dt={dt} disagrees with env_config dt={config_dt}; rows are "
                 "recorded at the environment's own integration step"

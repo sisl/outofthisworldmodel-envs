@@ -63,3 +63,19 @@ def test_render_trajectory_rejects_a_non_positive_fps(short_trajectory, tmp_path
         assert result.exit_code != 0, value
         assert "--fps" in result.output
         assert "finite and > 0" in result.output, value
+
+
+def test_render_trajectory_accepts_a_fps_below_one(short_trajectory, tmp_path, monkeypatch):
+    """0.4 fps on a 20 Hz file is a legal slow clip, not a usage error."""
+    save_trajectory(short_trajectory, tmp_path)
+
+    class _Probed(Exception):
+        pass
+
+    def _probe(*args, **kwargs):
+        raise _Probed
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", _probe)
+    result = runner.invoke(app, ["render-trajectory", str(tmp_path), "--fps", "0.4"])
+    # Reaching the GPU probe is the point: every usage check passed first.
+    assert isinstance(result.exception, _Probed), result.output
