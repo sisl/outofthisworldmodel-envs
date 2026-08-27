@@ -167,8 +167,8 @@ def _check_dock_ports_agree(
     )
 
 
-def _parse_render_views(spec: str) -> list[str]:
-    """`--render-views` -> the view names to record in the generation config.
+def _parse_render_views(spec: str, flag: str = "--render-views") -> list[str]:
+    """`flag` -> the view names to record in the generation config.
 
     The parsing itself belongs to the datasets package, which owns the keys; a
     bad value is a usage error here rather than the ValueError it is there.
@@ -176,7 +176,7 @@ def _parse_render_views(spec: str) -> list[str]:
     try:
         return list(parse_view_names(spec))
     except ValueError as exc:
-        raise typer.BadParameter(f"--render-views: {exc}") from exc
+        raise typer.BadParameter(f"{flag}: {exc}") from exc
 
 
 def _parse_split_flags(
@@ -1048,11 +1048,22 @@ def render_trajectory(
     """Render one stored episode's camera views to mp4, one clip per view."""
     if stride < 1:
         raise typer.BadParameter(f"--stride must be >= 1, got {stride}", param_hint="--stride")
-    view_names = _parse_render_views(views)
+    view_names = _parse_render_views(views, flag="--views")
     try:
         traj = load_trajectory(directory)
     except (FileNotFoundError, ValueError) as exc:
         raise typer.BadParameter(str(exc), param_hint="DIRECTORY") from exc
+    if not ENV_REGISTRY[traj.meta["env"]].renderable:
+        raise typer.BadParameter(
+            f"env '{traj.meta['env']}' has no render adapter, so it cannot be drawn",
+            param_hint="DIRECTORY",
+        )
+    if fps is not None and fps > 1.0 / traj.dt + 1e-9:
+        raise typer.BadParameter(
+            f"--fps {fps} is faster than the file's {1.0 / traj.dt:g} Hz rows; a clip "
+            "cannot show states the simulation never reached",
+            param_hint="--fps",
+        )
     from .render.device import select_gpu
 
     try:
@@ -1062,7 +1073,7 @@ def render_trajectory(
     try:
         written = render_trajectory_clips(traj, directory, view_names, fps=fps, stride=stride)
     except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        raise typer.BadParameter(str(exc), param_hint="DIRECTORY") from exc
     for short, path in written.items():
         typer.echo(f"[render-trajectory] {short}: {path}")
 

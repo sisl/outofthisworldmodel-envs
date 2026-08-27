@@ -28,6 +28,8 @@ def test_render_trajectory_rejects_bad_view(short_trajectory, tmp_path):
     result = runner.invoke(app, ["render-trajectory", str(tmp_path), "--views", "sideways"])
     assert result.exit_code != 0
     assert "sideways" in result.output
+    assert "--views" in result.output
+    assert "--render-views" not in result.output
 
 
 def test_render_trajectory_rejects_bad_stride(short_trajectory, tmp_path):
@@ -35,3 +37,15 @@ def test_render_trajectory_rejects_bad_stride(short_trajectory, tmp_path):
     result = runner.invoke(app, ["render-trajectory", str(tmp_path), "--stride", "0"])
     assert result.exit_code != 0
     assert "--stride" in result.output
+
+
+def test_render_trajectory_rejects_fps_faster_than_rows(short_trajectory, tmp_path, monkeypatch):
+    save_trajectory(short_trajectory, tmp_path)
+
+    def _unreached(*args, **kwargs):
+        raise AssertionError("probe reached")
+
+    monkeypatch.setattr("owm_envs.render.device.select_gpu", _unreached)
+    result = runner.invoke(app, ["render-trajectory", str(tmp_path), "--fps", "60"])
+    assert result.exit_code != 0
+    assert "--fps" in result.output
