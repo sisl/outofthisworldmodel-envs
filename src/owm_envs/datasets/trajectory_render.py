@@ -8,6 +8,7 @@ station all follow from the file, not from a render setting.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Sequence
 
@@ -85,15 +86,15 @@ def render_trajectory_clips(
     method = traj.meta["method"]
     written: dict[str, Path] = {}
     writers: dict[str, object] = {}
-    renderer = None
-    try:
+    with ExitStack() as stack:
         for key in keys:
             short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
             path = directory / f"{method}_{short}.mp4"
-            writers[key] = iio.get_writer(path, fps=clip_fps, **ENCODE)
+            writers[key] = stack.enter_context(iio.get_writer(path, fps=clip_fps, **ENCODE))
             written[short] = path
 
         renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))
+        stack.callback(renderer.close)
         for row in rows:
             action = traj.action_phys[row - 1] if row > 0 else None
             rendered = renderer.render_views(
@@ -105,10 +106,5 @@ def render_trajectory_clips(
                 else:
                     frame = rendered[KEY_VIEWS[key]]
                 writers[key].append_data(frame)
-    finally:
-        if renderer is not None:
-            renderer.close()
-        for writer in writers.values():
-            writer.close()
 
     return written
