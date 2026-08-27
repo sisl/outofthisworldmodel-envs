@@ -17,11 +17,11 @@ from ..envs import ENV_REGISTRY
 from .trajectory import SHORT_VIEW_NAMES, Trajectory
 from .video import (
     COMPOSITE_KEY,
-    COMPOSITE_VIEWS,
     KEY_VIEWS,
     keys_for_names,
     render_adapter_for,
     tile_views,
+    views_for,
 )
 
 ENCODE = dict(codec="libx264", pixelformat="yuv420p", macro_block_size=2)
@@ -75,12 +75,10 @@ def render_trajectory_clips(
     cfg = spec.config_cls.model_validate(traj.meta["env_config"])
     adapter = render_adapter_for(spec.name, cfg)
     keys = keys_for_names(views)
-    wants_composite = COMPOSITE_KEY in keys
-    named = [KEY_VIEWS[key] for key in keys if key != COMPOSITE_KEY]
-    draw = tuple(COMPOSITE_VIEWS) if wants_composite else tuple(named)
+    draw = views_for(keys)
 
     rows = frame_indices(traj.steps, traj.dt, fps, stride)
-    clip_fps = max(1, output_fps(traj.dt, fps) // stride)
+    clip_fps = max(1, int(round(output_fps(traj.dt, fps) / stride)))
     frames: dict[str, list[np.ndarray]] = {key: [] for key in keys}
 
     renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))

@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 
 from owm_envs.datasets.trajectory_render import frame_indices, output_fps
