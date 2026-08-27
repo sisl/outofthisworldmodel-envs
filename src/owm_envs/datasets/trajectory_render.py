@@ -85,14 +85,15 @@ def render_trajectory_clips(
     method = traj.meta["method"]
     written: dict[str, Path] = {}
     writers: dict[str, object] = {}
-    for key in keys:
-        short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
-        path = directory / f"{method}_{short}.mp4"
-        writers[key] = iio.get_writer(path, fps=clip_fps, **ENCODE)
-        written[short] = path
-
-    renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))
+    renderer = None
     try:
+        for key in keys:
+            short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
+            path = directory / f"{method}_{short}.mp4"
+            writers[key] = iio.get_writer(path, fps=clip_fps, **ENCODE)
+            written[short] = path
+
+        renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))
         for row in rows:
             action = traj.action_phys[row - 1] if row > 0 else None
             rendered = renderer.render_views(
@@ -105,7 +106,8 @@ def render_trajectory_clips(
                     frame = rendered[KEY_VIEWS[key]]
                 writers[key].append_data(frame)
     finally:
-        renderer.close()
+        if renderer is not None:
+            renderer.close()
         for writer in writers.values():
             writer.close()
 
