@@ -66,7 +66,7 @@ def render_trajectory_clips(
     """Write `<method>_<short>.mp4` under `directory` for each view; return the paths."""
     from ..render.iss_scene import RenderConfig
     from ..render.renderer import ISSRenderer
-    import imageio.v3 as iio
+    import imageio.v2 as iio
 
     traj.validate()
     spec = ENV_REGISTRY[traj.meta["env"]]
@@ -79,7 +79,17 @@ def render_trajectory_clips(
 
     rows = frame_indices(traj.steps, traj.dt, fps, stride)
     clip_fps = max(1, int(round(output_fps(traj.dt, fps) / stride)))
-    frames: dict[str, list[np.ndarray]] = {key: [] for key in keys}
+
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    method = traj.meta["method"]
+    written: dict[str, Path] = {}
+    writers: dict[str, object] = {}
+    for key in keys:
+        short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
+        path = directory / f"{method}_{short}.mp4"
+        writers[key] = iio.get_writer(path, fps=clip_fps, **ENCODE)
+        written[short] = path
 
     renderer = ISSRenderer(RenderConfig(**(cfg.render or {})))
     try:
@@ -90,21 +100,13 @@ def render_trajectory_clips(
             )
             for key in keys:
                 if key == COMPOSITE_KEY:
-                    frames[key].append(
-                        tile_views(rendered, renderer.cfg.image_height, renderer.cfg.image_width)
-                    )
+                    frame = tile_views(rendered, renderer.cfg.image_height, renderer.cfg.image_width)
                 else:
-                    frames[key].append(rendered[KEY_VIEWS[key]])
+                    frame = rendered[KEY_VIEWS[key]]
+                writers[key].append_data(frame)
     finally:
         renderer.close()
+        for writer in writers.values():
+            writer.close()
 
-    directory = Path(directory)
-    directory.mkdir(parents=True, exist_ok=True)
-    method = traj.meta["method"]
-    written: dict[str, Path] = {}
-    for key in keys:
-        short = SHORT_VIEW_NAMES[key.rsplit(".", 1)[-1]]
-        path = directory / f"{method}_{short}.mp4"
-        iio.imwrite(path, np.stack(frames[key]), fps=clip_fps, **ENCODE)
-        written[short] = path
     return written

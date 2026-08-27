@@ -104,7 +104,7 @@ def plot_trajectory_png(traj: Trajectory, path: str | Path) -> Path:
 
 
 def plot_trajectory_video(traj: Trajectory, path: str | Path, fps: int = 10) -> Path:
-    import imageio.v3 as iio
+    import imageio.v2 as iio
 
     traj.validate()
     duration = traj.steps * traj.dt
@@ -113,18 +113,17 @@ def plot_trajectory_video(traj: Trajectory, path: str | Path, fps: int = 10) -> 
     fig, ax = _axes(traj)
     full = _path_collection(traj, traj.steps)
     fig.colorbar(full, ax=ax, shrink=0.6, pad=0.1, label="speed (m/s)")
-    frames = []
-    collection = None
-    for row in rows:
-        if collection is not None:
-            collection.remove()
-        collection = _path_collection(traj, max(int(row), 1))
-        ax.add_collection3d(collection)
-        fig.canvas.draw()
-        rgba = np.asarray(fig.canvas.buffer_rgba())
-        frames.append(rgba[..., :3].copy())
-    plt.close(fig)
     path = Path(path)
-    iio.imwrite(path, np.stack(frames), fps=fps, codec="libx264",
-                pixelformat="yuv420p", macro_block_size=2)
+    collection = None
+    with iio.get_writer(path, fps=fps, codec="libx264",
+                         pixelformat="yuv420p", macro_block_size=2) as writer:
+        for row in rows:
+            if collection is not None:
+                collection.remove()
+            collection = _path_collection(traj, max(int(row), 1))
+            ax.add_collection3d(collection)
+            fig.canvas.draw()
+            rgba = np.asarray(fig.canvas.buffer_rgba())
+            writer.append_data(rgba[..., :3])
+    plt.close(fig)
     return path
