@@ -117,6 +117,31 @@ frame written every 6 s (`--frame-stride 120` at dt=0.05):
       --policy dock --port harmony_fwd_pma2 --episodes 1 --require-dock \
       --render-views fpv,dragon_iso --frame-stride 120 --gpu-index 1
 
+## Trajectory files: render and plot any episode
+
+A single episode from any harness -- a scripted policy, an RL checkpoint, a
+world-model planner -- can be stored as a directory holding `trajectory.npz`
+and `meta.json` (`owm_envs.datasets.trajectory` defines the layout and
+validates it on load). Rows are recorded at the environment's integration
+step. `meta.json` carries the env name and its inline config, the port and
+seed, `dt`, the policy's `rate_hz` and `action_repeat`, and the outcome, so
+the file alone is enough to rebuild the scene.
+
+    uv run owm-envs render-trajectory media/rollouts/harmony_fwd_a --views fpv,dragon_iso
+    uv run owm-envs plot-trajectory  media/rollouts/harmony_fwd_a
+
+`render-trajectory` writes `<method>_fpv.mp4`, `<method>_iso.mp4`, ... beside
+the file at the file's own frame rate (20 fps for a 20 Hz run); `--fps` picks
+nearest rows for a slower clip and `--stride N` thins frames for a quick
+check. `plot-trajectory` writes `<method>_traj.png` (the full path, coloured
+by speed, against the 313-box station hull) and `<method>_traj.mp4` (the same
+path growing in step with the episode clock, at `--fps`, default 10). That
+video redraws the station hull for every frame, so a full 360 s episode at 10
+fps takes minutes -- lower `--fps` for a quick look.
+
+Two harnesses that reset the same env config at the same `(port, seed)` fly
+from a bit-identical start, so their files render and plot side by side.
+
 ## Asset acknowledgements
 
 The 3D assets under `src/owm_envs/render/resources/` are third-party works,

@@ -14,6 +14,7 @@ unchanged for a future non-JAX environment.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections import deque
 from dataclasses import asdict
@@ -25,6 +26,9 @@ import yaml
 from pydantic import ValidationError
 
 from .datasets.stats import GenerationConfig, SplitSpec, build_run_metadata
+from .datasets.trajectory import load_trajectory
+from .datasets.trajectory_plot import plot_trajectory_png, plot_trajectory_video
+from .datasets.trajectory_render import render_trajectory_clips
 from .datasets.video import (
     COMPOSITE_VIEWS,
     OUTPUT_KEYS,
@@ -164,8 +168,8 @@ def _check_dock_ports_agree(
     )
 
 
-def _parse_render_views(spec: str) -> list[str]:
-    """`--render-views` -> the view names to record in the generation config.
+def _parse_render_views(spec: str, flag: str = "--render-views") -> list[str]:
+    """`flag` -> the view names to record in the generation config.
 
     The parsing itself belongs to the datasets package, which owns the keys; a
     bad value is a usage error here rather than the ValueError it is there.
@@ -173,7 +177,7 @@ def _parse_render_views(spec: str) -> list[str]:
     try:
         return list(parse_view_names(spec))
     except ValueError as exc:
-        raise typer.BadParameter(f"--render-views: {exc}") from exc
+        raise typer.BadParameter(f"{flag}: {exc}") from exc
 
 
 def _parse_split_flags(
@@ -1027,6 +1031,72 @@ def rollout(
     (out / "rollout.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
     typer.echo(f"[done] {out}")
+
+
+@app.command("render-trajectory")
+def render_trajectory(
+    directory: Path = typer.Argument(..., help="Directory holding trajectory.npz and meta.json."),
+    views: str = typer.Option(
+        "fpv,dragon_iso",
+        help=f"Views to write: 'all' or a comma-joined list of {', '.join(VIEW_NAMES)}."),
+    fps: Optional[float] = typer.Option(
+        None, help="Output frame rate. Defaults to the file's own row rate (1/dt); "
+                   "a slower rate picks the nearest rows, a faster one is refused."),
+    stride: int = typer.Option(1, help="Keep every Nth frame, for a quick look."),
+    gpu_index: Optional[int] = typer.Option(
+        None, help="GPU to render on (default: wgpu's own choice)."),
+) -> None:
+    """Render one stored episode's camera views to mp4, one clip per view."""
+    if stride < 1:
+        raise typer.BadParameter(f"--stride must be >= 1, got {stride}", param_hint="--stride")
+    view_names = _parse_render_views(views, flag="--views")
+    try:
+        traj = load_trajectory(directory)
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc), param_hint="DIRECTORY") from exc
+    if not ENV_REGISTRY[traj.meta["env"]].renderable:
+        raise typer.BadParameter(
+            f"env '{traj.meta['env']}' has no render adapter, so it cannot be drawn",
+            param_hint="DIRECTORY",
+        )
+    if fps is not None and (not math.isfinite(fps) or fps <= 0.0):
+        raise typer.BadParameter(
+            f"--fps must be finite and > 0, got {fps}", param_hint="--fps"
+        )
+    if fps is not None and fps > 1.0 / traj.dt + 1e-9:
+        raise typer.BadParameter(
+            f"--fps {fps} is faster than the file's {1.0 / traj.dt:g} Hz rows; a clip "
+            "cannot show states the simulation never reached",
+            param_hint="--fps",
+        )
+    from .render.device import select_gpu
+
+    try:
+        select_gpu(gpu_index)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--gpu-index") from exc
+    written = render_trajectory_clips(traj, directory, view_names, fps=fps, stride=stride)
+    for short, path in written.items():
+        typer.echo(f"[render-trajectory] {short}: {path}")
+
+
+@app.command("plot-trajectory")
+def plot_trajectory(
+    directory: Path = typer.Argument(..., help="Directory holding trajectory.npz and meta.json."),
+    fps: int = typer.Option(10, help="Frame rate of the growing-path video."),
+) -> None:
+    """Draw one stored episode's path against the station hull, as PNG and mp4."""
+    if fps < 1:
+        raise typer.BadParameter(f"--fps must be >= 1, got {fps}", param_hint="--fps")
+    try:
+        traj = load_trajectory(directory)
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc), param_hint="DIRECTORY") from exc
+    method = traj.meta["method"]
+    png = plot_trajectory_png(traj, directory / f"{method}_traj.png")
+    mp4 = plot_trajectory_video(traj, directory / f"{method}_traj.mp4", fps=fps)
+    typer.echo(f"[plot-trajectory] {png}")
+    typer.echo(f"[plot-trajectory] {mp4}")
 
 
 def _stdin_is_interactive() -> bool:
